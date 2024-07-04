@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -26,6 +26,7 @@
 #include <crm/common/util.h>
 #include <crm/msg_xml.h>
 #include <crm/cib.h>
+#include <crm/cib/internal.h>
 #include <crm/pengine/status.h>
 #include <pacemaker-internal.h>
 
@@ -43,8 +44,6 @@ struct {
     gboolean xml_stdin;
     char *xml_string;
 } options;
-
-extern gboolean stage0(pe_working_set_t * data_set);
 
 static GOptionEntry data_entries[] = {
     { "live-check", 'L', 0, G_OPTION_ARG_NONE,
@@ -107,7 +106,6 @@ main(int argc, char **argv)
     xmlNode *status = NULL;
 
     pe_working_set_t *data_set = NULL;
-    cib_t *cib_conn = NULL;
     const char *xml_tag = NULL;
 
     int rc = pcmk_rc_ok;
@@ -148,27 +146,11 @@ main(int argc, char **argv)
     crm_info("=#=#=#=#= Getting XML =#=#=#=#=");
 
     if (options.use_live_cib) {
-        cib_conn = cib_new();
-        rc = cib_conn->cmds->signon(cib_conn, crm_system_name, cib_command);
-        rc = pcmk_legacy2rc(rc);
-    }
-
-    if (options.use_live_cib) {
-        if (rc == pcmk_rc_ok) {
-            int options = cib_scope_local | cib_sync_call;
-
-            crm_info("Reading XML from: live cluster");
-            rc = cib_conn->cmds->query(cib_conn, NULL, &cib_object, options);
-            rc = pcmk_legacy2rc(rc);
-        }
+        crm_info("Reading XML from: live cluster");
+        rc = cib__signon_query(out, NULL, &cib_object);
 
         if (rc != pcmk_rc_ok) {
-            g_set_error(&error, PCMK__RC_ERROR, rc, "Live CIB query failed: %s", pcmk_rc_str(rc));
-            goto done;
-        }
-        if (cib_object == NULL) {
-            rc = ENOMSG;
-            g_set_error(&error, PCMK__RC_ERROR, rc, "Live CIB query failed: empty result");
+            // cib__signon_query() outputs any relevant error
             goto done;
         }
 
@@ -214,7 +196,7 @@ main(int argc, char **argv)
         write_xml_file(cib_object, options.cib_save, FALSE);
     }
 
-    status = get_object_root(XML_CIB_TAG_STATUS, cib_object);
+    status = pcmk_find_cib_element(cib_object, XML_CIB_TAG_STATUS);
     if (status == NULL) {
         create_xml_node(cib_object, XML_CIB_TAG_STATUS);
     }
@@ -239,18 +221,21 @@ main(int argc, char **argv)
         crm_perror(LOG_CRIT, "Unable to allocate working set");
         goto done;
     }
-    pe__set_working_set_flags(data_set, pe_flag_no_counts|pe_flag_no_compat);
     data_set->priv = out;
 
-    if (cib_object == NULL) {
-    } else if (status != NULL || options.use_live_cib) {
-        /* live queries will always have a status section and can do a full simulation */
-        pcmk__schedule_actions(data_set, cib_object, NULL);
+    /* Process the configuration to set crm_config_error/crm_config_warning.
+     *
+     * @TODO Some parts of the configuration are unpacked only when needed (for
+     * example, action configuration), so we aren't necessarily checking those.
+     */
+    if (cib_object != NULL) {
+        unsigned long long flags = pe_flag_no_counts|pe_flag_no_compat;
 
-    } else {
-        data_set->now = crm_time_new(NULL);
-        data_set->input = cib_object;
-        stage0(data_set);
+        if ((status == NULL) && !options.use_live_cib) {
+            // No status available, so do minimal checks
+            flags |= pe_flag_check_config;
+        }
+        pcmk__schedule_actions(cib_object, flags, data_set);
     }
     pe_free_working_set(data_set);
 
@@ -277,11 +262,6 @@ main(int argc, char **argv)
         }
     }
 
-    if (options.use_live_cib && cib_conn) {
-        cib_conn->cmds->signoff(cib_conn);
-        cib_delete(cib_conn);
-    }
-
   done:
     g_strfreev(processed_args);
     pcmk__free_arg_context(context);
@@ -293,12 +273,13 @@ main(int argc, char **argv)
         exit_code = pcmk_rc2exitc(rc);
     }
 
-    pcmk__output_and_clear_error(error, NULL);
+    pcmk__output_and_clear_error(&error, NULL);
 
     if (out != NULL) {
         out->finish(out, exit_code, true, NULL);
         pcmk__output_free(out);
     }
 
+    pcmk__unregister_formats();
     crm_exit(exit_code);
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2009-2021 the Pacemaker project contributors
+ * Copyright 2009-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -7,8 +7,12 @@
  * version 2.1 or later (LGPLv2.1+) WITHOUT ANY WARRANTY.
  */
 
-#ifndef CRM_COMMON_MAINLOOP__H
-#  define CRM_COMMON_MAINLOOP__H
+#ifndef PCMK__CRM_COMMON_MAINLOOP__H
+#  define PCMK__CRM_COMMON_MAINLOOP__H
+
+#  include <signal.h> // sighandler_t
+#  include <glib.h>
+#  include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,9 +23,6 @@ extern "C" {
  * \brief Wrappers for and extensions to glib mainloop
  * \ingroup core
  */
-
-#  include <signal.h> // sighandler_t
-#  include <glib.h>
 
 enum mainloop_child_flags {
     /* don't kill pid group on timeout, only kill the pid */
@@ -85,7 +86,7 @@ struct ipc_client_callbacks {
     /*!
      * \brief Destroy function for mainloop IPC connection client data
      *
-     * \param[in] userdata  User data passed when creating mainloop source
+     * \param[in,out] userdata  User data passed when creating mainloop source
      */
     void (*destroy) (gpointer userdata);
 };
@@ -130,7 +131,7 @@ struct mainloop_fd_callbacks {
     /*!
      * \brief Dispatch function for mainloop file descriptor with data ready
      *
-     * \param[in] userdata  User data passed when creating mainloop source
+     * \param[in,out] userdata  User data passed when creating mainloop source
      *
      * \return Negative value to remove source, anything else to keep it
      */
@@ -139,7 +140,7 @@ struct mainloop_fd_callbacks {
     /*!
      * \brief Destroy function for mainloop file descriptor client data
      *
-     * \param[in] userdata  User data passed when creating mainloop source
+     * \param[in,out] userdata  User data passed when creating mainloop source
      */
     void (*destroy) (gpointer userdata);
 };

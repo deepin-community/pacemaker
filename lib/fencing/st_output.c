@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2021 the Pacemaker project contributors
+ * Copyright 2019-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -9,8 +9,10 @@
 
 #include <crm_internal.h>
 #include <stdarg.h>
+#include <stdint.h>
 
 #include <crm/stonith-ng.h>
+#include <crm/msg_xml.h>
 #include <crm/common/iso8601.h>
 #include <crm/common/util.h>
 #include <crm/common/xml.h>
@@ -20,25 +22,160 @@
 #include <crm/fencing/internal.h>
 #include <crm/pengine/internal.h>
 
+/*!
+ * \internal
+ * \brief Convert seconds and nanoseconds to a date/time/time-zone string
+ *
+ * \param[in] sec        Seconds
+ * \param[in] nsec       Nanoseconds
+ * \param[in] show_usec  Whether to show time in microseconds resolution (if
+ *                       false, use seconds resolution)
+ *
+ * \return A string representation of \p sec and \nsec
+ *
+ * \note The caller is responsible for freeing the return value using \p free().
+ */
 static char *
-time_t_string(time_t when) {
-    crm_time_t *crm_when = crm_time_new(NULL);
-    char *buf = NULL;
+timespec_string(time_t sec, long nsec, bool show_usec) {
+    const struct timespec ts = {
+        .tv_sec = sec,
+        .tv_nsec = nsec,
+    };
 
-    crm_time_set_timet(crm_when, &when);
-    buf = crm_time_as_string(crm_when, crm_time_log_date | crm_time_log_timeofday | crm_time_log_with_timezone);
-    crm_time_free(crm_when);
-    return buf;
+    return pcmk__timespec2str(&ts,
+                              crm_time_log_date
+                              |crm_time_log_timeofday
+                              |crm_time_log_with_timezone
+                              |(show_usec? crm_time_usecs : 0));
+}
+
+/*!
+ * \internal
+ * \brief Return a status-friendly description of fence history entry state
+ *
+ * \param[in] history  Fence history entry to describe
+ *
+ * \return One-word description of history entry state
+ * \note This is similar to stonith_op_state_str() except user-oriented (i.e.
+ *       for cluster status) instead of developer-oriented (for debug logs).
+ */
+static const char *
+state_str(const stonith_history_t *history)
+{
+    switch (history->state) {
+        case st_failed: return "failed";
+        case st_done:   return "successful";
+        default:        return "pending";
+    }
+}
+
+/*!
+ * \internal
+ * \brief Create a description of a fencing history entry for status displays
+ *
+ * \param[in] history          Fencing history entry to describe
+ * \param[in] full_history     Whether this is for full or condensed history
+ * \param[in] later_succeeded  Node that a later equivalent attempt succeeded
+ *                             from, or NULL if none
+ * \param[in] show_opts        Flag group of pcmk_show_opt_e
+ *
+ * \return Newly created string with fencing history entry description
+ *
+ * \note The caller is responsible for freeing the return value with g_free().
+ * \note This is similar to stonith__event_description(), except this is used
+ *       for history entries (stonith_history_t) in status displays rather than
+ *       event notifications (stonith_event_t) in log messages.
+ */
+gchar *
+stonith__history_description(const stonith_history_t *history,
+                             bool full_history, const char *later_succeeded,
+                             uint32_t show_opts)
+{
+    GString *str = g_string_sized_new(256); // Generous starting size
+    char *completed_time_s = NULL;
+
+    if ((history->state == st_failed) || (history->state == st_done)) {
+        completed_time_s = timespec_string(history->completed,
+                                           history->completed_nsec, true);
+    }
+
+    pcmk__g_strcat(str,
+                   stonith_action_str(history->action), " of ", history->target,
+                   NULL);
+
+    if (!pcmk_is_set(show_opts, pcmk_show_failed_detail)) {
+        // More human-friendly
+        if (((history->state == st_failed) || (history->state == st_done))
+            && (history->delegate != NULL)) {
+
+            pcmk__g_strcat(str, " by ", history->delegate, NULL);
+        }
+        pcmk__g_strcat(str, " for ", history->client, "@", history->origin,
+                       NULL);
+        if (!full_history) {
+            g_string_append(str, " last"); // For example, "last failed at ..."
+        }
+    }
+
+    pcmk__add_word(&str, 0, state_str(history));
+
+    // For failed actions, add exit reason if available
+    if ((history->state == st_failed) && (history->exit_reason != NULL)) {
+        pcmk__g_strcat(str, " (", history->exit_reason, ")", NULL);
+    }
+
+    if (pcmk_is_set(show_opts, pcmk_show_failed_detail)) {
+        // More technical
+        g_string_append(str, ": ");
+
+        // For completed actions, add delegate if available
+        if (((history->state == st_failed) || (history->state == st_done))
+            && (history->delegate != NULL)) {
+
+            pcmk__g_strcat(str, "delegate=", history->delegate, ", ", NULL);
+        }
+
+        // Add information about originator
+        pcmk__g_strcat(str,
+                       "client=", history->client, ", origin=", history->origin,
+                       NULL);
+
+        // For completed actions, add completion time
+        if (completed_time_s != NULL) {
+            if (full_history) {
+                g_string_append(str, ", completed");
+            } else if (history->state == st_failed) {
+                g_string_append(str, ", last-failed");
+            } else {
+                g_string_append(str, ", last-successful");
+            }
+            pcmk__g_strcat(str, "='", completed_time_s, "'", NULL);
+        }
+    } else if (completed_time_s != NULL) {
+        // More human-friendly
+        pcmk__g_strcat(str, " at ", completed_time_s, NULL);
+    }
+
+    if ((history->state == st_failed) && (later_succeeded != NULL)) {
+        pcmk__g_strcat(str,
+                       " (a later attempt from ", later_succeeded,
+                       " succeeded)", NULL);
+    }
+
+    free(completed_time_s);
+    return g_string_free(str, FALSE);
 }
 
 PCMK__OUTPUT_ARGS("failed-fencing-list", "stonith_history_t *", "GList *",
-                  "unsigned int", "gboolean")
-int
-stonith__failed_history(pcmk__output_t *out, va_list args) {
+                  "uint32_t", "uint32_t", "bool")
+static int
+failed_history(pcmk__output_t *out, va_list args)
+{
     stonith_history_t *history = va_arg(args, stonith_history_t *);
     GList *only_node = va_arg(args, GList *);
-    unsigned int section_opts = va_arg(args, unsigned int);
-    gboolean print_spacer = va_arg(args, gboolean);
+    uint32_t section_opts = va_arg(args, uint32_t);
+    uint32_t show_opts = va_arg(args, uint32_t);
+    bool print_spacer = va_arg(args, int);
 
     int rc = pcmk_rc_no_output;
 
@@ -47,13 +184,14 @@ stonith__failed_history(pcmk__output_t *out, va_list args) {
             continue;
         }
 
-        if (!pcmk__str_in_list(only_node, hp->target, pcmk__str_casei)) {
+        if (!pcmk__str_in_list(hp->target, only_node, pcmk__str_star_matches|pcmk__str_casei)) {
             continue;
         }
 
         PCMK__OUTPUT_LIST_HEADER(out, print_spacer, rc, "Failed Fencing Actions");
-        out->message(out, "stonith-event", hp, pcmk_all_flags_set(section_opts, pcmk_section_fencing_all),
-                     stonith__later_succeeded(hp, history));
+        out->message(out, "stonith-event", hp,
+                     pcmk_all_flags_set(section_opts, pcmk_section_fencing_all),
+                     false, stonith__later_succeeded(hp, history), show_opts);
         out->increment_list(out);
     }
 
@@ -61,25 +199,30 @@ stonith__failed_history(pcmk__output_t *out, va_list args) {
     return rc;
 }
 
-PCMK__OUTPUT_ARGS("fencing-list", "stonith_history_t *", "GList *", "unsigned int", "gboolean")
-int
-stonith__history(pcmk__output_t *out, va_list args) {
+PCMK__OUTPUT_ARGS("fencing-list", "stonith_history_t *", "GList *", "uint32_t",
+                  "uint32_t", "bool")
+static int
+stonith_history(pcmk__output_t *out, va_list args)
+{
     stonith_history_t *history = va_arg(args, stonith_history_t *);
     GList *only_node = va_arg(args, GList *);
-    unsigned int section_opts = va_arg(args, unsigned int);
-    gboolean print_spacer = va_arg(args, gboolean);
+    uint32_t section_opts = va_arg(args, uint32_t);
+    uint32_t show_opts = va_arg(args, uint32_t);
+    bool print_spacer = va_arg(args, int);
 
     int rc = pcmk_rc_no_output;
 
     for (stonith_history_t *hp = history; hp; hp = hp->next) {
-        if (!pcmk__str_in_list(only_node, hp->target, pcmk__str_casei)) {
+        if (!pcmk__str_in_list(hp->target, only_node, pcmk__str_star_matches|pcmk__str_casei)) {
             continue;
         }
 
         if (hp->state != st_failed) {
             PCMK__OUTPUT_LIST_HEADER(out, print_spacer, rc, "Fencing History");
-            out->message(out, "stonith-event", hp, pcmk_all_flags_set(section_opts, pcmk_section_fencing_all),
-                         stonith__later_succeeded(hp, history));
+            out->message(out, "stonith-event", hp,
+                         pcmk_all_flags_set(section_opts,
+                                            pcmk_section_fencing_all),
+                         false, stonith__later_succeeded(hp, history), show_opts);
             out->increment_list(out);
         }
     }
@@ -88,26 +231,29 @@ stonith__history(pcmk__output_t *out, va_list args) {
     return rc;
 }
 
-PCMK__OUTPUT_ARGS("full-fencing-list", "crm_exit_t", "stonith_history_t *", "GList *",
-                  "unsigned int", "gboolean")
-int
-stonith__full_history(pcmk__output_t *out, va_list args) {
+PCMK__OUTPUT_ARGS("full-fencing-list", "crm_exit_t", "stonith_history_t *",
+                  "GList *", "uint32_t", "uint32_t", "bool")
+static int
+full_history(pcmk__output_t *out, va_list args)
+{
     crm_exit_t history_rc G_GNUC_UNUSED = va_arg(args, crm_exit_t);
     stonith_history_t *history = va_arg(args, stonith_history_t *);
     GList *only_node = va_arg(args, GList *);
-    unsigned int section_opts = va_arg(args, unsigned int);
-    gboolean print_spacer = va_arg(args, gboolean);
+    uint32_t section_opts = va_arg(args, uint32_t);
+    uint32_t show_opts = va_arg(args, uint32_t);
+    bool print_spacer = va_arg(args, int);
 
     int rc = pcmk_rc_no_output;
 
     for (stonith_history_t *hp = history; hp; hp = hp->next) {
-        if (!pcmk__str_in_list(only_node, hp->target, pcmk__str_casei)) {
+        if (!pcmk__str_in_list(hp->target, only_node, pcmk__str_star_matches|pcmk__str_casei)) {
             continue;
         }
 
         PCMK__OUTPUT_LIST_HEADER(out, print_spacer, rc, "Fencing History");
-        out->message(out, "stonith-event", hp, pcmk_all_flags_set(section_opts, pcmk_section_fencing_all),
-                     stonith__later_succeeded(hp, history));
+        out->message(out, "stonith-event", hp,
+                     pcmk_all_flags_set(section_opts, pcmk_section_fencing_all),
+                     false, stonith__later_succeeded(hp, history), show_opts);
         out->increment_list(out);
     }
 
@@ -115,27 +261,31 @@ stonith__full_history(pcmk__output_t *out, va_list args) {
     return rc;
 }
 
-PCMK__OUTPUT_ARGS("full-fencing-list", "crm_exit_t", "stonith_history_t *", "GList *",
-                  "unsigned int", "gboolean")
+PCMK__OUTPUT_ARGS("full-fencing-list", "crm_exit_t", "stonith_history_t *",
+                  "GList *", "uint32_t", "uint32_t", "bool")
 static int
-full_history_xml(pcmk__output_t *out, va_list args) {
+full_history_xml(pcmk__output_t *out, va_list args)
+{
     crm_exit_t history_rc = va_arg(args, crm_exit_t);
     stonith_history_t *history = va_arg(args, stonith_history_t *);
     GList *only_node = va_arg(args, GList *);
-    unsigned int section_opts = va_arg(args, unsigned int);
-    gboolean print_spacer G_GNUC_UNUSED = va_arg(args, gboolean);
+    uint32_t section_opts = va_arg(args, uint32_t);
+    uint32_t show_opts = va_arg(args, uint32_t);
+    bool print_spacer G_GNUC_UNUSED = va_arg(args, int);
 
     int rc = pcmk_rc_no_output;
 
     if (history_rc == 0) {
         for (stonith_history_t *hp = history; hp; hp = hp->next) {
-            if (!pcmk__str_in_list(only_node, hp->target, pcmk__str_casei)) {
+            if (!pcmk__str_in_list(hp->target, only_node, pcmk__str_star_matches|pcmk__str_casei)) {
                 continue;
             }
 
-            PCMK__OUTPUT_LIST_HEADER(out, FALSE, rc, "Fencing History");
-            out->message(out, "stonith-event", hp, pcmk_all_flags_set(section_opts, pcmk_section_fencing_all),
-                         stonith__later_succeeded(hp, history));
+            PCMK__OUTPUT_LIST_HEADER(out, false, rc, "Fencing History");
+            out->message(out, "stonith-event", hp,
+                         pcmk_all_flags_set(section_opts,
+                                            pcmk_section_fencing_all),
+                         false, stonith__later_succeeded(hp, history), show_opts);
             out->increment_list(out);
         }
 
@@ -192,7 +342,7 @@ last_fenced_xml(pcmk__output_t *out, va_list args) {
     time_t when = va_arg(args, time_t);
 
     if (when) {
-        char *buf = time_t_string(when);
+        char *buf = timespec_string(when, 0, false);
 
         pcmk__output_create_xml_node(out, "last-fenced",
                                      "target", target,
@@ -207,18 +357,20 @@ last_fenced_xml(pcmk__output_t *out, va_list args) {
 }
 
 PCMK__OUTPUT_ARGS("pending-fencing-list", "stonith_history_t *", "GList *",
-                  "unsigned int", "gboolean")
-int
-stonith__pending_actions(pcmk__output_t *out, va_list args) {
+                  "uint32_t", "uint32_t", "bool")
+static int
+pending_actions(pcmk__output_t *out, va_list args)
+{
     stonith_history_t *history = va_arg(args, stonith_history_t *);
     GList *only_node = va_arg(args, GList *);
-    unsigned int section_opts = va_arg(args, unsigned int);
-    gboolean print_spacer = va_arg(args, gboolean);
+    uint32_t section_opts = va_arg(args, uint32_t);
+    uint32_t show_opts = va_arg(args, uint32_t);
+    bool print_spacer = va_arg(args, int);
 
     int rc = pcmk_rc_no_output;
 
     for (stonith_history_t *hp = history; hp; hp = hp->next) {
-        if (!pcmk__str_in_list(only_node, hp->target, pcmk__str_casei)) {
+        if (!pcmk__str_in_list(hp->target, only_node, pcmk__str_star_matches|pcmk__str_casei)) {
             continue;
         }
 
@@ -228,8 +380,9 @@ stonith__pending_actions(pcmk__output_t *out, va_list args) {
         }
 
         PCMK__OUTPUT_LIST_HEADER(out, print_spacer, rc, "Pending Fencing Actions");
-        out->message(out, "stonith-event", hp, pcmk_all_flags_set(section_opts, pcmk_section_fencing_all),
-                     stonith__later_succeeded(hp, history));
+        out->message(out, "stonith-event", hp,
+                     pcmk_all_flags_set(section_opts, pcmk_section_fencing_all),
+                     false, stonith__later_succeeded(hp, history), show_opts);
         out->increment_list(out);
     }
 
@@ -237,100 +390,71 @@ stonith__pending_actions(pcmk__output_t *out, va_list args) {
     return rc;
 }
 
-PCMK__OUTPUT_ARGS("stonith-event", "stonith_history_t *", "gboolean", "gboolean")
+PCMK__OUTPUT_ARGS("stonith-event", "stonith_history_t *", "bool", "bool",
+                  "const char *", "uint32_t")
 static int
-stonith_event_html(pcmk__output_t *out, va_list args) {
+stonith_event_html(pcmk__output_t *out, va_list args)
+{
     stonith_history_t *event = va_arg(args, stonith_history_t *);
-    gboolean full_history = va_arg(args, gboolean);
-    gboolean later_succeeded = va_arg(args, gboolean);
+    bool full_history = va_arg(args, int);
+    bool completed_only G_GNUC_UNUSED = va_arg(args, int);
+    const char *succeeded = va_arg(args, const char *);
+    uint32_t show_opts = va_arg(args, uint32_t);
+
+    gchar *desc = stonith__history_description(event, full_history, succeeded,
+                                               show_opts);
 
     switch(event->state) {
-        case st_done: {
-            char *completed_s = time_t_string(event->completed);
-
-            out->list_item(out, "successful-stonith-event",
-                           "%s of %s successful: delegate=%s, client=%s, origin=%s, %s='%s'",
-                           stonith_action_str(event->action), event->target,
-                           event->delegate ? event->delegate : "",
-                           event->client, event->origin,
-                           full_history ? "completed" : "last-successful",
-                           completed_s);
-            free(completed_s);
-            break;
-        }
-
-        case st_failed: {
-            char *failed_s = time_t_string(event->completed);
-
-            out->list_item(out, "failed-stonith-event",
-                           "%s of %s failed : delegate=%s, client=%s, origin=%s, %s='%s' %s",
-                           stonith_action_str(event->action), event->target,
-                           event->delegate ? event->delegate : "",
-                           event->client, event->origin,
-                           full_history ? "completed" : "last-failed",
-                           failed_s,
-                           later_succeeded ? "(a later attempt succeeded)" : "");
-            free(failed_s);
-            break;
-        }
-
-        default:
-            out->list_item(out, "pending-stonith-event",
-                           "%s of %s pending: client=%s, origin=%s",
-                           stonith_action_str(event->action), event->target,
-                           event->client, event->origin);
-            break;
-    }
-
-    return pcmk_rc_ok;
-}
-
-PCMK__OUTPUT_ARGS("stonith-event", "stonith_history_t *", "gboolean", "gboolean")
-static int
-stonith_event_text(pcmk__output_t *out, va_list args) {
-    stonith_history_t *event = va_arg(args, stonith_history_t *);
-    gboolean full_history = va_arg(args, gboolean);
-    gboolean later_succeeded = va_arg(args, gboolean);
-
-    char *buf = time_t_string(event->completed);
-
-    switch (event->state) {
-        case st_failed:
-            pcmk__indented_printf(out, "%s of %s failed: delegate=%s, client=%s, origin=%s, %s='%s' %s\n",
-                                  stonith_action_str(event->action), event->target,
-                                  event->delegate ? event->delegate : "",
-                                  event->client, event->origin,
-                                  full_history ? "completed" : "last-failed", buf,
-                                  later_succeeded ? "(a later attempt succeeded)" : "");
-            break;
-
         case st_done:
-            pcmk__indented_printf(out, "%s of %s successful: delegate=%s, client=%s, origin=%s, %s='%s'\n",
-                                  stonith_action_str(event->action), event->target,
-                                  event->delegate ? event->delegate : "",
-                                  event->client, event->origin,
-                                  full_history ? "completed" : "last-successful", buf);
+            out->list_item(out, "successful-stonith-event", "%s", desc);
+            break;
+
+        case st_failed:
+            out->list_item(out, "failed-stonith-event", "%s", desc);
             break;
 
         default:
-            pcmk__indented_printf(out, "%s of %s pending: client=%s, origin=%s\n",
-                                  stonith_action_str(event->action), event->target,
-                                  event->client, event->origin);
+            out->list_item(out, "pending-stonith-event", "%s", desc);
             break;
     }
-
-    free(buf);
+    g_free(desc);
     return pcmk_rc_ok;
 }
 
-PCMK__OUTPUT_ARGS("stonith-event", "stonith_history_t *", "gboolean", "gboolean")
+PCMK__OUTPUT_ARGS("stonith-event", "stonith_history_t *", "bool", "bool",
+                  "const char *", "uint32_t")
 static int
-stonith_event_xml(pcmk__output_t *out, va_list args) {
+stonith_event_text(pcmk__output_t *out, va_list args)
+{
     stonith_history_t *event = va_arg(args, stonith_history_t *);
-    gboolean full_history G_GNUC_UNUSED = va_arg(args, gboolean);
-    gboolean later_succeeded G_GNUC_UNUSED = va_arg(args, gboolean);
+    bool full_history = va_arg(args, int);
+    bool completed_only = va_arg(args, int);
+    const char *succeeded = va_arg(args, const char *);
+    uint32_t show_opts = va_arg(args, uint32_t);
 
-    char *buf = NULL;
+    if (completed_only) {
+        pcmk__formatted_printf(out, "%lld\n", (long long) event->completed);
+    } else {
+        gchar *desc = stonith__history_description(event, full_history, succeeded,
+                                                   show_opts);
+
+        pcmk__indented_printf(out, "%s\n", desc);
+        g_free(desc);
+    }
+
+    return pcmk_rc_ok;
+}
+
+PCMK__OUTPUT_ARGS("stonith-event", "stonith_history_t *", "bool", "bool",
+                  "const char *", "uint32_t")
+static int
+stonith_event_xml(pcmk__output_t *out, va_list args)
+{
+    stonith_history_t *event = va_arg(args, stonith_history_t *);
+    bool full_history G_GNUC_UNUSED = va_arg(args, int);
+    bool completed_only G_GNUC_UNUSED = va_arg(args, int);
+    const char *succeeded G_GNUC_UNUSED = va_arg(args, const char *);
+    uint32_t show_opts G_GNUC_UNUSED = va_arg(args, uint32_t);
 
     xmlNodePtr node = pcmk__output_create_xml_node(out, "fence_event",
                                                    "action", event->action,
@@ -341,7 +465,9 @@ stonith_event_xml(pcmk__output_t *out, va_list args) {
 
     switch (event->state) {
         case st_failed:
-            crm_xml_add(node, "status", "failed");
+            pcmk__xe_set_props(node, "status", "failed",
+                               XML_LRM_ATTR_EXIT_REASON, event->exit_reason,
+                               NULL);
             break;
 
         case st_done:
@@ -362,22 +488,25 @@ stonith_event_xml(pcmk__output_t *out, va_list args) {
         crm_xml_add(node, "delegate", event->delegate);
     }
 
-    if (event->state == st_failed || event->state == st_done) {
-        buf = time_t_string(event->completed);
-        crm_xml_add(node, "completed", buf);
-        free(buf);
+    if ((event->state == st_failed) || (event->state == st_done)) {
+        char *time_s = timespec_string(event->completed, event->completed_nsec,
+                                       true);
+
+        crm_xml_add(node, "completed", time_s);
+        free(time_s);
     }
 
     return pcmk_rc_ok;
 }
 
-PCMK__OUTPUT_ARGS("validate", "const char *", "const char *", "char *", "char *", "int")
+PCMK__OUTPUT_ARGS("validate", "const char *", "const char *", "const char *",
+                  "const char *", "int")
 static int
 validate_agent_html(pcmk__output_t *out, va_list args) {
     const char *agent = va_arg(args, const char *);
     const char *device = va_arg(args, const char *);
-    char *output = va_arg(args, char *);
-    char *error_output = va_arg(args, char *);
+    const char *output = va_arg(args, const char *);
+    const char *error_output = va_arg(args, const char *);
     int rc = va_arg(args, int);
 
     if (device) {
@@ -396,13 +525,14 @@ validate_agent_html(pcmk__output_t *out, va_list args) {
     return rc;
 }
 
-PCMK__OUTPUT_ARGS("validate", "const char *", "const char *", "char *", "char *", "int")
+PCMK__OUTPUT_ARGS("validate", "const char *", "const char *", "const char *",
+                  "const char *", "int")
 static int
 validate_agent_text(pcmk__output_t *out, va_list args) {
     const char *agent = va_arg(args, const char *);
     const char *device = va_arg(args, const char *);
-    char *output = va_arg(args, char *);
-    char *error_output = va_arg(args, char *);
+    const char *output = va_arg(args, const char *);
+    const char *error_output = va_arg(args, const char *);
     int rc = va_arg(args, int);
 
     if (device) {
@@ -417,19 +547,19 @@ validate_agent_text(pcmk__output_t *out, va_list args) {
     return rc;
 }
 
-PCMK__OUTPUT_ARGS("validate", "const char *", "const char *", "char *", "char *", "int")
+PCMK__OUTPUT_ARGS("validate", "const char *", "const char *", "const char *",
+                  "const char *", "int")
 static int
 validate_agent_xml(pcmk__output_t *out, va_list args) {
     const char *agent = va_arg(args, const char *);
     const char *device = va_arg(args, const char *);
-    char *output = va_arg(args, char *);
-    char *error_output = va_arg(args, char *);
+    const char *output = va_arg(args, const char *);
+    const char *error_output = va_arg(args, const char *);
     int rc = va_arg(args, int);
 
-    xmlNodePtr node = pcmk__output_create_xml_node(out, "validate",
-                                                   "agent", agent,
-                                                   "valid", pcmk__btoa(rc),
-                                                   NULL);
+    xmlNodePtr node = pcmk__output_create_xml_node(
+        out, "validate", "agent", agent, "valid", pcmk__btoa(rc == pcmk_ok),
+        NULL);
 
     if (device != NULL) {
         crm_xml_add(node, "device", device);
@@ -443,15 +573,15 @@ validate_agent_xml(pcmk__output_t *out, va_list args) {
 }
 
 static pcmk__message_entry_t fmt_functions[] = {
-    { "failed-fencing-list", "default", stonith__failed_history },
-    { "fencing-list", "default", stonith__history },
-    { "full-fencing-list", "default", stonith__full_history },
+    { "failed-fencing-list", "default", failed_history },
+    { "fencing-list", "default", stonith_history },
+    { "full-fencing-list", "default", full_history },
     { "full-fencing-list", "xml", full_history_xml },
     { "last-fenced", "html", last_fenced_html },
     { "last-fenced", "log", last_fenced_text },
     { "last-fenced", "text", last_fenced_text },
     { "last-fenced", "xml", last_fenced_xml },
-    { "pending-fencing-list", "default", stonith__pending_actions },
+    { "pending-fencing-list", "default", pending_actions },
     { "stonith-event", "html", stonith_event_html },
     { "stonith-event", "log", stonith_event_text },
     { "stonith-event", "text", stonith_event_text },

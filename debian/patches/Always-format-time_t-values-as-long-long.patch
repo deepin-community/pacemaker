@@ -1,0 +1,37 @@
+From: =?utf-8?q?Ferenc_W=C3=A1gner?= <wferi@debian.org>
+Date: Fri, 22 Mar 2024 16:40:07 +0100
+Subject: Always format time_t values as long long
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Conventionally it's signed long under the GNU C library, which is 32
+bits on 32-bit architectures, but Glibc provides the __TIME_BITS==64
+option, which makes it signed long long instead (64 bits) and makes no
+difference on 64-bit architectures [1].  This enables using the %llu
+conversion specifier uniformly across all supported architectures.
+This got exposed by Debian recently transitioning to 64-bit time_t [2].
+
+[1] https://sourceware.org/glibc/wiki/Y2038ProofnessDesign
+[2] https://wiki.debian.org/ReleaseGoals/64bit-time
+
+Signed-off-by: Ferenc Wágner <wferi@debian.org>
+---
+ daemons/fenced/fenced_remote.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/daemons/fenced/fenced_remote.c b/daemons/fenced/fenced_remote.c
+index dc67947..ef2237a 100644
+--- a/daemons/fenced/fenced_remote.c
++++ b/daemons/fenced/fenced_remote.c
+@@ -1042,8 +1042,8 @@ merge_duplicates(remote_fencing_op_t *op)
+         }
+         if ((other->total_timeout > 0)
+             && (now > (other->total_timeout + other->created))) {
+-            crm_trace("%.8s not duplicate of %.8s: old (%ld vs. %ld + %d)",
+-                      op->id, other->id, now, other->created,
++            crm_trace("%.8s not duplicate of %.8s: old (%lld vs. %lld + %d)",
++                      op->id, other->id, (long long)now, (long long)other->created,
+                       other->total_timeout);
+             continue;
+         }

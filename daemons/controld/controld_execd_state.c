@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2021 the Pacemaker project contributors
+ * Copyright 2012-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -8,6 +8,9 @@
  */
 
 #include <crm_internal.h>
+
+#include <errno.h>
+
 #include <crm/crm.h>
 #include <crm/msg_xml.h>
 #include <crm/common/iso8601.h>
@@ -18,7 +21,7 @@
 #include <pacemaker-internal.h>
 #include <pacemaker-controld.h>
 
-GHashTable *lrm_state_table = NULL;
+static GHashTable *lrm_state_table = NULL;
 extern GHashTable *proxy_table;
 int lrmd_internal_proxy_send(lrmd_t * lrmd, xmlNode *msg);
 void lrmd_internal_set_proxy_callback(lrmd_t * lrmd, void *userdata, void (*callback)(lrmd_t *lrmd, void *userdata, xmlNode *msg));
@@ -73,8 +76,8 @@ fail_pending_op(gpointer key, gpointer value, gpointer user_data)
     event.user_data = op->user_data;
     event.timeout = 0;
     event.interval_ms = op->interval_ms;
-    event.rc = PCMK_OCF_UNKNOWN_ERROR;
-    event.op_status = PCMK_LRM_OP_NOT_CONNECTED;
+    lrmd__set_result(&event, PCMK_OCF_UNKNOWN_ERROR, PCMK_EXEC_NOT_CONNECTED,
+                     "Action was pending when executor connection was dropped");
     event.t_run = (unsigned int) op->start_time;
     event.t_rcchange = (unsigned int) op->start_time;
 
@@ -83,25 +86,27 @@ fail_pending_op(gpointer key, gpointer value, gpointer user_data)
     event.params = op->params;
 
     process_lrm_event(lrm_state, &event, op, NULL);
+    lrmd__reset_result(&event);
     return TRUE;
 }
 
 gboolean
 lrm_state_is_local(lrm_state_t *lrm_state)
 {
-    if (lrm_state == NULL || fsa_our_uname == NULL) {
-        return FALSE;
-    }
-
-    if (strcmp(lrm_state->node_name, fsa_our_uname) != 0) {
-        return FALSE;
-    }
-
-    return TRUE;
-
+    return (lrm_state != NULL)
+           && pcmk__str_eq(lrm_state->node_name, controld_globals.our_nodename,
+                           pcmk__str_casei);
 }
 
-lrm_state_t *
+/*!
+ * \internal
+ * \brief Create executor state entry for a node and add it to the state table
+ *
+ * \param[in]  node_name  Node to create entry for
+ *
+ * \return Newly allocated executor state object initialized for \p node_name
+ */
+static lrm_state_t *
 lrm_state_create(const char *node_name)
 {
     lrm_state_t *state = NULL;
@@ -119,7 +124,7 @@ lrm_state_create(const char *node_name)
     state->node_name = strdup(node_name);
     state->rsc_info_cache = pcmk__strkey_table(NULL, free_rsc_info);
     state->deletion_ops = pcmk__strkey_table(free, free_deletion_op);
-    state->pending_ops = pcmk__strkey_table(free, free_recurring_op);
+    state->active_ops = pcmk__strkey_table(free, free_recurring_op);
     state->resource_history = pcmk__strkey_table(NULL, history_free);
     state->metadata_cache = metadata_cache_new();
 
@@ -144,133 +149,6 @@ remote_proxy_remove_by_node(gpointer key, gpointer value, gpointer user_data)
     }
 
     return FALSE;
-}
-
-static void
-internal_lrm_state_destroy(gpointer data)
-{
-    lrm_state_t *lrm_state = data;
-
-    if (!lrm_state) {
-        return;
-    }
-
-    crm_trace("Destroying proxy table %s with %d members", lrm_state->node_name, g_hash_table_size(proxy_table));
-    g_hash_table_foreach_remove(proxy_table, remote_proxy_remove_by_node, (char *) lrm_state->node_name);
-    remote_ra_cleanup(lrm_state);
-    lrmd_api_delete(lrm_state->conn);
-
-    if (lrm_state->rsc_info_cache) {
-        crm_trace("Destroying rsc info cache with %d members", g_hash_table_size(lrm_state->rsc_info_cache));
-        g_hash_table_destroy(lrm_state->rsc_info_cache);
-    }
-    if (lrm_state->resource_history) {
-        crm_trace("Destroying history op cache with %d members", g_hash_table_size(lrm_state->resource_history));
-        g_hash_table_destroy(lrm_state->resource_history);
-    }
-    if (lrm_state->deletion_ops) {
-        crm_trace("Destroying deletion op cache with %d members", g_hash_table_size(lrm_state->deletion_ops));
-        g_hash_table_destroy(lrm_state->deletion_ops);
-    }
-    if (lrm_state->pending_ops) {
-        crm_trace("Destroying pending op cache with %d members", g_hash_table_size(lrm_state->pending_ops));
-        g_hash_table_destroy(lrm_state->pending_ops);
-    }
-    metadata_cache_free(lrm_state->metadata_cache);
-
-    free((char *)lrm_state->node_name);
-    free(lrm_state);
-}
-
-void
-lrm_state_reset_tables(lrm_state_t * lrm_state, gboolean reset_metadata)
-{
-    if (lrm_state->resource_history) {
-        crm_trace("Re-setting history op cache with %d members",
-                  g_hash_table_size(lrm_state->resource_history));
-        g_hash_table_remove_all(lrm_state->resource_history);
-    }
-    if (lrm_state->deletion_ops) {
-        crm_trace("Re-setting deletion op cache with %d members",
-                  g_hash_table_size(lrm_state->deletion_ops));
-        g_hash_table_remove_all(lrm_state->deletion_ops);
-    }
-    if (lrm_state->pending_ops) {
-        crm_trace("Re-setting pending op cache with %d members",
-                  g_hash_table_size(lrm_state->pending_ops));
-        g_hash_table_remove_all(lrm_state->pending_ops);
-    }
-    if (lrm_state->rsc_info_cache) {
-        crm_trace("Re-setting rsc info cache with %d members",
-                  g_hash_table_size(lrm_state->rsc_info_cache));
-        g_hash_table_remove_all(lrm_state->rsc_info_cache);
-    }
-    if (reset_metadata) {
-        metadata_cache_reset(lrm_state->metadata_cache);
-    }
-}
-
-gboolean
-lrm_state_init_local(void)
-{
-    if (lrm_state_table) {
-        return TRUE;
-    }
-
-    lrm_state_table = pcmk__strikey_table(NULL, internal_lrm_state_destroy);
-    if (!lrm_state_table) {
-        return FALSE;
-    }
-
-    proxy_table = pcmk__strikey_table(NULL, remote_proxy_free);
-    if (!proxy_table) {
-        g_hash_table_destroy(lrm_state_table);
-        lrm_state_table = NULL;
-        return FALSE;
-    }
-
-    return TRUE;
-}
-
-void
-lrm_state_destroy_all(void)
-{
-    if (lrm_state_table) {
-        crm_trace("Destroying state table with %d members", g_hash_table_size(lrm_state_table));
-        g_hash_table_destroy(lrm_state_table); lrm_state_table = NULL;
-    }
-    if(proxy_table) {
-        crm_trace("Destroying proxy table with %d members", g_hash_table_size(proxy_table));
-        g_hash_table_destroy(proxy_table); proxy_table = NULL;
-    }
-}
-
-lrm_state_t *
-lrm_state_find(const char *node_name)
-{
-    if (!node_name) {
-        return NULL;
-    }
-    return g_hash_table_lookup(lrm_state_table, node_name);
-}
-
-lrm_state_t *
-lrm_state_find_or_create(const char *node_name)
-{
-    lrm_state_t *lrm_state;
-
-    lrm_state = g_hash_table_lookup(lrm_state_table, node_name);
-    if (!lrm_state) {
-        lrm_state = lrm_state_create(node_name);
-    }
-
-    return lrm_state;
-}
-
-GList *
-lrm_state_get_list(void)
-{
-    return g_hash_table_get_values(lrm_state_table);
 }
 
 static remote_proxy_t *
@@ -312,6 +190,148 @@ remote_proxy_disconnect_by_node(const char * node_name)
     return;
 }
 
+static void
+internal_lrm_state_destroy(gpointer data)
+{
+    lrm_state_t *lrm_state = data;
+
+    if (!lrm_state) {
+        return;
+    }
+
+    /* Rather than directly remove the recorded proxy entries from proxy_table,
+     * make sure any connected proxies get disconnected. So that
+     * remote_proxy_disconnected() will be called and as well remove the
+     * entries from proxy_table.
+     */
+    remote_proxy_disconnect_by_node(lrm_state->node_name);
+
+    crm_trace("Destroying proxy table %s with %u members",
+              lrm_state->node_name, g_hash_table_size(proxy_table));
+    // Just in case there's still any leftovers in proxy_table
+    g_hash_table_foreach_remove(proxy_table, remote_proxy_remove_by_node, (char *) lrm_state->node_name);
+    remote_ra_cleanup(lrm_state);
+    lrmd_api_delete(lrm_state->conn);
+
+    if (lrm_state->rsc_info_cache) {
+        crm_trace("Destroying rsc info cache with %u members",
+                  g_hash_table_size(lrm_state->rsc_info_cache));
+        g_hash_table_destroy(lrm_state->rsc_info_cache);
+    }
+    if (lrm_state->resource_history) {
+        crm_trace("Destroying history op cache with %u members",
+                  g_hash_table_size(lrm_state->resource_history));
+        g_hash_table_destroy(lrm_state->resource_history);
+    }
+    if (lrm_state->deletion_ops) {
+        crm_trace("Destroying deletion op cache with %u members",
+                  g_hash_table_size(lrm_state->deletion_ops));
+        g_hash_table_destroy(lrm_state->deletion_ops);
+    }
+    if (lrm_state->active_ops != NULL) {
+        crm_trace("Destroying pending op cache with %u members",
+                  g_hash_table_size(lrm_state->active_ops));
+        g_hash_table_destroy(lrm_state->active_ops);
+    }
+    metadata_cache_free(lrm_state->metadata_cache);
+
+    free((char *)lrm_state->node_name);
+    free(lrm_state);
+}
+
+void
+lrm_state_reset_tables(lrm_state_t * lrm_state, gboolean reset_metadata)
+{
+    if (lrm_state->resource_history) {
+        crm_trace("Resetting resource history cache with %u members",
+                  g_hash_table_size(lrm_state->resource_history));
+        g_hash_table_remove_all(lrm_state->resource_history);
+    }
+    if (lrm_state->deletion_ops) {
+        crm_trace("Resetting deletion operations cache with %u members",
+                  g_hash_table_size(lrm_state->deletion_ops));
+        g_hash_table_remove_all(lrm_state->deletion_ops);
+    }
+    if (lrm_state->active_ops != NULL) {
+        crm_trace("Resetting active operations cache with %u members",
+                  g_hash_table_size(lrm_state->active_ops));
+        g_hash_table_remove_all(lrm_state->active_ops);
+    }
+    if (lrm_state->rsc_info_cache) {
+        crm_trace("Resetting resource information cache with %u members",
+                  g_hash_table_size(lrm_state->rsc_info_cache));
+        g_hash_table_remove_all(lrm_state->rsc_info_cache);
+    }
+    if (reset_metadata) {
+        metadata_cache_reset(lrm_state->metadata_cache);
+    }
+}
+
+gboolean
+lrm_state_init_local(void)
+{
+    if (lrm_state_table) {
+        return TRUE;
+    }
+
+    lrm_state_table = pcmk__strikey_table(NULL, internal_lrm_state_destroy);
+    if (!lrm_state_table) {
+        return FALSE;
+    }
+
+    proxy_table = pcmk__strikey_table(NULL, remote_proxy_free);
+    if (!proxy_table) {
+        g_hash_table_destroy(lrm_state_table);
+        lrm_state_table = NULL;
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+void
+lrm_state_destroy_all(void)
+{
+    if (lrm_state_table) {
+        crm_trace("Destroying state table with %u members",
+                  g_hash_table_size(lrm_state_table));
+        g_hash_table_destroy(lrm_state_table); lrm_state_table = NULL;
+    }
+    if(proxy_table) {
+        crm_trace("Destroying proxy table with %u members",
+                  g_hash_table_size(proxy_table));
+        g_hash_table_destroy(proxy_table); proxy_table = NULL;
+    }
+}
+
+lrm_state_t *
+lrm_state_find(const char *node_name)
+{
+    if (!node_name) {
+        return NULL;
+    }
+    return g_hash_table_lookup(lrm_state_table, node_name);
+}
+
+lrm_state_t *
+lrm_state_find_or_create(const char *node_name)
+{
+    lrm_state_t *lrm_state;
+
+    lrm_state = g_hash_table_lookup(lrm_state_table, node_name);
+    if (!lrm_state) {
+        lrm_state = lrm_state_create(node_name);
+    }
+
+    return lrm_state;
+}
+
+GList *
+lrm_state_get_list(void)
+{
+    return g_hash_table_get_values(lrm_state_table);
+}
+
 void
 lrm_state_disconnect_only(lrm_state_t * lrm_state)
 {
@@ -326,8 +346,9 @@ lrm_state_disconnect_only(lrm_state_t * lrm_state)
 
     ((lrmd_t *) lrm_state->conn)->cmds->disconnect(lrm_state->conn);
 
-    if (!pcmk_is_set(fsa_input_register, R_SHUTDOWN)) {
-        removed = g_hash_table_foreach_remove(lrm_state->pending_ops, fail_pending_op, lrm_state);
+    if (!pcmk_is_set(controld_globals.fsa_input_register, R_SHUTDOWN)) {
+        removed = g_hash_table_foreach_remove(lrm_state->active_ops,
+                                              fail_pending_op, lrm_state);
         crm_trace("Synthesized %d operation failures for %s", removed, lrm_state->node_name);
     }
 }
@@ -359,30 +380,38 @@ lrm_state_poke_connection(lrm_state_t * lrm_state)
 {
 
     if (!lrm_state->conn) {
-        return -1;
+        return -ENOTCONN;
     }
     return ((lrmd_t *) lrm_state->conn)->cmds->poke_connection(lrm_state->conn);
 }
 
+// \return Standard Pacemaker return code
 int
-lrm_state_ipc_connect(lrm_state_t * lrm_state)
+controld_connect_local_executor(lrm_state_t *lrm_state)
 {
-    int ret;
+    int rc = pcmk_rc_ok;
 
-    if (!lrm_state->conn) {
-        lrm_state->conn = lrmd_api_new();
-        ((lrmd_t *) lrm_state->conn)->cmds->set_callback(lrm_state->conn, lrm_op_callback);
+    if (lrm_state->conn == NULL) {
+        lrmd_t *api = NULL;
+
+        rc = lrmd__new(&api, NULL, NULL, 0);
+        if (rc != pcmk_rc_ok) {
+            return rc;
+        }
+        api->cmds->set_callback(api, lrm_op_callback);
+        lrm_state->conn = api;
     }
 
-    ret = ((lrmd_t *) lrm_state->conn)->cmds->connect(lrm_state->conn, CRM_SYSTEM_CRMD, NULL);
+    rc = ((lrmd_t *) lrm_state->conn)->cmds->connect(lrm_state->conn,
+                                                     CRM_SYSTEM_CRMD, NULL);
+    rc = pcmk_legacy2rc(rc);
 
-    if (ret != pcmk_ok) {
-        lrm_state->num_lrm_register_fails++;
-    } else {
+    if (rc == pcmk_rc_ok) {
         lrm_state->num_lrm_register_fails = 0;
+    } else {
+        lrm_state->num_lrm_register_fails++;
     }
-
-    return ret;
+    return rc;
 }
 
 static remote_proxy_t *
@@ -429,7 +458,7 @@ crmd_proxy_dispatch(const char *session, xmlNode *msg)
     if (controld_authorize_ipc_message(msg, NULL, session)) {
         route_message(C_IPC_MESSAGE, msg);
     }
-    trigger_fsa();
+    controld_trigger_fsa();
 }
 
 static void
@@ -474,10 +503,16 @@ crmd_remote_proxy_cb(lrmd_t *lrmd, void *userdata, xmlNode *msg)
         proxy = crmd_remote_proxy_new(lrmd, lrm_state->node_name, session, channel);
         if (!remote_ra_controlling_guest(lrm_state)) {
             if (proxy != NULL) {
+                cib_t *cib_conn = controld_globals.cib_conn;
+
                 /* Look up stonith-watchdog-timeout and send to the remote peer for validation */
-                int rc = fsa_cib_conn->cmds->query(fsa_cib_conn, XML_CIB_TAG_CRMCONFIG, NULL, cib_scope_local);
-                fsa_cib_conn->cmds->register_callback_full(fsa_cib_conn, rc, 10, FALSE, lrmd,
-                                                        "remote_config_check", remote_config_check, NULL);
+                int rc = cib_conn->cmds->query(cib_conn, XML_CIB_TAG_CRMCONFIG,
+                                               NULL, cib_scope_local);
+                cib_conn->cmds->register_callback_full(cib_conn, rc, 10, FALSE,
+                                                       lrmd,
+                                                       "remote_config_check",
+                                                       remote_config_check,
+                                                       NULL);
             }
         } else {
             crm_debug("Skipping remote_config_check for guest-nodes");
@@ -555,33 +590,39 @@ crmd_remote_proxy_cb(lrmd_t *lrmd, void *userdata, xmlNode *msg)
 }
 
 
+// \return Standard Pacemaker return code
 int
-lrm_state_remote_connect_async(lrm_state_t * lrm_state, const char *server, int port,
-                               int timeout_ms)
+controld_connect_remote_executor(lrm_state_t *lrm_state, const char *server,
+                                 int port, int timeout_ms)
 {
-    int ret;
+    int rc = pcmk_rc_ok;
 
-    if (!lrm_state->conn) {
-        lrm_state->conn = lrmd_remote_api_new(lrm_state->node_name, server, port);
-        if (!lrm_state->conn) {
-            return -1;
+    if (lrm_state->conn == NULL) {
+        lrmd_t *api = NULL;
+
+        rc = lrmd__new(&api, lrm_state->node_name, server, port);
+        if (rc != pcmk_rc_ok) {
+            crm_warn("Pacemaker Remote connection to %s:%s failed: %s "
+                     CRM_XS " rc=%d", server, port, pcmk_rc_str(rc), rc);
+
+            return rc;
         }
-        ((lrmd_t *) lrm_state->conn)->cmds->set_callback(lrm_state->conn, remote_lrm_op_callback);
-        lrmd_internal_set_proxy_callback(lrm_state->conn, lrm_state, crmd_remote_proxy_cb);
+        lrm_state->conn = api;
+        api->cmds->set_callback(api, remote_lrm_op_callback);
+        lrmd_internal_set_proxy_callback(api, lrm_state, crmd_remote_proxy_cb);
     }
 
-    crm_trace("initiating remote connection to %s at %d with timeout %d", server, port, timeout_ms);
-    ret =
-        ((lrmd_t *) lrm_state->conn)->cmds->connect_async(lrm_state->conn, lrm_state->node_name,
-                                                          timeout_ms);
-
-    if (ret != pcmk_ok) {
-        lrm_state->num_lrm_register_fails++;
-    } else {
+    crm_trace("Initiating remote connection to %s:%d with timeout %dms",
+              server, port, timeout_ms);
+    rc = ((lrmd_t *) lrm_state->conn)->cmds->connect_async(lrm_state->conn,
+                                                           lrm_state->node_name,
+                                                           timeout_ms);
+    if (rc == pcmk_ok) {
         lrm_state->num_lrm_register_fails = 0;
+    } else {
+        lrm_state->num_lrm_register_fails++; // Ignored for remote connections
     }
-
-    return ret;
+    return pcmk_legacy2rc(rc);
 }
 
 int
@@ -661,32 +702,69 @@ lrm_state_get_rsc_info(lrm_state_t * lrm_state, const char *rsc_id, enum lrmd_ca
 
 }
 
+/*!
+ * \internal
+ * \brief Initiate a resource agent action
+ *
+ * \param[in,out] lrm_state       Executor state object
+ * \param[in]     rsc_id          ID of resource for action
+ * \param[in]     action          Action to execute
+ * \param[in]     userdata        String to copy and pass to execution callback
+ * \param[in]     interval_ms     Action interval (in milliseconds)
+ * \param[in]     timeout_ms      Action timeout (in milliseconds)
+ * \param[in]     start_delay_ms  Delay (in ms) before initiating action
+ * \param[in]     parameters      Hash table of resource parameters
+ * \param[out]    call_id         Where to store call ID on success
+ *
+ * \return Standard Pacemaker return code
+ */
 int
-lrm_state_exec(lrm_state_t *lrm_state, const char *rsc_id, const char *action,
-               const char *userdata, guint interval_ms,
-               int timeout,     /* ms */
-               int start_delay, /* ms */
-               lrmd_key_value_t * params)
+controld_execute_resource_agent(lrm_state_t *lrm_state, const char *rsc_id,
+                                const char *action, const char *userdata,
+                                guint interval_ms, int timeout_ms,
+                                int start_delay_ms, GHashTable *parameters,
+                                int *call_id)
 {
+    int rc = pcmk_rc_ok;
+    lrmd_key_value_t *params = NULL;
 
-    if (!lrm_state->conn) {
-        lrmd_key_value_freeall(params);
-        return -ENOTCONN;
+    if (lrm_state->conn == NULL) {
+        return ENOTCONN;
+    }
+
+    // Convert parameters from hash table to list
+    if (parameters != NULL) {
+        const char *key = NULL;
+        const char *value = NULL;
+        GHashTableIter iter;
+
+        g_hash_table_iter_init(&iter, parameters);
+        while (g_hash_table_iter_next(&iter, (gpointer *) &key,
+                                      (gpointer *) &value)) {
+            params = lrmd_key_value_add(params, key, value);
+        }
     }
 
     if (is_remote_lrmd_ra(NULL, NULL, rsc_id)) {
-        return remote_ra_exec(lrm_state, rsc_id, action, userdata, interval_ms,
-                              timeout, start_delay, params);
-    }
+        rc = controld_execute_remote_agent(lrm_state, rsc_id, action,
+                                           userdata, interval_ms, timeout_ms,
+                                           start_delay_ms, params, call_id);
 
-    return ((lrmd_t *) lrm_state->conn)->cmds->exec(lrm_state->conn,
-                                                    rsc_id,
-                                                    action,
-                                                    userdata,
-                                                    interval_ms,
-                                                    timeout,
-                                                    start_delay,
-                                                    lrmd_opt_notify_changes_only, params);
+    } else {
+        rc = ((lrmd_t *) lrm_state->conn)->cmds->exec(lrm_state->conn, rsc_id,
+                                                      action, userdata,
+                                                      interval_ms, timeout_ms,
+                                                      start_delay_ms,
+                                                      lrmd_opt_notify_changes_only,
+                                                      params);
+        if (rc < 0) {
+            rc = pcmk_legacy2rc(rc);
+        } else {
+            *call_id = rc;
+            rc = pcmk_rc_ok;
+        }
+    }
+    return rc;
 }
 
 int
@@ -733,79 +811,4 @@ lrm_state_unregister_rsc(lrm_state_t * lrm_state,
      * should make an async version available.
      */
     return ((lrmd_t *) lrm_state->conn)->cmds->unregister_rsc(lrm_state->conn, rsc_id, options);
-}
-
-/*
- * Functions for sending alerts via local executor connection
- */
-
-static GList *crmd_alert_list = NULL;
-
-void
-crmd_unpack_alerts(xmlNode *alerts)
-{
-    pe_free_alert_list(crmd_alert_list);
-    crmd_alert_list = pe_unpack_alerts(alerts);
-}
-
-void
-crmd_alert_node_event(crm_node_t *node)
-{
-    lrm_state_t *lrm_state;
-
-    if (crmd_alert_list == NULL) {
-        return;
-    }
-
-    lrm_state = lrm_state_find(fsa_our_uname);
-    if (lrm_state == NULL) {
-        return;
-    }
-
-    lrmd_send_node_alert((lrmd_t *) lrm_state->conn, crmd_alert_list,
-                         node->uname, node->id, node->state);
-}
-
-void
-crmd_alert_fencing_op(stonith_event_t * e)
-{
-    char *desc;
-    lrm_state_t *lrm_state;
-
-    if (crmd_alert_list == NULL) {
-        return;
-    }
-
-    lrm_state = lrm_state_find(fsa_our_uname);
-    if (lrm_state == NULL) {
-        return;
-    }
-
-    desc = crm_strdup_printf("Operation %s of %s by %s for %s@%s: %s (ref=%s)",
-                             e->action, e->target,
-                             (e->executioner? e->executioner : "<no-one>"),
-                             e->client_origin, e->origin,
-                             pcmk_strerror(e->result), e->id);
-
-    lrmd_send_fencing_alert((lrmd_t *) lrm_state->conn, crmd_alert_list,
-                            e->target, e->operation, desc, e->result);
-    free(desc);
-}
-
-void
-crmd_alert_resource_op(const char *node, lrmd_event_data_t * op)
-{
-    lrm_state_t *lrm_state;
-
-    if (crmd_alert_list == NULL) {
-        return;
-    }
-
-    lrm_state = lrm_state_find(fsa_our_uname);
-    if (lrm_state == NULL) {
-        return;
-    }
-
-    lrmd_send_resource_alert((lrmd_t *) lrm_state->conn, crmd_alert_list, node,
-                             op);
 }

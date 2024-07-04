@@ -1,6 +1,12 @@
 debian/tmp/etc/logrotate.d/pacemaker
 etc/default/pacemaker
-usr/share/pacemaker
+usr/share/pacemaker/*.rng
+usr/share/pacemaker/*.xsl
+usr/share/pacemaker/alerts
+usr/share/pacemaker/api
+usr/share/pacemaker/base
+usr/share/pacemaker/report.collector
+usr/share/pacemaker/report.common
 usr/share/pkgconfig
 usr/share/snmp/mibs/PCMK-MIB.txt
 var/lib/pacemaker/pengine

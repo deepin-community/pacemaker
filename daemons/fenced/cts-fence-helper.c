@@ -1,5 +1,5 @@
 /*
- * Copyright 2009-2020 the Pacemaker project contributors
+ * Copyright 2009-2023 the Pacemaker project contributors
  *
  * This source code is licensed under the GNU General Public License version 2
  * or later (GPLv2+) WITHOUT ANY WARRANTY.
@@ -27,29 +27,21 @@
 #include <crm/stonith-ng.h>
 #include <crm/fencing/internal.h>
 #include <crm/common/agents.h>
+#include <crm/common/cmdline_internal.h>
 #include <crm/common/xml.h>
 
 #include <crm/common/mainloop.h>
 
+#define SUMMARY "cts-fence-helper - inject commands into the Pacemaker fencer and watch for events"
+
 static GMainLoop *mainloop = NULL;
 static crm_trigger_t *trig = NULL;
 static int mainloop_iter = 0;
-static int callback_rc = 0;
+static pcmk__action_result_t result = PCMK__UNKNOWN_RESULT;
+
 typedef void (*mainloop_test_iteration_cb) (int check_event);
 
 #define MAINLOOP_DEFAULT_TIMEOUT 2
-
-#define mainloop_test_done(pass) \
-    if (pass) { \
-        crm_info("SUCCESS - %s", __func__); \
-        mainloop_iter++;   \
-        mainloop_set_trigger(trig);  \
-    } else { \
-        crm_err("FAILURE = %s async_callback %d", __func__, callback_rc); \
-        crm_exit(CRM_EX_ERROR); \
-    } \
-    callback_rc = 0; \
-
 
 enum test_modes {
     test_standard = 0,  // test using a specific developer environment
@@ -58,33 +50,39 @@ enum test_modes {
     test_api_mainloop,  // sanity-test mainloop code with async responses
 };
 
-static pcmk__cli_option_t long_options[] = {
-    // long option, argument type, storage, short option, description, flags
-    {
-        "verbose", no_argument, NULL, 'V',
-        NULL, pcmk__option_default
+struct {
+    enum test_modes mode;
+} options = {
+    .mode = test_standard
+};
+
+static gboolean
+mode_cb(const gchar *option_name, const gchar *optarg, gpointer data, GError **error) {
+    if (pcmk__str_any_of(option_name, "--mainloop_api_test", "-m", NULL)) {
+        options.mode = test_api_mainloop;
+    } else if (pcmk__str_any_of(option_name, "--api_test", "-t", NULL)) {
+        options.mode = test_api_sanity;
+    } else if (pcmk__str_any_of(option_name, "--passive", "-p", NULL)) {
+        options.mode = test_passive;
+    }
+
+    return TRUE;
+}
+
+static GOptionEntry entries[] = {
+    { "mainloop_api_test", 'm', G_OPTION_FLAG_NO_ARG, G_OPTION_ARG_CALLBACK, mode_cb,
+      NULL, NULL,
     },
-    {
-        "version", no_argument, NULL, '$',
-        NULL, pcmk__option_default
+
+    { "api_test", 't', G_OPTION_FLAG_NO_ARG, G_OPTION_ARG_CALLBACK, mode_cb,
+      NULL, NULL,
     },
-    {
-        "help", no_argument, NULL, '?',
-        NULL, pcmk__option_default
+
+    { "passive", 'p', G_OPTION_FLAG_NO_ARG, G_OPTION_ARG_CALLBACK, mode_cb,
+      NULL, NULL,
     },
-    {
-        "passive", no_argument, NULL, 'p',
-        NULL, pcmk__option_default
-    },
-    {
-        "api_test", no_argument, NULL, 't',
-        NULL, pcmk__option_default
-    },
-    {
-        "mainloop_api_test", no_argument, NULL, 'm',
-        NULL, pcmk__option_default
-    },
-    { 0, 0, 0, 0 }
+
+    { NULL }
 };
 
 static stonith_t *st = NULL;
@@ -92,6 +90,23 @@ static struct pollfd pollfd;
 static const int st_opts = st_opt_sync_call;
 static int expected_notifications = 0;
 static int verbose = 0;
+
+static void
+mainloop_test_done(const char *origin, bool pass)
+{
+    if (pass) {
+        crm_info("SUCCESS - %s", origin);
+        mainloop_iter++;
+        mainloop_set_trigger(trig);
+        result.execution_status = PCMK_EXEC_DONE;
+        result.exit_status = CRM_EX_OK;
+    } else {
+        crm_err("FAILURE - %s (%d: %s)", origin, result.exit_status,
+                pcmk_exec_status_str(result.execution_status));
+        crm_exit(CRM_EX_ERROR);
+    }
+}
+
 
 static void
 dispatch_helper(int timeout)
@@ -115,14 +130,15 @@ dispatch_helper(int timeout)
 static void
 st_callback(stonith_t * st, stonith_event_t * e)
 {
+    char *desc = NULL;
+
     if (st->state == stonith_disconnected) {
         crm_exit(CRM_EX_DISCONNECT);
     }
 
-    crm_notice("Operation %s requested by %s %s for peer %s.  %s reported: %s (ref=%s)",
-               e->operation, e->origin, e->result == pcmk_ok ? "completed" : "failed",
-               e->target, e->executioner ? e->executioner : "<none>",
-               pcmk_strerror(e->result), e->id);
+    desc = stonith__event_description(e);
+    crm_notice("%s", desc);
+    free(desc);
 
     if (expected_notifications) {
         expected_notifications--;
@@ -132,7 +148,10 @@ st_callback(stonith_t * st, stonith_event_t * e)
 static void
 st_global_callback(stonith_t * stonith, stonith_callback_data_t * data)
 {
-    crm_notice("Call id %d completed with rc %d", data->call_id, data->rc);
+    crm_notice("Call %d exited %d: %s (%s)",
+               data->call_id, stonith__exit_status(data),
+               stonith__execution_status(data),
+               pcmk__s(stonith__exit_reason(data), "unspecified reason"));
 }
 
 static void
@@ -194,10 +213,10 @@ run_fence_failure_test(void)
                 "Register device1 for failure test", 1, 0);
 
     single_test(st->cmds->fence(st, st_opts, "false_1_node2", "off", 3, 0),
-                "Fence failure results off", 1, -pcmk_err_generic);
+                "Fence failure results off", 1, -ENODATA);
 
     single_test(st->cmds->fence(st, st_opts, "false_1_node2", "reboot", 3, 0),
-                "Fence failure results reboot", 1, -pcmk_err_generic);
+                "Fence failure results reboot", 1, -ENODATA);
 
     single_test(st->cmds->remove_device(st, st_opts, "test-id1"),
                 "Remove device1 for failure test", 1, 0);
@@ -382,7 +401,9 @@ static void
 static void
 mainloop_callback(stonith_t * stonith, stonith_callback_data_t * data)
 {
-    callback_rc = data->rc;
+    pcmk__set_result(&result, stonith__exit_status(data),
+                     stonith__execution_status(data),
+                     stonith__exit_reason(data));
     iterate_mainloop_tests(TRUE);
 }
 
@@ -401,18 +422,14 @@ test_async_fence_pass(int check_event)
     int rc = 0;
 
     if (check_event) {
-        if (callback_rc != 0) {
-            mainloop_test_done(FALSE);
-        } else {
-            mainloop_test_done(TRUE);
-        }
+        mainloop_test_done(__func__, (result.exit_status == CRM_EX_OK));
         return;
     }
 
     rc = st->cmds->fence(st, 0, "true_1_node1", "off", MAINLOOP_DEFAULT_TIMEOUT, 0);
     if (rc < 0) {
         crm_err("fence failed with rc %d", rc);
-        mainloop_test_done(FALSE);
+        mainloop_test_done(__func__, false);
     }
     register_callback_helper(rc);
     /* wait for event */
@@ -428,15 +445,15 @@ test_async_fence_custom_timeout(int check_event)
     if (check_event) {
         uint32_t diff = (time(NULL) - begin);
 
-        if (callback_rc != -ETIME) {
-            mainloop_test_done(FALSE);
+        if (result.execution_status != PCMK_EXEC_TIMEOUT) {
+            mainloop_test_done(__func__, false);
         } else if (diff < CUSTOM_TIMEOUT_ADDITION + MAINLOOP_DEFAULT_TIMEOUT) {
             crm_err
                 ("Custom timeout test failed, callback expiration should be updated to %d, actual timeout was %d",
                  CUSTOM_TIMEOUT_ADDITION + MAINLOOP_DEFAULT_TIMEOUT, diff);
-            mainloop_test_done(FALSE);
+            mainloop_test_done(__func__, false);
         } else {
-            mainloop_test_done(TRUE);
+            mainloop_test_done(__func__, true);
         }
         return;
     }
@@ -445,7 +462,7 @@ test_async_fence_custom_timeout(int check_event)
     rc = st->cmds->fence(st, 0, "custom_timeout_node1", "off", MAINLOOP_DEFAULT_TIMEOUT, 0);
     if (rc < 0) {
         crm_err("fence failed with rc %d", rc);
-        mainloop_test_done(FALSE);
+        mainloop_test_done(__func__, false);
     }
     register_callback_helper(rc);
     /* wait for event */
@@ -457,18 +474,15 @@ test_async_fence_timeout(int check_event)
     int rc = 0;
 
     if (check_event) {
-        if (callback_rc != -ENODEV) {
-            mainloop_test_done(FALSE);
-        } else {
-            mainloop_test_done(TRUE);
-        }
+        mainloop_test_done(__func__,
+                           (result.execution_status == PCMK_EXEC_NO_FENCE_DEVICE));
         return;
     }
 
     rc = st->cmds->fence(st, 0, "false_1_node2", "off", MAINLOOP_DEFAULT_TIMEOUT, 0);
     if (rc < 0) {
         crm_err("fence failed with rc %d", rc);
-        mainloop_test_done(FALSE);
+        mainloop_test_done(__func__, false);
     }
     register_callback_helper(rc);
     /* wait for event */
@@ -480,18 +494,14 @@ test_async_monitor(int check_event)
     int rc = 0;
 
     if (check_event) {
-        if (callback_rc) {
-            mainloop_test_done(FALSE);
-        } else {
-            mainloop_test_done(TRUE);
-        }
+        mainloop_test_done(__func__, (result.exit_status == CRM_EX_OK));
         return;
     }
 
     rc = st->cmds->monitor(st, 0, "false_1", MAINLOOP_DEFAULT_TIMEOUT);
     if (rc < 0) {
         crm_err("monitor failed with rc %d", rc);
-        mainloop_test_done(FALSE);
+        mainloop_test_done(__func__, false);
     }
 
     register_callback_helper(rc);
@@ -528,7 +538,7 @@ test_register_async_devices(int check_event)
                               params);
     stonith_key_value_freeall(params, 1, 1);
 
-    mainloop_test_done(TRUE);
+    mainloop_test_done(__func__, true);
 }
 
 static void
@@ -537,11 +547,11 @@ try_mainloop_connect(int check_event)
     int rc = stonith_api_connect_retry(st, crm_system_name, 10);
 
     if (rc == pcmk_ok) {
-        mainloop_test_done(TRUE);
+        mainloop_test_done(__func__, true);
         return;
     }
     crm_err("API CONNECTION FAILURE");
-    mainloop_test_done(FALSE);
+    mainloop_test_done(__func__, false);
 }
 
 static void
@@ -602,67 +612,50 @@ mainloop_tests(void)
     g_main_loop_run(mainloop);
 }
 
+static GOptionContext *
+build_arg_context(pcmk__common_args_t *args, GOptionGroup **group) {
+    GOptionContext *context = NULL;
+
+    context = pcmk__build_arg_context(args, NULL, group, NULL);
+    pcmk__add_main_args(context, entries);
+    return context;
+}
+
 int
 main(int argc, char **argv)
 {
-    int argerr = 0;
-    int flag;
-    int option_index = 0;
+    GError *error = NULL;
+    crm_exit_t exit_code = CRM_EX_OK;
 
-    enum test_modes mode = test_standard;
+    pcmk__common_args_t *args = pcmk__new_common_args(SUMMARY);
+    gchar **processed_args = pcmk__cmdline_preproc(argv, NULL);
+    GOptionContext *context = build_arg_context(args, NULL);
 
-    pcmk__cli_init_logging("cts-fence-helper", 0);
-    pcmk__set_cli_options(NULL, "<mode> [options]", long_options,
-                          "inject commands into the Pacemaker fencer, "
-                          "and watch for events");
-
-    while (1) {
-        flag = pcmk__next_cli_option(argc, argv, &option_index, NULL);
-        if (flag == -1) {
-            break;
-        }
-
-        switch (flag) {
-            case 'V':
-                verbose = 1;
-                break;
-            case '$':
-            case '?':
-                pcmk__cli_help(flag, CRM_EX_OK);
-                break;
-            case 'p':
-                mode = test_passive;
-                break;
-            case 't':
-                mode = test_api_sanity;
-                break;
-            case 'm':
-                mode = test_api_mainloop;
-                break;
-            default:
-                ++argerr;
-                break;
-        }
+    if (!g_option_context_parse_strv(context, &processed_args, &error)) {
+        exit_code = CRM_EX_USAGE;
+        goto done;
     }
 
+    /* We have to use crm_log_init here to set up the logging because there's
+     * different handling for daemons vs. command line programs, and
+     * pcmk__cli_init_logging is set up to only handle the latter.
+     */
     crm_log_init(NULL, LOG_INFO, TRUE, (verbose? TRUE : FALSE), argc, argv,
                  FALSE);
 
-    if (optind > argc) {
-        ++argerr;
-    }
-
-    if (argerr) {
-        pcmk__cli_help('?', CRM_EX_USAGE);
+    for (int i = 0; i < args->verbosity; i++) {
+        crm_bump_log_level(argc, argv);
     }
 
     st = stonith_api_new();
     if (st == NULL) {
-        crm_err("Could not connect to fencer: API memory allocation failed");
-        crm_exit(CRM_EX_DISCONNECT);
+        exit_code = CRM_EX_DISCONNECT;
+        g_set_error(&error, PCMK__EXITC_ERROR, exit_code,
+                    "Could not connect to fencer: API memory allocation failed");
+        goto done;
     }
 
-    switch (mode) {
+    switch (options.mode) {
         case test_standard:
             standard_dev_test();
             break;
@@ -678,5 +671,11 @@ main(int argc, char **argv)
     }
 
     test_shutdown(0);
-    return CRM_EX_OK;
+
+done:
+    g_strfreev(processed_args);
+    pcmk__free_arg_context(context);
+
+    pcmk__output_and_clear_error(&error, NULL);
+    crm_exit(exit_code);
 }

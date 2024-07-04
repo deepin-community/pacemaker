@@ -1,1 +1,32 @@
-SUBDIRS = agents cmdline flags operations strings utils xpath results
+#
+# Copyright 2020-2022 the Pacemaker project contributors
+#
+# The version control history for this file may have further details.
+#
+# This source code is licensed under the GNU General Public License version 2
+# or later (GPLv2+) WITHOUT ANY WARRANTY.
+#
+
+SUBDIRS = \
+	acl		\
+	agents		\
+	cmdline		\
+	flags		\
+	health		\
+	io		\
+	iso8601		\
+	lists		\
+	nvpair 		\
+	operations	\
+	options		\
+	output 		\
+	results		\
+	scores		\
+	strings		\
+	utils		\
+	xml 		\
+	xpath
+
+if SUPPORT_PROCFS
+SUBDIRS	+=	procfs
+endif

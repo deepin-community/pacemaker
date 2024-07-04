@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -159,7 +159,7 @@ pcmk__read_series_sequence(const char *directory, const char *series,
     }
     errno = 0;
     if (fscanf(fp, "%u", seq) != 1) {
-        rc = (errno == 0)? pcmk_rc_unknown_format : errno;
+        rc = (errno == 0)? ENODATA : errno;
         crm_debug("Could not read sequence number from series file %s: %s",
                   series_file, pcmk_rc_str(rc));
         fclose(fp);
@@ -226,9 +226,10 @@ pcmk__write_series_sequence(const char *directory, const char *series,
  * \internal
  * \brief Change the owner and group of a file series' .last file
  *
- * \param[in] dir  Directory that contains series
- * \param[in] uid  User ID of desired file owner
- * \param[in] gid  Group ID of desired file group
+ * \param[in] directory  Directory that contains series
+ * \param[in] series     Series to change
+ * \param[in] uid        User ID of desired file owner
+ * \param[in] gid        Group ID of desired file group
  *
  * \return Standard Pacemaker return code
  * \note The caller must have the appropriate privileges.
@@ -260,7 +261,7 @@ pcmk__daemon_user_can_write(const char *target_name, struct stat *target_stat)
     sys_user = getpwnam(CRM_DAEMON_USER);
     if (sys_user == NULL) {
         crm_notice("Could not find user %s: %s",
-                   CRM_DAEMON_USER, pcmk_strerror(errno));
+                   CRM_DAEMON_USER, pcmk_rc_str(errno));
         return FALSE;
     }
     if (target_stat->st_uid != sys_user->pw_uid) {
@@ -288,7 +289,7 @@ pcmk__daemon_group_can_write(const char *target_name, struct stat *target_stat)
     sys_grp = getgrnam(CRM_DAEMON_GROUP);
     if (sys_grp == NULL) {
         crm_notice("Could not find group %s: %s",
-                   CRM_DAEMON_GROUP, pcmk_strerror(errno));
+                   CRM_DAEMON_GROUP, pcmk_rc_str(errno));
         return FALSE;
     }
 
@@ -341,7 +342,7 @@ pcmk__daemon_can_write(const char *dir, const char *file)
 
         s_res = stat(full_file, &buf);
         if (s_res < 0) {
-            crm_notice("%s not found: %s", target, pcmk_strerror(errno));
+            crm_notice("%s not found: %s", target, pcmk_rc_str(errno));
             free(full_file);
             full_file = NULL;
             target = NULL;
@@ -359,7 +360,7 @@ pcmk__daemon_can_write(const char *dir, const char *file)
         target = dir;
         s_res = stat(dir, &buf);
         if (s_res < 0) {
-            crm_err("%s not found: %s", dir, pcmk_strerror(errno));
+            crm_err("%s not found: %s", dir, pcmk_rc_str(errno));
             return false;
 
         } else if (S_ISDIR(buf.st_mode) == FALSE) {
@@ -537,7 +538,7 @@ pcmk__set_nonblocking(int fd)
  * \return Name of directory to be used for temporary files
  */
 const char *
-pcmk__get_tmpdir()
+pcmk__get_tmpdir(void)
 {
     const char *dir = getenv("TMPDIR");
 
@@ -578,14 +579,14 @@ pcmk__close_fds_in_child(bool all)
      * Use this if available, because it's more efficient than a shotgun
      * approach to closing descriptors.
      */
-#if SUPPORT_PROCFS
+#if HAVE_LINUX_PROCFS
     dir = opendir("/proc/self/fd");
     if (dir == NULL) {
         dir = opendir("/dev/fd");
     }
 #else
     dir = opendir("/dev/fd");
-#endif
+#endif // HAVE_LINUX_PROCFS
     if (dir != NULL) {
         struct dirent *entry;
         int dir_fd = dirfd(dir);
@@ -615,7 +616,35 @@ pcmk__close_fds_in_child(bool all)
     }
 }
 
+/*!
+ * \brief Duplicate a file path, inserting a prefix if not absolute
+ *
+ * \param[in] filename  File path to duplicate
+ * \param[in] dirname   If filename is not absolute, prefix to add
+ *
+ * \return Newly allocated memory with full path (guaranteed non-NULL)
+ */
+char *
+pcmk__full_path(const char *filename, const char *dirname)
+{
+    char *path = NULL;
+
+    CRM_ASSERT(filename != NULL);
+
+    if (filename[0] == '/') {
+        path = strdup(filename);
+        CRM_ASSERT(path != NULL);
+
+    } else {
+        CRM_ASSERT(dirname != NULL);
+        path = crm_strdup_printf("%s/%s", dirname, filename);
+    }
+
+    return path;
+}
+
 // Deprecated functions kept only for backward API compatibility
+// LCOV_EXCL_START
 
 #include <crm/common/util_compat.h>
 
@@ -630,4 +659,5 @@ crm_build_path(const char *path_c, mode_t mode)
     }
 }
 
+// LCOV_EXCL_STOP
 // End deprecated API

@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2021 the Pacemaker project contributors
+ * Copyright 2013-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -17,21 +17,34 @@
 static char *peer_writer = NULL;
 static election_t *writer = NULL;
 
+static gboolean
+attrd_election_cb(gpointer user_data)
+{
+    attrd_declare_winner();
+
+    /* Update the peers after an election */
+    attrd_peer_sync(NULL, NULL);
+
+    /* Update the CIB after an election */
+    attrd_write_attributes(true, false);
+    return FALSE;
+}
+
 void
-attrd_election_init()
+attrd_election_init(void)
 {
     writer = election_init(T_ATTRD, attrd_cluster->uname, 120000,
                            attrd_election_cb);
 }
 
 void
-attrd_election_fini()
+attrd_election_fini(void)
 {
     election_fini(writer);
 }
 
 void
-attrd_start_election_if_needed()
+attrd_start_election_if_needed(void)
 {
     if ((peer_writer == NULL)
         && (election_state(writer) != election_in_progress)
@@ -43,7 +56,7 @@ attrd_start_election_if_needed()
 }
 
 bool
-attrd_election_won()
+attrd_election_won(void)
 {
     return (election_state(writer) == election_won);
 }
@@ -81,8 +94,7 @@ attrd_handle_election_op(const crm_node_t *peer, xmlNode *xml)
              * Approximate a test for that case as best as possible.
              */
             if ((peer_writer == NULL) || (previous != election_lost)) {
-                free(peer_writer);
-                peer_writer = strdup(peer->uname);
+                pcmk__str_update(&peer_writer, peer->uname);
                 crm_debug("Election lost, presuming %s is writer for now",
                           peer_writer);
             }
@@ -114,20 +126,18 @@ attrd_check_for_new_writer(const crm_node_t *peer, const xmlNode *xml)
         } else if (!pcmk__str_eq(peer->uname, peer_writer, pcmk__str_casei)) {
             crm_notice("Recorded new attribute writer: %s (was %s)",
                        peer->uname, (peer_writer? peer_writer : "unset"));
-            free(peer_writer);
-            peer_writer = strdup(peer->uname);
+            pcmk__str_update(&peer_writer, peer->uname);
         }
     }
     return (peer_state == election_won);
 }
 
 void
-attrd_declare_winner()
+attrd_declare_winner(void)
 {
     crm_notice("Recorded local node as attribute writer (was %s)",
                (peer_writer? peer_writer : "unset"));
-    free(peer_writer);
-    peer_writer = strdup(attrd_cluster->uname);
+    pcmk__str_update(&peer_writer, attrd_cluster->uname);
 }
 
 void
@@ -151,6 +161,14 @@ attrd_remove_voter(const crm_node_t *peer)
          * attributes.
          */
         attrd_start_election_if_needed();
+
+    /* If an election is in progress, we need to call election_check(), in case
+     * this lost peer is the only one that hasn't voted, otherwise the election
+     * would be pending until it's timed out.
+     */
+    } else if (election_state(writer) == election_in_progress) {
+       crm_debug("Checking election status upon loss of voter %s", peer->uname);
+       election_check(writer);
     }
 }
 

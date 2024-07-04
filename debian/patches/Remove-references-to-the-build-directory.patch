@@ -1,0 +1,83 @@
+From: =?utf-8?q?Ferenc_W=C3=A1gner?= <wferi@debian.org>
+Date: Tue, 4 Jul 2023 00:03:04 +0200
+Subject: Remove references to the build directory
+
+These break reproducibility.  Running programs from the source
+directory can be solved by setting environment variables.
+---
+ agents/stonith/fence_legacy.in      |  9 ---------
+ mk/man.mk                           | 12 +++++++-----
+ python/pacemaker/buildoptions.py.in |  6 ------
+ 3 files changed, 7 insertions(+), 20 deletions(-)
+
+diff --git a/agents/stonith/fence_legacy.in b/agents/stonith/fence_legacy.in
+index c0eeca1..7583986 100755
+--- a/agents/stonith/fence_legacy.in
++++ b/agents/stonith/fence_legacy.in
+@@ -8,15 +8,6 @@ import sys
+ import argparse
+ import subprocess
+ 
+-# These imports allow running from a source checkout after running `make`.
+-# Note that while this doesn't necessarily mean it will successfully run tests,
+-# but being able to see --help output can be useful.
+-if os.path.exists("@abs_top_srcdir@/python"):
+-    sys.path.insert(0, "@abs_top_srcdir@/python")
+-
+-if os.path.exists("@abs_top_builddir@/python") and "@abs_top_builddir@" != "@abs_top_srcdir@":
+-    sys.path.insert(0, "@abs_top_builddir@/python")
+-
+ from pacemaker.exitstatus import ExitStatus
+ 
+ VERSION = "1.1.0"
+diff --git a/mk/man.mk b/mk/man.mk
+index 51dd1e6..ccd8730 100644
+--- a/mk/man.mk
++++ b/mk/man.mk
+@@ -31,22 +31,24 @@ HELP2MAN_ARGS = -N --section 8 --name "Part of the Pacemaker cluster resource ma
+ #
+ # @TODO Drop MAN8DEPS once we've moved all tool functionality to libpacemaker,
+ #       and all wrappers are converted from shell scripts to C code.
++%.8:	export PATH := $(abs_builddir):$(PATH)
++%.8:	export PYTHONPATH := $(abs_top_builddir)/python
+ %.8:	% $(MAN8DEPS)
+ 	$(AM_V_at)chmod a+x $(abs_builddir)/$<
+-	PATH=$(abs_builddir):$$PATH $(abs_builddir)/$< --version >/dev/null
++	$(abs_builddir)/$< --version >/dev/null
+ 	if [ -f $(abs_srcdir)/$@.inc ]; then \
+-		PATH=$(abs_builddir):$$PATH $(abs_builddir)/$< --help-all >/dev/null; \
++		$(abs_builddir)/$< --help-all >/dev/null; \
+ 	else \
+-		PATH=$(abs_builddir):$$PATH $(abs_builddir)/$< --help >/dev/null; \
++		$(abs_builddir)/$< --help >/dev/null; \
+ 	fi
+ 	$(AM_V_MAN)if [ -f $(abs_srcdir)/$@.inc ]; then			\
+-		PATH=$(abs_builddir):$$PATH $(HELP2MAN) $(HELP2MAN_ARGS)	\
++		$(HELP2MAN) $(HELP2MAN_ARGS)					\
+ 			-h --help-all 						\
+ 			--no-discard-stderr 					\
+ 			-i $(abs_srcdir)/$@.inc $(abs_builddir)/$<		\
+ 			| sed -f $(top_srcdir)/tools/fix-manpages > $@ ; \
+ 	else									\
+-		PATH=$(abs_builddir):$$PATH $(HELP2MAN) $(HELP2MAN_ARGS)	\
++		$(HELP2MAN) $(HELP2MAN_ARGS)					\
+ 			--no-discard-stderr 					\
+ 			$(abs_builddir)/$< --output $@ ;			\
+ 	fi
+diff --git a/python/pacemaker/buildoptions.py.in b/python/pacemaker/buildoptions.py.in
+index 53b492b..34da8de 100644
+--- a/python/pacemaker/buildoptions.py.in
++++ b/python/pacemaker/buildoptions.py.in
+@@ -13,12 +13,6 @@ class BuildOptions:
+     BASH_PATH = "@BASH_PATH@"
+     """ Path to the bash shell """
+ 
+-    _BUILD_DIR = "@abs_top_builddir@"
+-    """ Top-level build directory
+-        NOTE: This is not especially useful on installed systems, but is useful for
+-        running various programs from a source checkout
+-    """
+-
+     CIB_DIR = "@CRM_CONFIG_DIR@"
+     """ Where CIB files are stored """
+ 

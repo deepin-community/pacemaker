@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2020 the Pacemaker project contributors
+ * Copyright 2004-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -18,6 +18,8 @@
 #include <crm/crm.h>
 #include <crm/stonith-ng.h>
 #include <crm/fencing/internal.h>
+
+#include "fencing_private.h"
 
 #define RH_STONITH_PREFIX "fence_"
 
@@ -110,49 +112,59 @@ stonith_rhcs_parameter_not_required(xmlNode *metadata, const char *parameter)
 }
 
 /*!
- * \brief Execute RHCS-compatible agent's meta-data action
+ * \brief Execute RHCS-compatible agent's metadata action
  *
- * \param[in]  agent    Agent to execute
- * \param[in]  timeout  Action timeout
- * \param[out] metadata Where to store output xmlNode (or NULL to ignore)
- *
- * \todo timeout is currently ignored; shouldn't we use it?
+ * \param[in]  agent        Agent to execute
+ * \param[in]  timeout_sec  Action timeout
+ * \param[out] metadata     Where to store output xmlNode (or NULL to ignore)
  */
 static int
-stonith__rhcs_get_metadata(const char *agent, int timeout, xmlNode **metadata)
+stonith__rhcs_get_metadata(const char *agent, int timeout_sec,
+                           xmlNode **metadata)
 {
-    char *buffer = NULL;
     xmlNode *xml = NULL;
     xmlNode *actions = NULL;
     xmlXPathObject *xpathObj = NULL;
-    stonith_action_t *action = stonith_action_create(agent, "metadata", NULL, 0,
-                                                     5, NULL, NULL, NULL);
+    stonith_action_t *action = stonith__action_create(agent, "metadata", NULL,
+                                                      0, timeout_sec, NULL,
+                                                      NULL, NULL);
     int rc = stonith__execute(action);
+    pcmk__action_result_t *result = stonith__action_result(action);
 
-    if (rc < 0) {
-        crm_warn("Could not execute metadata action for %s: %s "
-                 CRM_XS " rc=%d", agent, pcmk_strerror(rc), rc);
+    if (result == NULL) {
+        if (rc < 0) {
+            crm_warn("Could not execute metadata action for %s: %s "
+                     CRM_XS " rc=%d", agent, pcmk_strerror(rc), rc);
+        }
         stonith__destroy_action(action);
         return rc;
     }
 
-    stonith__action_result(action, &rc, &buffer, NULL);
-    stonith__destroy_action(action);
-    if (rc < 0) {
-        crm_warn("Metadata action for %s failed: %s " CRM_XS "rc=%d",
-                 agent, pcmk_strerror(rc), rc);
-        free(buffer);
+    if (result->execution_status != PCMK_EXEC_DONE) {
+        crm_warn("Could not execute metadata action for %s: %s",
+                 agent, pcmk_exec_status_str(result->execution_status));
+        rc = pcmk_rc2legacy(stonith__result2rc(result));
+        stonith__destroy_action(action);
         return rc;
     }
 
-    if (buffer == NULL) {
+    if (!pcmk__result_ok(result)) {
+        crm_warn("Metadata action for %s returned error code %d",
+                 agent, result->exit_status);
+        rc = pcmk_rc2legacy(stonith__result2rc(result));
+        stonith__destroy_action(action);
+        return rc;
+    }
+
+    if (result->action_stdout == NULL) {
         crm_warn("Metadata action for %s returned no data", agent);
+        stonith__destroy_action(action);
         return -ENODATA;
     }
 
-    xml = string2xml(buffer);
-    free(buffer);
-    buffer = NULL;
+    xml = string2xml(result->action_stdout);
+    stonith__destroy_action(action);
+
     if (xml == NULL) {
         crm_warn("Metadata for %s is invalid", agent);
         return -pcmk_err_schema_validation;
@@ -195,21 +207,19 @@ stonith__rhcs_get_metadata(const char *agent, int timeout, xmlNode **metadata)
 }
 
 /*!
- * \brief Execute RHCS-compatible agent's meta-data action
+ * \brief Retrieve metadata for RHCS-compatible fence agent
  *
- * \param[in]  agent    Agent to execute
- * \param[in]  timeout  Action timeout
- * \param[out] output   Where to store action output (or NULL to ignore)
- *
- * \todo timeout is currently ignored; shouldn't we use it?
+ * \param[in]  agent        Agent to execute
+ * \param[in]  timeout_sec  Action timeout
+ * \param[out] output       Where to store action output (or NULL to ignore)
  */
 int
-stonith__rhcs_metadata(const char *agent, int timeout, char **output)
+stonith__rhcs_metadata(const char *agent, int timeout_sec, char **output)
 {
     char *buffer = NULL;
     xmlNode *xml = NULL;
 
-    int rc = stonith__rhcs_get_metadata(agent, timeout, &xml);
+    int rc = stonith__rhcs_get_metadata(agent, timeout_sec, &xml);
 
     if (rc != pcmk_ok) {
         free_xml(xml);
@@ -250,6 +260,7 @@ stonith__rhcs_validate(stonith_t *st, int call_options, const char *target,
     int remaining_timeout = timeout;
     xmlNode *metadata = NULL;
     stonith_action_t *action = NULL;
+    pcmk__action_result_t *result = NULL;
 
     if (host_arg == NULL) {
         time_t start_time = time(NULL);
@@ -277,17 +288,28 @@ stonith__rhcs_validate(stonith_t *st, int call_options, const char *target,
             return -ETIME;
         }
 
-    } else if (pcmk__str_eq(host_arg, "none", pcmk__str_casei)) {
+    } else if (pcmk__str_eq(host_arg, PCMK__VALUE_NONE, pcmk__str_casei)) {
         host_arg = NULL;
     }
 
-    action = stonith_action_create(agent, "validate-all",
-                                   target, 0, remaining_timeout, params,
-                                   NULL, host_arg);
+    action = stonith__action_create(agent, "validate-all", target, 0,
+                                    remaining_timeout, params, NULL, host_arg);
 
     rc = stonith__execute(action);
-    if (rc == pcmk_ok) {
-        stonith__action_result(action, &rc, output, error_output);
+    result = stonith__action_result(action);
+
+    if (result != NULL) {
+        rc = pcmk_rc2legacy(stonith__result2rc(result));
+
+        // Take ownership of output so stonith__destroy_action() doesn't free it
+        if (output != NULL) {
+            *output = result->action_stdout;
+            result->action_stdout = NULL;
+        }
+        if (error_output != NULL) {
+            *error_output = result->action_stderr;
+            result->action_stderr = NULL;
+        }
     }
     stonith__destroy_action(action);
     return rc;

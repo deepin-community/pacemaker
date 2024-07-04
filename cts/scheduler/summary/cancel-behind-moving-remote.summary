@@ -4,7 +4,7 @@ Current cluster status:
     * Online: [ controller-0 controller-1 controller-2 database-0 database-1 database-2 messaging-0 messaging-2 ]
     * OFFLINE: [ messaging-1 ]
     * RemoteOnline: [ compute-0 compute-1 ]
-    * GuestOnline: [ galera-bundle-0@database-0 galera-bundle-1@database-1 galera-bundle-2@database-2 ovn-dbs-bundle-1@controller-2 ovn-dbs-bundle-2@controller-1 rabbitmq-bundle-0@messaging-0 rabbitmq-bundle-2@messaging-2 redis-bundle-0@controller-2 redis-bundle-1@controller-0 redis-bundle-2@controller-1 ]
+    * GuestOnline: [ galera-bundle-0 galera-bundle-1 galera-bundle-2 ovn-dbs-bundle-1 ovn-dbs-bundle-2 rabbitmq-bundle-0 rabbitmq-bundle-2 redis-bundle-0 redis-bundle-1 redis-bundle-2 ]
 
   * Full List of Resources:
     * compute-0	(ocf:pacemaker:remote):	 Started controller-1
@@ -56,17 +56,17 @@ Current cluster status:
       * openstack-cinder-volume-podman-0	(ocf:heartbeat:podman):	 Started controller-2
 
 Transition Summary:
-  * Start      rabbitmq-bundle-1                      (                     controller-0 )  due to unrunnable rabbitmq-bundle-podman-1 start (blocked)
-  * Start      rabbitmq:1                             (                rabbitmq-bundle-1 )  due to unrunnable rabbitmq-bundle-podman-1 start (blocked)
-  * Start      ovn-dbs-bundle-podman-0                (                     controller-2 )
-  * Start      ovn-dbs-bundle-0                       (                     controller-2 )
-  * Start      ovndb_servers:0                        (                 ovn-dbs-bundle-0 )
-  * Move       ovn-dbs-bundle-podman-1                (     controller-2 -> controller-0 )
-  * Move       ovn-dbs-bundle-1                       (     controller-2 -> controller-0 )
+  * Start      rabbitmq-bundle-1                      (                            controller-0 )  due to unrunnable rabbitmq-bundle-podman-1 start (blocked)
+  * Start      rabbitmq:1                             (                       rabbitmq-bundle-1 )  due to unrunnable rabbitmq-bundle-podman-1 start (blocked)
+  * Start      ovn-dbs-bundle-podman-0                (                            controller-2 )
+  * Start      ovn-dbs-bundle-0                       (                            controller-2 )
+  * Start      ovndb_servers:0                        (                        ovn-dbs-bundle-0 )
+  * Move       ovn-dbs-bundle-podman-1                (            controller-2 -> controller-0 )
+  * Move       ovn-dbs-bundle-1                       (            controller-2 -> controller-0 )
   * Restart    ovndb_servers:1                        ( Unpromoted -> Promoted ovn-dbs-bundle-1 )  due to required ovn-dbs-bundle-podman-1 start
-  * Start      ip-172.17.1.87                         (                     controller-0 )
-  * Move       stonith-fence_ipmilan-52540040bb56     (        messaging-2 -> database-0 )
-  * Move       stonith-fence_ipmilan-525400e1534e     (        database-1 -> messaging-2 )
+  * Start      ip-172.17.1.87                         (                            controller-0 )
+  * Move       stonith-fence_ipmilan-52540040bb56     (               messaging-2 -> database-0 )
+  * Move       stonith-fence_ipmilan-525400e1534e     (               database-1 -> messaging-2 )
 
 Executing Cluster Transition:
   * Pseudo action:   rabbitmq-bundle-clone_pre_notify_start_0
@@ -140,8 +140,10 @@ Executing Cluster Transition:
   * Resource action: ovndb_servers   notify on ovn-dbs-bundle-2
   * Pseudo action:   ovn-dbs-bundle-master_confirmed-pre_notify_promote_0
   * Pseudo action:   ovn-dbs-bundle-master_promote_0
+  * Resource action: ip-172.17.1.87  start on controller-0
   * Resource action: ovndb_servers   promote on ovn-dbs-bundle-1
   * Pseudo action:   ovn-dbs-bundle-master_promoted_0
+  * Resource action: ip-172.17.1.87  monitor=10000 on controller-0
   * Pseudo action:   ovn-dbs-bundle-master_post_notify_promoted_0
   * Resource action: ovndb_servers   notify on ovn-dbs-bundle-0
   * Resource action: ovndb_servers   notify on ovn-dbs-bundle-1
@@ -150,8 +152,6 @@ Executing Cluster Transition:
   * Pseudo action:   ovn-dbs-bundle_promoted_0
   * Resource action: ovndb_servers   monitor=30000 on ovn-dbs-bundle-0
   * Resource action: ovndb_servers   monitor=10000 on ovn-dbs-bundle-1
-  * Resource action: ip-172.17.1.87  start on controller-0
-  * Resource action: ip-172.17.1.87  monitor=10000 on controller-0
 Using the original execution date of: 2021-02-15 01:40:51Z
 
 Revised Cluster Status:
@@ -159,7 +159,7 @@ Revised Cluster Status:
     * Online: [ controller-0 controller-1 controller-2 database-0 database-1 database-2 messaging-0 messaging-2 ]
     * OFFLINE: [ messaging-1 ]
     * RemoteOnline: [ compute-0 compute-1 ]
-    * GuestOnline: [ galera-bundle-0@database-0 galera-bundle-1@database-1 galera-bundle-2@database-2 ovn-dbs-bundle-0@controller-2 ovn-dbs-bundle-1@controller-0 ovn-dbs-bundle-2@controller-1 rabbitmq-bundle-0@messaging-0 rabbitmq-bundle-2@messaging-2 redis-bundle-0@controller-2 redis-bundle-1@controller-0 redis-bundle-2@controller-1 ]
+    * GuestOnline: [ galera-bundle-0 galera-bundle-1 galera-bundle-2 ovn-dbs-bundle-0 ovn-dbs-bundle-1 ovn-dbs-bundle-2 rabbitmq-bundle-0 rabbitmq-bundle-2 redis-bundle-0 redis-bundle-1 redis-bundle-2 ]
 
   * Full List of Resources:
     * compute-0	(ocf:pacemaker:remote):	 Started controller-1

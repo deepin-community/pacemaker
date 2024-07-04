@@ -225,8 +225,8 @@ remoted_spawn_pidone(int argc, char **argv, char **envp)
      * /var/log/pacemaker, so use a different default if no value has been
      * explicitly configured in the container's environment.
      */
-    if (pcmk__env_option("logfile") == NULL) {
-        pcmk__set_env_option("logfile", "/var/log/pcmk-init.log");
+    if (pcmk__env_option(PCMK__ENV_LOGFILE) == NULL) {
+        pcmk__set_env_option(PCMK__ENV_LOGFILE, "/var/log/pcmk-init.log");
     }
 
     sigfillset(&set);
@@ -248,7 +248,7 @@ remoted_spawn_pidone(int argc, char **argv, char **envp)
     /* Parent becomes the reaper of zombie processes */
     /* Safe to initialize logging now if needed */
 
-#  ifdef HAVE___PROGNAME
+#  ifdef HAVE_PROGNAME
     /* Differentiate ourselves in the 'ps' output */
     {
         char *p;
@@ -281,7 +281,7 @@ remoted_spawn_pidone(int argc, char **argv, char **envp)
         }
         argv[1] = NULL;
     }
-#  endif // HAVE___PROGNAME
+#  endif // HAVE_PROGNAME
 
     while (1) {
         int sig;

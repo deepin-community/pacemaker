@@ -33,6 +33,7 @@ Rule Properties
 ###############
 
 .. table:: **Attributes of a rule Element**
+   :widths: 1 1 3
 
    +-----------------+-------------+-------------------------------------------+
    | Attribute       | Default     | Description                               |
@@ -101,6 +102,8 @@ Node Attribute Expressions
 Expressions are rule conditions based on the values of node attributes.
 
 .. table:: **Attributes of an expression Element**
+   :class: longtable
+   :widths: 1 2 3
 
    +--------------+---------------------------------+-------------------------------------------+
    | Attribute    | Default                         | Description                               |
@@ -184,6 +187,7 @@ defines special, built-in node attributes for each node that can also be used
 in rule expressions.
 
 .. table:: **Built-in Node Attributes**
+   :widths: 1 4
 
    +---------------+-----------------------------------------------------------+
    | Name          | Value                                                     |
@@ -236,6 +240,7 @@ A ``date_expression`` element may optionally contain a ``date_spec`` or
 ``duration`` element depending on the context.
 
 .. table:: **Attributes of a date_expression Element**
+   :widths: 1 4
 
    +---------------+-----------------------------------------------------------+
    | Attribute     | Description                                               |
@@ -277,7 +282,8 @@ A ``date_expression`` element may optionally contain a ``date_spec`` or
    |               |   ``start`` (if specified) and before either ``end`` (if  |
    |               |   specified) or ``start`` plus the value of the           |
    |               |   ``duration`` element (if one is contained in the        |
-   |               |   ``date_expression``)                                    |
+   |               |   ``date_expression``). If both ``end`` and ``duration``  |
+   |               |   are specified, ``duration`` is ignored.                 |
    |               | * ``date_spec:`` True if the current date/time matches    |
    |               |   the specification given in the contained ``date_spec``  |
    |               |   element (described below)                               |
@@ -300,6 +306,7 @@ to time. Each field can contain a single number or range. Any field not
 supplied is ignored.
 
 .. table:: **Attributes of a date_spec Element**
+   :widths: 1 3
 
    +---------------+-----------------------------------------------------------+
    | Attribute     | Description                                               |
@@ -308,6 +315,16 @@ supplied is ignored.
    |               |    pair: id; date_spec                                    |
    |               |                                                           |
    |               | A unique name for this element (required)                 |
+   +---------------+-----------------------------------------------------------+
+   | seconds       | .. index::                                                |
+   |               |    pair: seconds; date_spec                               |
+   |               |                                                           |
+   |               | Allowed values: 0-59                                      |
+   +---------------+-----------------------------------------------------------+
+   | minutes       | .. index::                                                |
+   |               |    pair: minutes; date_spec                               |
+   |               |                                                           |
+   |               | Allowed values: 0-59                                      |
    +---------------+-----------------------------------------------------------+
    | hours         | .. index::                                                |
    |               |    pair: hours; date_spec                                 |
@@ -357,9 +374,7 @@ supplied is ignored.
    |               |    pair: moon; date_spec                                  |
    |               |                                                           |
    |               | Allowed values are 0-7 (where 0 is the new moon and 4 is  |
-   |               | full moon). Seriously, you can use this. This was         |
-   |               | implemented to demonstrate the ease with which new        |
-   |               | comparisons could be added.                               |
+   |               | full moon). *(deprecated since 2.1.6)*                    |
    +---------------+-----------------------------------------------------------+
 
 For example, ``monthdays="1"`` matches the first day of every month, and
@@ -397,6 +412,7 @@ supplied to ``in_range`` operations. It contains one or more attributes each
 containing a single number. Any attribute not supplied is ignored.
 
 .. table:: **Attributes of a duration Element**
+   :widths: 1 3
 
    +---------------+-----------------------------------------------------------+
    | Attribute     | Description                                               |
@@ -420,6 +436,11 @@ containing a single number. Any attribute not supplied is ignored.
    |               |    pair: hours; duration                                  |
    |               |                                                           |
    |               | This many hours will be added to the total duration       |
+   +---------------+-----------------------------------------------------------+
+   | days          | .. index::                                                |
+   |               |    pair: days; duration                                   |
+   |               |                                                           |
+   |               | This many days will be added to the total duration        |
    +---------------+-----------------------------------------------------------+
    | weeks         | .. index::                                                |
    |               |    pair: weeks; duration                                  |
@@ -524,16 +545,6 @@ A small sample of how time-based expressions can be used:
              none of 2005-04-01. You may wish to write ``end`` as
              ``"2005-03-31T23:59:59"`` to avoid confusion.
 
-.. topic:: A full moon on Friday the 13th
-
-   .. code-block:: xml
-
-      <rule id="rule7" score="INFINITY" boolean-op="and">
-         <date_expression id="date_expr7" operation="date_spec">
-          <date_spec id="date_spec7" weekdays="5" monthdays="13" moon="4"/>
-         </date_expression>
-      </rule>
-
 
 .. index::
    single: rule; resource expression
@@ -551,6 +562,7 @@ attribute will match.  For instance, omitting ``type`` means every type will
 match.
 
 .. table:: **Attributes of a rsc_expression Element**
+   :widths: 1 3
 
    +---------------+-----------------------------------------------------------+
    | Attribute     | Description                                               |
@@ -612,6 +624,7 @@ An ``op_expression`` *(since 2.0.5)* is a rule condition based on an action of
 some resource agent. This rule is only valid within an ``op_defaults`` context.
 
 .. table:: **Attributes of an op_expression Element**
+   :widths: 1 3
 
    +---------------+-----------------------------------------------------------+
    | Attribute     | Description                                               |
@@ -738,6 +751,60 @@ node attribute. Thus, in the previous example, if a rule inside a location
 constraint for a resource used ``score-attribute="cpu_mips"``, ``c001n01``
 would have its preference to run the resource increased by ``1234`` whereas
 ``c001n02`` would have its preference increased by ``5678``.
+
+
+.. _s-rsc-pattern-rules:
+
+Specifying location scores using pattern submatches
+___________________________________________________
+
+Location constraints may use ``rsc-pattern`` to apply the constraint to all
+resources whose IDs match the given pattern (see :ref:`s-rsc-pattern`). The
+pattern may contain up to 9 submatches in parentheses, whose values may be used
+as ``%1`` through ``%9`` in a rule's ``score-attribute`` or a rule expression's
+``attribute``.
+
+As an example, the following configuration (only relevant parts are shown)
+gives the resources **server-httpd** and **ip-httpd** a preference of 100 on
+**node1** and 50 on **node2**, and **ip-gateway** a preference of -100 on
+**node1** and 200 on **node2**.
+
+.. topic:: Location constraint using submatches
+
+   .. code-block:: xml
+
+      <nodes>
+         <node id="1" uname="node1">
+            <instance_attributes id="node1-attrs">
+               <nvpair id="node1-prefer-httpd" name="prefer-httpd" value="100"/>
+               <nvpair id="node1-prefer-gateway" name="prefer-gateway" value="-100"/>
+            </instance_attributes>
+         </node>
+         <node id="2" uname="node2">
+            <instance_attributes id="node2-attrs">
+               <nvpair id="node2-prefer-httpd" name="prefer-httpd" value="50"/>
+               <nvpair id="node2-prefer-gateway" name="prefer-gateway" value="200"/>
+            </instance_attributes>
+         </node>
+      </nodes>
+      <resources>
+         <primitive id="server-httpd" class="ocf" provider="heartbeat" type="apache"/>
+         <primitive id="ip-httpd" class="ocf" provider="heartbeat" type="IPaddr2"/>
+         <primitive id="ip-gateway" class="ocf" provider="heartbeat" type="IPaddr2"/>
+      </resources>
+      <constraints>
+         <!-- The following constraint says that for any resource whose name
+              starts with "server-" or "ip-", that resource's preference for a
+              node is the value of the node attribute named "prefer-" followed
+              by the part of the resource name after "server-" or "ip-",
+              wherever such a node attribute is defined.
+           -->
+         <rsc_location id="location1" rsc-pattern="(server|ip)-(.*)">
+            <rule id="location1-rule1" score-attribute="prefer-%2">
+               <expression id="location1-rule1-expression1" attribute="prefer-%2" operation="defined"/>
+            </rule>
+         </rsc_location>
+      </constraints>
 
 
 .. index::

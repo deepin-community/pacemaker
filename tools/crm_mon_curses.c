@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2021 the Pacemaker project contributors
+ * Copyright 2019-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -9,13 +9,16 @@
 
 #include <crm_internal.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <crm/crm.h>
+#include <crm/common/output.h>
+#include <crm/common/cmdline_internal.h>
 #include <crm/stonith-ng.h>
 #include <crm/fencing/internal.h>
 #include <crm/pengine/internal.h>
 #include <glib.h>
-#include <pcmki/pcmki_output.h>
+#include <pacemaker-internal.h>
 
 #include "crm_mon.h"
 
@@ -37,11 +40,13 @@ typedef struct private_data_s {
 
 static void
 curses_free_priv(pcmk__output_t *out) {
-    private_data_t *priv = out->priv;
+    private_data_t *priv = NULL;
 
-    if (priv == NULL) {
+    if (out == NULL || out->priv == NULL) {
         return;
     }
+
+    priv = out->priv;
 
     g_queue_free(priv->parent_q);
     free(priv);
@@ -51,6 +56,8 @@ curses_free_priv(pcmk__output_t *out) {
 static bool
 curses_init(pcmk__output_t *out) {
     private_data_t *priv = NULL;
+
+    CRM_ASSERT(out != NULL);
 
     /* If curses_init was previously called on this output struct, just return. */
     if (out->priv != NULL) {
@@ -108,18 +115,12 @@ curses_subprocess_output(pcmk__output_t *out, int exit_status,
 }
 
 /* curses_version is defined in curses.h, so we can't use that name here.
- * Note that this function prints out via text, not with curses.
+ * This function is empty because we create a text object instead of a console
+ * object if version is requested, so this is never called.
  */
 static void
 curses_ver(pcmk__output_t *out, bool extended) {
     CRM_ASSERT(out != NULL);
-
-    if (extended) {
-        printf("Pacemaker %s (Build: %s): %s\n", PACEMAKER_VERSION, BUILD_VERSION, CRM_FEATURES);
-    } else {
-        printf("Pacemaker %s\n", PACEMAKER_VERSION);
-        printf("Written by Andrew Beekhof\n");
-    }
 }
 
 G_GNUC_PRINTF(2, 3)
@@ -202,8 +203,8 @@ curses_begin_list(pcmk__output_t *out, const char *singular_noun, const char *pl
 
     new_list = calloc(1, sizeof(curses_list_data_t));
     new_list->len = 0;
-    new_list->singular_noun = singular_noun == NULL ? NULL : strdup(singular_noun);
-    new_list->plural_noun = plural_noun == NULL ? NULL : strdup(plural_noun);
+    pcmk__str_update(&new_list->singular_noun, singular_noun);
+    pcmk__str_update(&new_list->plural_noun, plural_noun);
 
     g_queue_push_tail(priv->parent_q, new_list);
 }
@@ -292,8 +293,7 @@ curses_prompt(const char *prompt, bool do_echo, char **dest)
 {
     int rc = OK;
 
-    CRM_ASSERT(prompt != NULL);
-    CRM_ASSERT(dest != NULL);
+    CRM_ASSERT(prompt != NULL && dest != NULL);
 
     /* This is backwards from the text version of this function on purpose.  We
      * disable echo by default in curses_init, so we need to enable it here if
@@ -338,7 +338,7 @@ crm_mon_mk_curses_output(char **argv) {
     }
 
     retval->fmt_name = "console";
-    retval->request = argv == NULL ? NULL : g_strjoinv(" ", argv);
+    retval->request = pcmk__quote_cmdline(argv);
 
     retval->init = curses_init;
     retval->free_priv = curses_free_priv;
@@ -352,6 +352,7 @@ crm_mon_mk_curses_output(char **argv) {
     retval->version = curses_ver;
     retval->err = curses_error;
     retval->info = curses_info;
+    retval->transient = curses_info;
     retval->output_xml = curses_output_xml;
 
     retval->begin_list = curses_begin_list;
@@ -390,9 +391,11 @@ G_GNUC_PRINTF(2, 0)
 void
 curses_indented_vprintf(pcmk__output_t *out, const char *format, va_list args) {
     int level = 0;
-    private_data_t *priv = out->priv;
+    private_data_t *priv = NULL;
 
-    CRM_ASSERT(priv != NULL);
+    CRM_ASSERT(out != NULL && out->priv != NULL);
+
+    priv = out->priv;
 
     level = g_queue_get_length(priv->parent_q);
 
@@ -435,59 +438,37 @@ cluster_maint_mode_console(pcmk__output_t *out, va_list args) {
     }
 }
 
-PCMK__OUTPUT_ARGS("cluster-status", "pe_working_set_t *", "crm_exit_t",
-                  "stonith_history_t *", "gboolean", "unsigned int",
-                  "unsigned int", "const char *", "GList *", "GList *")
+PCMK__OUTPUT_ARGS("cluster-status", "pe_working_set_t *",
+                  "enum pcmk_pacemakerd_state", "crm_exit_t",
+                  "stonith_history_t *", "enum pcmk__fence_history", "uint32_t",
+                  "uint32_t", "const char *", "GList *", "GList *")
 static int
 cluster_status_console(pcmk__output_t *out, va_list args) {
     int rc = pcmk_rc_no_output;
 
-    blank_screen();
+    clear();
     rc = pcmk__cluster_status_text(out, args);
     refresh();
     return rc;
 }
 
-PCMK__OUTPUT_ARGS("stonith-event", "stonith_history_t *", "gboolean", "gboolean")
+PCMK__OUTPUT_ARGS("stonith-event", "stonith_history_t *", "bool", "bool",
+                  "const char *", "uint32_t")
 static int
-stonith_event_console(pcmk__output_t *out, va_list args) {
+stonith_event_console(pcmk__output_t *out, va_list args)
+{
     stonith_history_t *event = va_arg(args, stonith_history_t *);
-    gboolean full_history = va_arg(args, gboolean);
-    gboolean later_succeeded = va_arg(args, gboolean);
+    bool full_history = va_arg(args, int);
+    bool completed_only G_GNUC_UNUSED = va_arg(args, int);
+    const char *succeeded = va_arg(args, const char *);
+    uint32_t show_opts = va_arg(args, uint32_t);
 
-    crm_time_t *crm_when = crm_time_new(NULL);
-    char *buf = NULL;
+    gchar *desc = stonith__history_description(event, full_history, succeeded,
+                                               show_opts);
 
-    crm_time_set_timet(crm_when, &(event->completed));
-    buf = crm_time_as_string(crm_when, crm_time_log_date | crm_time_log_timeofday | crm_time_log_with_timezone);
 
-    switch (event->state) {
-        case st_failed:
-            curses_indented_printf(out, "%s of %s failed: delegate=%s, client=%s, origin=%s, %s='%s'%s\n",
-                                   stonith_action_str(event->action), event->target,
-                                   event->delegate ? event->delegate : "",
-                                   event->client, event->origin,
-                                   full_history ? "completed" : "last-failed", buf,
-                                   later_succeeded ? " (a later attempt succeeded)" : "");
-            break;
-
-        case st_done:
-            curses_indented_printf(out, "%s of %s successful: delegate=%s, client=%s, origin=%s, %s='%s'\n",
-                                   stonith_action_str(event->action), event->target,
-                                   event->delegate ? event->delegate : "",
-                                   event->client, event->origin,
-                                   full_history ? "completed" : "last-successful", buf);
-            break;
-
-        default:
-            curses_indented_printf(out, "%s of %s pending: client=%s, origin=%s\n",
-                                   stonith_action_str(event->action), event->target,
-                                   event->client, event->origin);
-            break;
-    }
-
-    free(buf);
-    crm_time_free(crm_when);
+    curses_indented_printf(out, "%s\n", desc);
+    g_free(desc);
     return pcmk_rc_ok;
 }
 
@@ -499,61 +480,11 @@ static pcmk__message_entry_t fmt_functions[] = {
     { NULL, NULL, NULL }
 };
 
-void
-crm_mon_register_messages(pcmk__output_t *out) {
-    pcmk__register_messages(out, fmt_functions);
-}
-
-#else
-
-pcmk__output_t *
-crm_mon_mk_curses_output(char **argv) {
-    /* curses was disabled in the build, so fall back to text. */
-    return pcmk__mk_text_output(argv);
-}
-
-G_GNUC_PRINTF(2, 0)
-void
-curses_formatted_vprintf(pcmk__output_t *out, const char *format, va_list args) {
-    return;
-}
-
-G_GNUC_PRINTF(2, 3)
-void
-curses_formatted_printf(pcmk__output_t *out, const char *format, ...) {
-    return;
-}
-
-G_GNUC_PRINTF(2, 0)
-void
-curses_indented_vprintf(pcmk__output_t *out, const char *format, va_list args) {
-    return;
-}
-
-G_GNUC_PRINTF(2, 3)
-void
-curses_indented_printf(pcmk__output_t *out, const char *format, ...) {
-    return;
-}
-
-void
-crm_mon_register_messages(pcmk__output_t *out) {
-    return;
-}
-
 #endif
 
 void
-blank_screen(void)
-{
+crm_mon_register_messages(pcmk__output_t *out) {
 #if CURSES_ENABLED
-    int lpc = 0;
-
-    for (lpc = 0; lpc < LINES; lpc++) {
-        move(lpc, 0);
-        clrtoeol();
-    }
-    move(0, 0);
-    refresh();
+    pcmk__register_messages(out, fmt_functions);
 #endif
 }

@@ -157,6 +157,12 @@
         </operations>
       </primitive>
       <bundle id="galera-bundle">
+        <meta_attributes id="galera-bundle-meta_attributes">
+          <nvpair id="galera-bundle-meta_attributes-container-attribute-target"
+                  name="container-attribute-target" value="host"/>
+          <nvpair id="galera-bundle-meta_attributes-promoted-max" name="promoted-max" value="3"/>
+          <nvpair id="galera-bundle-meta_attributes-ordered" name="ordered" value="true"/>
+        </meta_attributes>
         <docker image="192.168.24.1:8787/rhosp13/openstack-mariadb:pcmklatest" promoted-max="3" network="host" options="--user=root --log-driver=journald -e KOLLA_CONFIG_STRATEGY=COPY_ALWAYS" replicas="3" run-command="/bin/bash /usr/local/bin/kolla_start"/>
         <network control-port="3123"/>
         <storage>
@@ -177,11 +183,6 @@
             <nvpair id="galera-instance_attributes-log" name="log" value="/var/log/mysql/mysqld.log"/>
             <nvpair id="galera-instance_attributes-wsrep_cluster_address" name="wsrep_cluster_address" value="gcomm://database-0.internalapi.localdomain,database-1.internalapi.localdomain,database-2.internalapi.localdomain"/>
           </instance_attributes>
-          <meta_attributes id="galera-meta_attributes">
-            <nvpair id="galera-meta_attributes-container-attribute-target" name="container-attribute-target" value="host"/>
-            <nvpair id="galera-meta_attributes-promoted-max" name="promoted-max" value="3"/>
-            <nvpair id="galera-meta_attributes-ordered" name="ordered" value="true"/>
-          </meta_attributes>
           <operations>
             <op id="galera-demote-interval-0s" interval="0s" name="demote" timeout="120"/>
             <op id="galera-monitor-interval-20" interval="20" name="monitor" timeout="30"/>
@@ -194,6 +195,11 @@
         </primitive>
       </bundle>
       <bundle id="rabbitmq-bundle">
+        <meta_attributes id="rabbitmq-bundle-meta_attributes">
+          <nvpair id="rabbitmq-bundle-meta_attributes-container-attribute-target"
+                  name="container-attribute-target" value="host"/>
+          <nvpair id="rabbitmq-bundle-meta_attributes-notify" name="notify" value="true"/>
+        </meta_attributes>
         <docker image="192.168.24.1:8787/rhosp13/openstack-rabbitmq:pcmklatest" network="host" options="--user=root --log-driver=journald -e KOLLA_CONFIG_STRATEGY=COPY_ALWAYS" replicas="3" run-command="/bin/bash /usr/local/bin/kolla_start"/>
         <network control-port="3122"/>
         <storage>
@@ -213,10 +219,6 @@
           <instance_attributes id="rabbitmq-instance_attributes">
             <nvpair id="rabbitmq-instance_attributes-set_policy" name="set_policy" value="ha-all ^(?!amq\.).* {&quot;ha-mode&quot;:&quot;all&quot;}"/>
           </instance_attributes>
-          <meta_attributes id="rabbitmq-meta_attributes">
-            <nvpair id="rabbitmq-meta_attributes-container-attribute-target" name="container-attribute-target" value="host"/>
-            <nvpair id="rabbitmq-meta_attributes-notify" name="notify" value="true"/>
-          </meta_attributes>
           <operations>
             <op id="rabbitmq-monitor-interval-10" interval="10" name="monitor" timeout="40"/>
             <op id="rabbitmq-start-interval-0s" interval="0s" name="start" timeout="200s"/>
@@ -225,6 +227,13 @@
         </primitive>
       </bundle>
       <bundle id="redis-bundle">
+        <meta_attributes id="redis-bundle-meta_attributes">
+          <nvpair id="redis-bundle-meta_attributes-container-attribute-target"
+                  name="container-attribute-target" value="host"/>
+          <nvpair id="redis-bundle-meta_attributes-interleave" name="interleave" value="true"/>
+          <nvpair id="redis-bundle-meta_attributes-notify" name="notify" value="true"/>
+          <nvpair id="redis-bundle-meta_attributes-ordered" name="ordered" value="true"/>
+        </meta_attributes>
         <docker image="192.168.24.1:8787/rhosp13/openstack-redis:pcmklatest" promoted-max="1" network="host" options="--user=root --log-driver=journald -e KOLLA_CONFIG_STRATEGY=COPY_ALWAYS" replicas="3" run-command="/bin/bash /usr/local/bin/kolla_start"/>
         <network control-port="3124"/>
         <storage>
@@ -243,14 +252,8 @@
         </storage>
         <primitive class="ocf" id="redis" provider="heartbeat" type="redis">
           <instance_attributes id="redis-instance_attributes">
-            <nvpair id="redis-instance_attributes-wait_last_known_master" name="wait_last_known_master" value="true"/>
+            <nvpair id="redis-instance_attributes-wait_last_known_promoted" name="wait_last_known_master" value="true"/>
           </instance_attributes>
-          <meta_attributes id="redis-meta_attributes">
-            <nvpair id="redis-meta_attributes-container-attribute-target" name="container-attribute-target" value="host"/>
-            <nvpair id="redis-meta_attributes-interleave" name="interleave" value="true"/>
-            <nvpair id="redis-meta_attributes-notify" name="notify" value="true"/>
-            <nvpair id="redis-meta_attributes-ordered" name="ordered" value="true"/>
-          </meta_attributes>
           <operations>
             <op id="redis-demote-interval-0s" interval="0s" name="demote" timeout="120"/>
             <op id="redis-monitor-interval-45" interval="45" name="monitor" timeout="60"/>
@@ -728,7 +731,7 @@
       </lrm>
       <transient_attributes id="1">
         <instance_attributes id="status-1">
-          <nvpair id="status-1-master-redis" name="master-redis" value="1"/>
+          <nvpair id="status-1-promoted-redis" name="master-redis" value="1"/>
           <nvpair id="status-1-fail-count-galera-bundle-0.monitor_30000" name="fail-count-galera-bundle-0#monitor_30000" value="1"/>
           <nvpair id="status-1-last-failure-galera-bundle-0.monitor_30000" name="last-failure-galera-bundle-0#monitor_30000" value="1536701004"/>
         </instance_attributes>
@@ -737,7 +740,7 @@
     <node_state id="3" uname="controller-2" in_ccm="true" crmd="online" crm-debug-origin="do_update_resource" join="member" expected="member">
       <transient_attributes id="3">
         <instance_attributes id="status-3">
-          <nvpair id="status-3-master-redis" name="master-redis" value="1"/>
+          <nvpair id="status-3-promoted-redis" name="master-redis" value="1"/>
         </instance_attributes>
       </transient_attributes>
       <lrm id="3">
@@ -875,7 +878,7 @@
     <node_state id="2" uname="controller-1" in_ccm="true" crmd="online" crm-debug-origin="do_update_resource" join="member" expected="member">
       <transient_attributes id="2">
         <instance_attributes id="status-2">
-          <nvpair id="status-2-master-redis" name="master-redis" value="1"/>
+          <nvpair id="status-2-promoted-redis" name="master-redis" value="1"/>
         </instance_attributes>
       </transient_attributes>
       <lrm id="2">
@@ -1033,7 +1036,7 @@
       </lrm>
       <transient_attributes id="database-0">
         <instance_attributes id="status-database-0">
-          <nvpair id="status-database-0-master-galera" name="master-galera" value="100"/>
+          <nvpair id="status-database-0-promoted-galera" name="master-galera" value="100"/>
         </instance_attributes>
       </transient_attributes>
     </node_state>
@@ -1057,7 +1060,7 @@
     <node_state remote_node="true" id="database-1" uname="database-1" in_ccm="true" crm-debug-origin="do_state_transition" node_fenced="0">
       <transient_attributes id="database-1">
         <instance_attributes id="status-database-1">
-          <nvpair id="status-database-1-master-galera" name="master-galera" value="100"/>
+          <nvpair id="status-database-1-promoted-galera" name="master-galera" value="100"/>
         </instance_attributes>
       </transient_attributes>
       <lrm id="database-1">
@@ -1079,7 +1082,7 @@
     <node_state remote_node="true" id="database-2" uname="database-2" in_ccm="true" crm-debug-origin="do_state_transition" node_fenced="0">
       <transient_attributes id="database-2">
         <instance_attributes id="status-database-2">
-          <nvpair id="status-database-2-master-galera" name="master-galera" value="100"/>
+          <nvpair id="status-database-2-promoted-galera" name="master-galera" value="100"/>
         </instance_attributes>
       </transient_attributes>
       <lrm id="database-2">

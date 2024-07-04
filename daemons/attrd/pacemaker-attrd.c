@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2021 the Pacemaker project contributors
+ * Copyright 2013-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -23,62 +23,45 @@
 #include <crm/cib/internal.h>
 #include <crm/msg_xml.h>
 #include <crm/pengine/rules.h>
+#include <crm/common/cmdline_internal.h>
 #include <crm/common/iso8601.h>
 #include <crm/common/ipc.h>
 #include <crm/common/ipc_internal.h>
+#include <crm/common/output_internal.h>
 #include <crm/common/xml.h>
 #include <crm/cluster/internal.h>
 
 #include <crm/common/attrd_internal.h>
 #include "pacemaker-attrd.h"
 
+#define SUMMARY "daemon for managing Pacemaker node attributes"
+
+gboolean stand_alone = FALSE;
+gchar **log_files = NULL;
+
+static GOptionEntry entries[] = {
+    { "stand-alone", 's', G_OPTION_FLAG_NONE, G_OPTION_ARG_NONE, &stand_alone,
+      "(Advanced use only) Run in stand-alone mode", NULL },
+
+    { "logfile", 'l', G_OPTION_FLAG_NONE, G_OPTION_ARG_FILENAME_ARRAY,
+      &log_files, "Send logs to the additional named logfile", NULL },
+
+    { NULL }
+};
+
+static pcmk__output_t *out = NULL;
+
+static pcmk__supported_format_t formats[] = {
+    PCMK__SUPPORTED_FORMAT_NONE,
+    PCMK__SUPPORTED_FORMAT_TEXT,
+    PCMK__SUPPORTED_FORMAT_XML,
+    { NULL, NULL, NULL }
+};
+
 lrmd_t *the_lrmd = NULL;
 crm_cluster_t *attrd_cluster = NULL;
 crm_trigger_t *attrd_config_read = NULL;
-static crm_exit_t attrd_exit_status = CRM_EX_OK;
-
-static void
-attrd_cpg_dispatch(cpg_handle_t handle,
-                 const struct cpg_name *groupName,
-                 uint32_t nodeid, uint32_t pid, void *msg, size_t msg_len)
-{
-    uint32_t kind = 0;
-    xmlNode *xml = NULL;
-    const char *from = NULL;
-    char *data = pcmk_message_common_cs(handle, nodeid, pid, msg, &kind, &from);
-
-    if(data == NULL) {
-        return;
-    }
-
-    if (kind == crm_class_cluster) {
-        xml = string2xml(data);
-    }
-
-    if (xml == NULL) {
-        crm_err("Bad message of class %d received from %s[%u]: '%.120s'", kind, from, nodeid, data);
-    } else {
-        crm_node_t *peer = crm_get_peer(nodeid, from);
-
-        attrd_peer_message(peer, xml);
-    }
-
-    free_xml(xml);
-    free(data);
-}
-
-static void
-attrd_cpg_destroy(gpointer unused)
-{
-    if (attrd_shutting_down()) {
-        crm_info("Corosync disconnection complete");
-
-    } else {
-        crm_crit("Lost connection to cluster layer, shutting down");
-        attrd_exit_status = CRM_EX_DISCONNECT;
-        attrd_shutdown(0);
-    }
-}
+crm_exit_t attrd_exit_status = CRM_EX_OK;
 
 static void
 attrd_cib_destroy_cb(gpointer user_data)
@@ -135,8 +118,7 @@ attrd_erase_attrs(void)
     crm_info("Clearing transient attributes from CIB " CRM_XS " xpath=%s",
              xpath);
 
-    call_id = the_cib->cmds->remove(the_cib, xpath, NULL,
-                                    cib_quorum_override | cib_xpath);
+    call_id = the_cib->cmds->remove(the_cib, xpath, NULL, cib_xpath);
     the_cib->cmds->register_callback_full(the_cib, call_id, 120, FALSE, xpath,
                                           "attrd_erase_cb", attrd_erase_cb,
                                           free);
@@ -194,9 +176,7 @@ attrd_cib_connect(int max_retry)
     return pcmk_ok;
 
   cleanup:
-    the_cib->cmds->signoff(the_cib);
-    cib_delete(the_cib);
-    the_cib = NULL;
+    cib__clean_up_connection(&the_cib);
     return -ENOTCONN;
 }
 
@@ -217,195 +197,122 @@ attrd_cib_init(void)
     mainloop_set_trigger(attrd_config_read);
 }
 
-static qb_ipcs_service_t *ipcs = NULL;
-
-static int32_t
-attrd_ipc_dispatch(qb_ipcs_connection_t * c, void *data, size_t size)
+static bool
+ipc_already_running(void)
 {
-    uint32_t id = 0;
-    uint32_t flags = 0;
-    pcmk__client_t *client = pcmk__find_client(c);
-    xmlNode *xml = NULL;
-    const char *op;
+    pcmk_ipc_api_t *old_instance = NULL;
+    int rc = pcmk_rc_ok;
 
-    // Sanity-check, and parse XML from IPC data
-    CRM_CHECK((c != NULL) && (client != NULL), return 0);
-    if (data == NULL) {
-        crm_debug("No IPC data from PID %d", pcmk__client_pid(c));
-        return 0;
-    }
-    xml = pcmk__client_data2xml(client, data, &id, &flags);
-    if (xml == NULL) {
-        crm_debug("Unrecognizable IPC data from PID %d", pcmk__client_pid(c));
-        return 0;
+    rc = pcmk_new_ipc_api(&old_instance, pcmk_ipc_attrd);
+    if (rc != pcmk_rc_ok) {
+        return false;
     }
 
-    CRM_ASSERT(client->user != NULL);
-    pcmk__update_acl_user(xml, PCMK__XA_ATTR_USER, client->user);
-
-    op = crm_element_value(xml, PCMK__XA_TASK);
-
-    if (client->name == NULL) {
-        const char *value = crm_element_value(xml, F_ORIG);
-        client->name = crm_strdup_printf("%s.%d", value?value:"unknown", client->pid);
+    rc = pcmk_connect_ipc(old_instance, pcmk_ipc_dispatch_sync);
+    if (rc != pcmk_rc_ok) {
+        pcmk_free_ipc_api(old_instance);
+        return false;
     }
 
-    if (pcmk__str_eq(op, PCMK__ATTRD_CMD_PEER_REMOVE, pcmk__str_casei)) {
-        attrd_send_ack(client, id, flags);
-        attrd_client_peer_remove(client, xml);
-
-    } else if (pcmk__str_eq(op, PCMK__ATTRD_CMD_CLEAR_FAILURE, pcmk__str_casei)) {
-        attrd_send_ack(client, id, flags);
-        attrd_client_clear_failure(xml);
-
-    } else if (pcmk__str_eq(op, PCMK__ATTRD_CMD_UPDATE, pcmk__str_casei)) {
-        attrd_send_ack(client, id, flags);
-        attrd_client_update(xml);
-
-    } else if (pcmk__str_eq(op, PCMK__ATTRD_CMD_UPDATE_BOTH, pcmk__str_casei)) {
-        attrd_send_ack(client, id, flags);
-        attrd_client_update(xml);
-
-    } else if (pcmk__str_eq(op, PCMK__ATTRD_CMD_UPDATE_DELAY, pcmk__str_casei)) {
-        attrd_send_ack(client, id, flags);
-        attrd_client_update(xml);
-
-    } else if (pcmk__str_eq(op, PCMK__ATTRD_CMD_REFRESH, pcmk__str_casei)) {
-        attrd_send_ack(client, id, flags);
-        attrd_client_refresh();
-
-    } else if (pcmk__str_eq(op, PCMK__ATTRD_CMD_QUERY, pcmk__str_casei)) {
-        /* queries will get reply, so no ack is necessary */
-        attrd_client_query(client, id, flags, xml);
-
-    } else {
-        crm_info("Ignoring request from client %s with unknown operation %s",
-                 pcmk__client_name(client), op);
-    }
-
-    free_xml(xml);
-    return 0;
+    pcmk_disconnect_ipc(old_instance);
+    pcmk_free_ipc_api(old_instance);
+    return true;
 }
 
-void
-attrd_ipc_fini(void)
-{
-    if (ipcs != NULL) {
-        pcmk__drop_all_clients(ipcs);
-        qb_ipcs_destroy(ipcs);
-        ipcs = NULL;
-    }
+static GOptionContext *
+build_arg_context(pcmk__common_args_t *args, GOptionGroup **group) {
+    GOptionContext *context = NULL;
+
+    context = pcmk__build_arg_context(args, "text (default), xml", group, NULL);
+    pcmk__add_main_args(context, entries);
+    return context;
 }
-
-static int
-attrd_cluster_connect(void)
-{
-    attrd_cluster = calloc(1, sizeof(crm_cluster_t));
-
-    attrd_cluster->destroy = attrd_cpg_destroy;
-    attrd_cluster->cpg.cpg_deliver_fn = attrd_cpg_dispatch;
-    attrd_cluster->cpg.cpg_confchg_fn = pcmk_cpg_membership;
-
-    crm_set_status_callback(&attrd_peer_change_cb);
-
-    if (crm_cluster_connect(attrd_cluster) == FALSE) {
-        crm_err("Cluster connection failed");
-        return -ENOTCONN;
-    }
-    return pcmk_ok;
-}
-
-static pcmk__cli_option_t long_options[] = {
-    // long option, argument type, storage, short option, description, flags
-    {
-        "help",     no_argument, NULL, '?',
-        "\tThis text", pcmk__option_default
-    },
-    {
-        "verbose",  no_argument, NULL, 'V',
-        "\tIncrease debug output", pcmk__option_default
-    },
-    { 0, 0, 0, 0 }
-};
 
 int
 main(int argc, char **argv)
 {
-    int flag = 0;
-    int index = 0;
-    int argerr = 0;
-    crm_ipc_t *old_instance = NULL;
+    int rc = pcmk_rc_ok;
+
+    GError *error = NULL;
+    bool initialized = false;
+
+    GOptionGroup *output_group = NULL;
+    pcmk__common_args_t *args = pcmk__new_common_args(SUMMARY);
+    gchar **processed_args = pcmk__cmdline_preproc(argv, NULL);
+    GOptionContext *context = build_arg_context(args, &output_group);
 
     attrd_init_mainloop();
     crm_log_preinit(NULL, argc, argv);
-    pcmk__set_cli_options(NULL, "[options]", long_options,
-                          "daemon for managing Pacemaker node attributes");
-
     mainloop_add_signal(SIGTERM, attrd_shutdown);
 
-     while (1) {
-        flag = pcmk__next_cli_option(argc, argv, &index, NULL);
-        if (flag == -1)
-            break;
-
-        switch (flag) {
-            case 'V':
-                crm_bump_log_level(argc, argv);
-                break;
-            case 'h':          /* Help message */
-                pcmk__cli_help(flag, CRM_EX_OK);
-                break;
-            default:
-                ++argerr;
-                break;
-        }
+    pcmk__register_formats(output_group, formats);
+    if (!g_option_context_parse_strv(context, &processed_args, &error)) {
+        attrd_exit_status = CRM_EX_USAGE;
+        goto done;
     }
 
-    if (optind > argc) {
-        ++argerr;
+    rc = pcmk__output_new(&out, args->output_ty, args->output_dest, argv);
+    if ((rc != pcmk_rc_ok) || (out == NULL)) {
+        attrd_exit_status = CRM_EX_ERROR;
+        g_set_error(&error, PCMK__EXITC_ERROR, attrd_exit_status,
+                    "Error creating output format %s: %s",
+                    args->output_ty, pcmk_rc_str(rc));
+        goto done;
     }
 
-    if (argerr) {
-        pcmk__cli_help('?', CRM_EX_USAGE);
+    if (args->version) {
+        out->version(out, false);
+        goto done;
     }
+
+    // Open additional log files
+    pcmk__add_logfiles(log_files, out);
 
     crm_log_init(T_ATTRD, LOG_INFO, TRUE, FALSE, argc, argv, FALSE);
-    crm_notice("Starting Pacemaker node attribute manager");
+    crm_notice("Starting Pacemaker node attribute manager%s",
+               stand_alone ? " in standalone mode" : "");
 
-    old_instance = crm_ipc_new(T_ATTRD, 0);
-    if (crm_ipc_connect(old_instance)) {
-        /* IPC end-point already up */
-        crm_ipc_close(old_instance);
-        crm_ipc_destroy(old_instance);
-        crm_err("pacemaker-attrd is already active, aborting startup");
-        crm_exit(CRM_EX_OK);
-    } else {
-        /* not up or not authentic, we'll proceed either way */
-        crm_ipc_destroy(old_instance);
-        old_instance = NULL;
+    if (ipc_already_running()) {
+        const char *msg = "pacemaker-attrd is already active, aborting startup";
+
+        attrd_exit_status = CRM_EX_OK;
+        g_set_error(&error, PCMK__EXITC_ERROR, attrd_exit_status, "%s", msg);
+        crm_err(msg);
+        goto done;
     }
 
-    attributes = pcmk__strkey_table(NULL, free_attribute);
+    initialized = true;
+
+    attributes = pcmk__strkey_table(NULL, attrd_free_attribute);
 
     /* Connect to the CIB before connecting to the cluster or listening for IPC.
      * This allows us to assume the CIB is connected whenever we process a
      * cluster or IPC message (which also avoids start-up race conditions).
      */
-    if (attrd_cib_connect(30) != pcmk_ok) {
-        attrd_exit_status = CRM_EX_FATAL;
-        goto done;
+    if (!stand_alone) {
+        if (attrd_cib_connect(30) != pcmk_ok) {
+            attrd_exit_status = CRM_EX_FATAL;
+            g_set_error(&error, PCMK__EXITC_ERROR, attrd_exit_status,
+                        "Could not connect to the CIB");
+            goto done;
+        }
+        crm_info("CIB connection active");
     }
-    crm_info("CIB connection active");
 
     if (attrd_cluster_connect() != pcmk_ok) {
         attrd_exit_status = CRM_EX_FATAL;
+        g_set_error(&error, PCMK__EXITC_ERROR, attrd_exit_status,
+                    "Could not connect to the cluster");
         goto done;
     }
     crm_info("Cluster connection active");
 
     // Initialization that requires the cluster to be connected
     attrd_election_init();
-    attrd_cib_init();
+
+    if (!stand_alone) {
+        attrd_cib_init();
+    }
 
     /* Set a private attribute for ourselves with the protocol version we
      * support. This lets all nodes determine the minimum supported version
@@ -414,18 +321,38 @@ main(int argc, char **argv)
      */
     attrd_broadcast_protocol();
 
-    attrd_init_ipc(&ipcs, attrd_ipc_dispatch);
+    attrd_init_ipc();
     crm_notice("Pacemaker node attribute manager successfully started and accepting connections");
     attrd_run_mainloop();
 
   done:
-    crm_info("Shutting down attribute manager");
+    if (initialized) {
+        crm_info("Shutting down attribute manager");
 
-    attrd_election_fini();
-    attrd_ipc_fini();
-    attrd_lrmd_disconnect();
-    attrd_cib_disconnect();
-    g_hash_table_destroy(attributes);
+        attrd_election_fini();
+        attrd_ipc_fini();
+        attrd_lrmd_disconnect();
 
+        if (!stand_alone) {
+            attrd_cib_disconnect();
+        }
+
+        attrd_free_waitlist();
+        pcmk_cluster_free(attrd_cluster);
+        g_hash_table_destroy(attributes);
+    }
+
+    g_strfreev(processed_args);
+    pcmk__free_arg_context(context);
+
+    g_strfreev(log_files);
+
+    pcmk__output_and_clear_error(&error, out);
+
+    if (out != NULL) {
+        out->finish(out, attrd_exit_status, true, NULL);
+        pcmk__output_free(out);
+    }
+    pcmk__unregister_formats();
     crm_exit(attrd_exit_status);
 }

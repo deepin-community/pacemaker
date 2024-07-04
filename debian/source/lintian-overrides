@@ -1,0 +1,5 @@
+# Some elements in these XML files have many attributes and no line breaks:
+pacemaker source: very-long-line-length-in-source-file * [cts/scheduler/exp/*]
+
+# We export this variable from debian/rules:
+pacemaker source: dh-exec-subst-unknown-variable deb_systemdsystemunitdir *

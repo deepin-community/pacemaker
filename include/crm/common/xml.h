@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -7,18 +7,9 @@
  * version 2.1 or later (LGPLv2.1+) WITHOUT ANY WARRANTY.
  */
 
-#ifndef CRM_COMMON_XML__H
-#  define CRM_COMMON_XML__H
+#ifndef PCMK__CRM_COMMON_XML__H
+#  define PCMK__CRM_COMMON_XML__H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-/**
- * \file
- * \brief Wrappers for and extensions to libxml2
- * \ingroup core
- */
 
 #  include <stdio.h>
 #  include <sys/types.h>
@@ -34,6 +25,16 @@ extern "C" {
 #  include <crm/crm.h>
 #  include <crm/common/nvpair.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/**
+ * \file
+ * \brief Wrappers for and extensions to libxml2
+ * \ingroup core
+ */
+
 /* Define compression parameters for IPC messages
  *
  * Compression costs a LOT, so we don't want to do it unless we're hitting
@@ -46,25 +47,33 @@ extern "C" {
 #  define CRM_BZ2_WORK		20
 #  define CRM_BZ2_THRESHOLD	128 * 1024
 
-#  define XML_PARANOIA_CHECKS 0
-
 typedef const xmlChar *pcmkXmlStr;
 
 gboolean add_message_xml(xmlNode * msg, const char *field, xmlNode * xml);
-xmlNode *get_message_xml(xmlNode * msg, const char *field);
+xmlNode *get_message_xml(const xmlNode *msg, const char *field);
 
 xmlDoc *getDocPtr(xmlNode * node);
 
 /*
- * Replacement function for xmlCopyPropList which at the very least,
- * doesn't work the way *I* would expect it to.
+ * \brief xmlCopyPropList ACLs-sensitive replacement expading i++ notation
  *
- * Copy all the attributes/properties from src into target.
+ * The gist is the same as with \c{xmlCopyPropList(target, src->properties)}.
+ * The function exits prematurely when any attribute cannot be copied for
+ * ACLs violation.  Even without bailing out, the result can possibly be
+ * incosistent with expectations in that case, hence the caller shall,
+ * aposteriori, verify that no document-level-tracked denial was indicated
+ * with \c{xml_acl_denied(target)} and drop whole such intermediate object.
  *
- * Not recursive, does not return anything.
+ * \param[in,out] target  Element to receive attributes from #src element
+ * \param[in]     src     Element carrying attributes to copy over to #target
  *
+ * \note Original commit 1c632c506 sadly haven't stated which otherwise
+ *       assumed behaviours of xmlCopyPropList were missing beyond otherwise
+ *       custom extensions like said ACLs and "atomic increment" (that landed
+ *       later on, anyway).
  */
-void copy_in_properties(xmlNode * target, xmlNode * src);
+void copy_in_properties(xmlNode *target, const xmlNode *src);
+
 void expand_plus_plus(xmlNode * target, const char *name, const char *value);
 void fix_plus_plus_recursive(xmlNode * target);
 
@@ -112,8 +121,6 @@ xmlNode *copy_xml(xmlNode * src_node);
  */
 xmlNode *add_node_copy(xmlNode * new_parent, xmlNode * xml_node);
 
-int add_node_nocopy(xmlNode * parent, const char *name, xmlNode * child);
-
 /*
  * XML I/O Functions
  *
@@ -129,9 +136,7 @@ int write_xml_fd(xmlNode * xml_node, const char *filename, int fd, gboolean comp
 int write_xml_file(xmlNode * xml_node, const char *filename, gboolean compress);
 
 char *dump_xml_formatted(xmlNode * msg);
-/* Also dump the text node with xml_log_option_text enabled */ 
 char *dump_xml_formatted_with_text(xmlNode * msg);
-
 char *dump_xml_unformatted(xmlNode * msg);
 
 /*
@@ -147,7 +152,8 @@ gboolean can_prune_leaf(xmlNode * xml_node);
 /*
  * Searching & Modifying
  */
-xmlNode *find_xml_node(xmlNode * cib, const char *node_path, gboolean must_find);
+xmlNode *find_xml_node(const xmlNode *root, const char *search_path,
+                       gboolean must_find);
 
 void xml_remove_prop(xmlNode * obj, const char *name);
 
@@ -237,6 +243,11 @@ const char *get_schema_name(int version);
 const char *xml_latest_schema(void);
 gboolean cli_config_update(xmlNode ** xml, int *best_version, gboolean to_logs);
 
+/*!
+ * \brief Initialize the CRM XML subsystem
+ *
+ * This method sets global XML settings and loads pacemaker schemas into the cache.
+ */
 void crm_xml_init(void);
 void crm_xml_cleanup(void);
 
@@ -270,9 +281,7 @@ void xml_track_changes(xmlNode * xml, const char *user, xmlNode *acl_source, boo
 void xml_calculate_changes(xmlNode *old_xml, xmlNode *new_xml);
 void xml_calculate_significant_changes(xmlNode *old_xml, xmlNode *new_xml);
 void xml_accept_changes(xmlNode * xml);
-void xml_log_changes(uint8_t level, const char *function, xmlNode *xml);
-void xml_log_patchset(uint8_t level, const char *function, xmlNode *xml);
-bool xml_patch_versions(xmlNode *patchset, int add[3], int del[3]);
+bool xml_patch_versions(const xmlNode *patchset, int add[3], int del[3]);
 
 xmlNode *xml_create_patchset(
     int format, xmlNode *source, xmlNode *target, bool *config, bool manage_version);
@@ -281,16 +290,10 @@ int xml_apply_patchset(xmlNode *xml, xmlNode *patchset, bool check_version);
 void patchset_process_digest(xmlNode *patch, xmlNode *source, xmlNode *target, bool with_digest);
 
 void save_xml_to_file(xmlNode * xml, const char *desc, const char *filename);
-char *xml_get_path(xmlNode *xml);
 
 char * crm_xml_escape(const char *text);
 void crm_xml_sanitize_id(char *id);
 void crm_xml_set_id(xmlNode *xml, const char *format, ...) G_GNUC_PRINTF(2, 3);
-
-/*!
- * \brief xmlNode destructor which can be used in glib collections
- */
-void crm_destroy_xml(gpointer data);
 
 #if !defined(PCMK_ALLOW_DEPRECATED) || (PCMK_ALLOW_DEPRECATED == 1)
 #include <crm/common/xml_compat.h>

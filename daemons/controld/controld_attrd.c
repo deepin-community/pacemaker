@@ -1,5 +1,5 @@
 /*
- * Copyright 2006-2020 the Pacemaker project contributors
+ * Copyright 2006-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -11,141 +11,51 @@
 
 #include <crm/crm.h>
 #include <crm/common/attrd_internal.h>
+#include <crm/common/ipc.h>
+#include <crm/common/ipc_attrd_internal.h>
 #include <crm/msg_xml.h>
 
 #include <pacemaker-controld.h>
 
-static crm_ipc_t *attrd_ipc = NULL;
+static pcmk_ipc_api_t *attrd_api = NULL;
 
 void
-controld_close_attrd_ipc()
+controld_close_attrd_ipc(void)
 {
-    if (attrd_ipc) {
+    if (attrd_api != NULL) {
         crm_trace("Closing connection to pacemaker-attrd");
-        crm_ipc_close(attrd_ipc);
-        crm_ipc_destroy(attrd_ipc);
-        attrd_ipc = NULL;
+        pcmk_disconnect_ipc(attrd_api);
+        pcmk_free_ipc_api(attrd_api);
+        attrd_api = NULL;
     }
 }
 
-static void
-log_attrd_error(const char *host, const char *name, const char *value,
-                gboolean is_remote, char command, int rc)
+static inline const char *
+node_type(bool is_remote)
 {
-    const char *node_type = (is_remote? "Pacemaker Remote" : "cluster");
-    gboolean shutting_down = pcmk_is_set(fsa_input_register, R_SHUTDOWN);
-    const char *when = (shutting_down? " at shutdown" : "");
+    return is_remote? "Pacemaker Remote" : "cluster";
+}
 
-    switch (command) {
-        case 0:
-            crm_err("Could not clear failure attributes for %s on %s node %s%s: %s "
-                    CRM_XS " rc=%d", (name? name : "all resources"), node_type,
-                    host, when, pcmk_rc_str(rc), rc);
-            break;
-
-        case 'C':
-            crm_err("Could not purge %s node %s in attribute manager%s: %s "
-                    CRM_XS " rc=%d",
-                    node_type, host, when, pcmk_rc_str(rc), rc);
-            break;
-
-        case 'U':
-            /* We weren't able to update an attribute after several retries,
-             * so something is horribly wrong with the attribute manager or the
-             * underlying system.
-             */
-            do_crm_log(AM_I_DC? LOG_CRIT : LOG_ERR,
-                       "Could not update attribute %s=%s for %s node %s%s: %s "
-                       CRM_XS " rc=%d", name, value, node_type, host, when,
-                       pcmk_rc_str(rc), rc);
-
-
-            if (AM_I_DC) {
-                /* We are unable to provide accurate information to the
-                 * scheduler, so allow another node to take over DC.
-                 * @TODO Should we do this unconditionally on any failure?
-                 */
-                crmd_exit(CRM_EX_FATAL);
-
-            } else if (shutting_down) {
-                // Fast-track shutdown since unable to request via attribute
-                register_fsa_input(C_FSA_INTERNAL, I_FAIL, NULL);
-            }
-            break;
-    }
+static inline const char *
+when(void)
+{
+    return pcmk_is_set(controld_globals.fsa_input_register,
+                       R_SHUTDOWN)? " at shutdown" : "";
 }
 
 static void
-update_attrd_helper(const char *host, const char *name, const char *value,
-                    const char *interval_spec, const char *user_name,
-                    gboolean is_remote_node, char command)
+handle_attr_error(void)
 {
-    int rc;
-    int attrd_opts = pcmk__node_attr_none;
-
-    if (is_remote_node) {
-        pcmk__set_node_attr_flags(attrd_opts, pcmk__node_attr_remote);
-    }
-
-    if (attrd_ipc == NULL) {
-        attrd_ipc = crm_ipc_new(T_ATTRD, 0);
-    }
-
-    for (int attempt = 1; attempt <= 4; ++attempt) {
-        rc = pcmk_rc_ok;
-
-        // If we're not already connected, try to connect
-        if (crm_ipc_connected(attrd_ipc) == FALSE) {
-            if (attempt == 1) {
-                // Start with a clean slate
-                crm_ipc_close(attrd_ipc);
-            }
-            if (crm_ipc_connect(attrd_ipc) == FALSE) {
-                rc = errno;
-            }
-            crm_debug("Attribute manager connection attempt %d of 4: %s (%d)",
-                      attempt, pcmk_rc_str(rc), rc);
-        }
-
-        if (rc == pcmk_rc_ok) {
-            if (command) {
-                rc = pcmk__node_attr_request(attrd_ipc, command, host, name,
-                                             value, XML_CIB_TAG_STATUS, NULL,
-                                             NULL, user_name, attrd_opts);
-            } else {
-                 /* No command means clear fail count (name/value is really
-                  * resource/operation)
-                  */
-                 rc = pcmk__node_attr_request_clear(attrd_ipc, host, name,
-                                                    value, interval_spec,
-                                                    user_name, attrd_opts);
-            }
-            crm_debug("Attribute manager request attempt %d of 4: %s (%d)",
-                      attempt, pcmk_rc_str(rc), rc);
-        }
-
-        if (rc == pcmk_rc_ok) {
-            // Success, we're done
-            break;
-
-        } else if ((rc != EAGAIN) && (rc != EALREADY)) {
-            /* EAGAIN or EALREADY indicates a temporary block, so just try
-             * again. Otherwise, close the connection for a clean slate.
-             */
-            crm_ipc_close(attrd_ipc);
-        }
-
-        /* @TODO If the attribute manager remains unavailable the entire time,
-         * this function takes more than 6 seconds. Maybe set a timer for
-         * retries, to let the main loop do other work.
+    if (AM_I_DC) {
+        /* We are unable to provide accurate information to the
+         * scheduler, so allow another node to take over DC.
+         * @TODO Should we do this unconditionally on any failure?
          */
-        if (attempt < 4) {
-            sleep(attempt);
-        }
-    }
+        crmd_exit(CRM_EX_FATAL);
 
-    if (rc != pcmk_rc_ok) {
-        log_attrd_error(host, name, value, is_remote_node, command, rc);
+    } else if (pcmk_is_set(controld_globals.fsa_input_register, R_SHUTDOWN)) {
+        // Fast-track shutdown since unable to request via attribute
+        register_fsa_input(C_FSA_INTERNAL, I_FAIL, NULL);
     }
 }
 
@@ -153,34 +63,98 @@ void
 update_attrd(const char *host, const char *name, const char *value,
              const char *user_name, gboolean is_remote_node)
 {
-    update_attrd_helper(host, name, value, NULL, user_name, is_remote_node,
-                        'U');
+    int rc = pcmk_rc_ok;
+
+    if (attrd_api == NULL) {
+        rc = pcmk_new_ipc_api(&attrd_api, pcmk_ipc_attrd);
+    }
+    if (rc == pcmk_rc_ok) {
+        uint32_t attrd_opts = pcmk__node_attr_value;
+
+        if (is_remote_node) {
+            pcmk__set_node_attr_flags(attrd_opts, pcmk__node_attr_remote);
+        }
+        rc = pcmk__attrd_api_update(attrd_api, host, name, value,
+                                    NULL, NULL, user_name, attrd_opts);
+    }
+    if (rc != pcmk_rc_ok) {
+        do_crm_log(AM_I_DC? LOG_CRIT : LOG_ERR,
+                   "Could not update attribute %s=%s for %s node %s%s: %s "
+                   CRM_XS " rc=%d", name, value, node_type(is_remote_node),
+                   host, when(), pcmk_rc_str(rc), rc);
+        handle_attr_error();
+    }
+}
+
+void
+update_attrd_list(GList *attrs, uint32_t opts)
+{
+    int rc = pcmk_rc_ok;
+
+    if (attrd_api == NULL) {
+        rc = pcmk_new_ipc_api(&attrd_api, pcmk_ipc_attrd);
+    }
+    if (rc == pcmk_rc_ok) {
+        rc = pcmk__attrd_api_update_list(attrd_api, attrs, NULL, NULL, NULL,
+                                         opts | pcmk__node_attr_value);
+    }
+    if (rc != pcmk_rc_ok) {
+        do_crm_log(AM_I_DC? LOG_CRIT : LOG_ERR,
+                   "Could not update multiple node attributes: %s "
+                   CRM_XS " rc=%d", pcmk_rc_str(rc), rc);
+        handle_attr_error();
+    }
 }
 
 void
 update_attrd_remote_node_removed(const char *host, const char *user_name)
 {
-    crm_trace("Asking attribute manager to purge Pacemaker Remote node %s",
-              host);
-    update_attrd_helper(host, NULL, NULL, NULL, user_name, TRUE, 'C');
+    int rc = pcmk_rc_ok;
+
+    if (attrd_api == NULL) {
+        rc = pcmk_new_ipc_api(&attrd_api, pcmk_ipc_attrd);
+    }
+    if (rc == pcmk_rc_ok) {
+        crm_trace("Asking attribute manager to purge Pacemaker Remote node %s",
+                  host);
+        rc = pcmk__attrd_api_purge(attrd_api, host);
+    }
+    if (rc != pcmk_rc_ok) {
+        crm_err("Could not purge Pacemaker Remote node %s "
+                "in attribute manager%s: %s " CRM_XS " rc=%d",
+                host, when(), pcmk_rc_str(rc), rc);
+    }
 }
 
 void
 update_attrd_clear_failures(const char *host, const char *rsc, const char *op,
                             const char *interval_spec, gboolean is_remote_node)
 {
-    const char *op_desc = NULL;
-    const char *interval_desc = NULL;
-    const char *node_type = is_remote_node? "Pacemaker Remote" : "cluster";
+    int rc = pcmk_rc_ok;
 
-    if (op) {
-        interval_desc = interval_spec? interval_spec : "nonrecurring";
-        op_desc = op;
-    } else {
-        interval_desc = "all";
-        op_desc = "operations";
+    if (attrd_api == NULL) {
+        rc = pcmk_new_ipc_api(&attrd_api, pcmk_ipc_attrd);
     }
-    crm_info("Asking pacemaker-attrd to clear failure of %s %s for %s on %s node %s",
-             interval_desc, op_desc, rsc, node_type, host);
-    update_attrd_helper(host, rsc, op, interval_spec, NULL, is_remote_node, 0);
+    if (rc == pcmk_rc_ok) {
+        const char *op_desc = pcmk__s(op, "operations");
+        const char *interval_desc = "all";
+        uint32_t attrd_opts = pcmk__node_attr_none;
+
+        if (op != NULL) {
+            interval_desc = pcmk__s(interval_spec, "nonrecurring");
+        }
+        if (is_remote_node) {
+            pcmk__set_node_attr_flags(attrd_opts, pcmk__node_attr_remote);
+        }
+        crm_info("Asking attribute manager to clear failure of %s %s for %s "
+                 "on %s node %s", interval_desc, op_desc, rsc,
+                 node_type(is_remote_node), host);
+        rc = pcmk__attrd_api_clear_failures(attrd_api, host, rsc, op,
+                                            interval_spec, NULL, attrd_opts);
+    }
+    if (rc != pcmk_rc_ok) {
+        crm_err("Could not clear failure attributes for %s on %s node %s%s: %s "
+                CRM_XS " rc=%d", pcmk__s(rsc, "all resources"),
+                node_type(is_remote_node), host, when(), pcmk_rc_str(rc), rc);
+    }
 }

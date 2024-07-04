@@ -3,19 +3,7 @@ Upstream-Name: pacemaker
 Source: https://github.com/ClusterLabs/pacemaker/releases
 
 Files: *
-Copyright: 1998-2018 Andrew Beekhof <andrew[at]beekhof[dot]net>
-                     David Vossel <dvossel[at]redhat[dot]com>
-                     Keisuke MORI <keisuke[dot]mori[at]gmail[dot]com>
-                     Yan Gao <ygao[at]suse[dot]com>
-                     Dan Frîncu <df[dot]cluster[at]gmail[dot]com>
-                     Raoul Scarazzini <rasca[at]miamammausalinux[dot]org>
-                     Charlie Chen
-                     Lars Marowsky-Brée <lmb[at]suse[dot]de>
-                     Dominik Klein <dk@in-telegence.net>
-                     Dejan Muhamedagic <dejan[at]suse[dot]de>
-                     Alan Robertson <alanr@unix.sh>
-                     Tanja Roth <taroth[at]suse[dot]com>
-                     Thomas Schraitle <toms[at]suse[dot]com>
+Copyright: 1998-2023 the Pacemaker project contributors
 License: GPL-2+
 
 Files: etc/init.d/pacemaker.in daemons/execd/pacemaker_remote.in
@@ -23,38 +11,16 @@ Copyright: 1998-2018 Andrew Beekhof <andrew[at]beekhof[dot]net>
                      Fabio M. Di Nitto <fdinitto@redhat.com>
 License: RevisedBSD
 
-Files: include/* lib/*
-Copyright: 1998-2018 Andrew Beekhof <andrew[at]beekhof[dot]net>
-                     David Vossel <dvossel[at]redhat[dot]com>
-                     Keisuke MORI <keisuke[dot]mori[at]gmail[dot]com>
-                     Yan Gao <ygao[at]suse[dot]com>
-                     Dan Frîncu <df[dot]cluster[at]gmail[dot]com>
-                     Raoul Scarazzini <rasca[at]miamammausalinux[dot]org>
-                     Charlie Chen
-                     Lars Marowsky-Brée <lmb[at]suse[dot]de>
-                     Dominik Klein <dk@in-telegence.net>
-                     Dejan Muhamedagic <dejan[at]suse[dot]de>
-                     Alan Robertson <alanr@unix.sh>
-                     Tanja Roth <taroth[at]suse[dot]com>
-                     Thomas Schraitle <toms[at]suse[dot]com>
+Files: include/* lib/* po/*.po
+Copyright: 1998-2023 the Pacemaker project contributors
 License: LGPL-2+
 
 Files: doc/*
-Copyright: 2009-2018 Andrew Beekhof
-           2009-2018 David Vossel
+Copyright: 2009-2023 the Pacemaker project contributors
 License: CC-BY-SA-4
 
 Files: debian/*
-Copyright: 1999-2018 Debian-HA-Maintainers <debian-ha-maintainers@lists.alioth.debian.org>
-                     Paolo Molaro <lupus@debian.org>
-                     Martin Loschwitz <madkiss@debian.org>
-                     Luk Claes <luk@debian.org>
-                     Simon Horman <horms@debian.org>
-                     Frederik Schüler <fs@debian.org>
-                     Anibal Monsalve Salazar <anibal@debian.org>
-                     Andrew Beekhof <abeekhof@suse.de>
-                     Richard B Winters <rik@mmogp.com>
-                     Ferenc Wágner <wferi@debian.org>
+Copyright: 1999-2023 Debian-HA-Maintainers <debian-ha-maintainers@lists.alioth.debian.org>
 License: GPL-2+
 
 License: RevisedBSD

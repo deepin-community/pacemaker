@@ -1,5 +1,5 @@
 /*
- * Copyright 2008-2021 the Pacemaker project contributors
+ * Copyright 2008-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -52,7 +52,7 @@ cib_prepare_common(xmlNode * root, const char *section)
 
     /* grab the section specified for the command */
     if (section != NULL && data != NULL && pcmk__str_eq(crm_element_name(data), XML_TAG_CIB, pcmk__str_none)) {
-        data = get_object_root(section, data);
+        data = pcmk_find_cib_element(data, section);
     }
 
     /* crm_log_xml_trace(root, "cib:input"); */
@@ -90,14 +90,12 @@ static int
 cib_prepare_diff(xmlNode * request, xmlNode ** data, const char **section)
 {
     xmlNode *input_fragment = NULL;
-    const char *update = crm_element_value(request, F_CIB_GLOBAL_UPDATE);
 
     *data = NULL;
     *section = NULL;
 
-    if (crm_is_true(update)) {
+    if (pcmk__xe_attr_is_true(request, F_CIB_GLOBAL_UPDATE)) {
         input_fragment = get_message_xml(request, F_CIB_UPDATE_DIFF);
-
     } else {
         input_fragment = get_message_xml(request, F_CIB_CALLDATA);
     }
@@ -142,27 +140,87 @@ cib_cleanup_none(int options, xmlNode ** data, xmlNode ** output)
 }
 
 static cib_operation_t cib_server_ops[] = {
-    // Booleans are modifies_cib, needs_privileges, needs_quorum
-    {NULL,             FALSE, FALSE, FALSE, cib_prepare_none, cib_cleanup_none,   cib_process_default},
-    {CIB_OP_QUERY,     FALSE, FALSE, FALSE, cib_prepare_none, cib_cleanup_query,  cib_process_query},
-    {CIB_OP_MODIFY,    TRUE,  TRUE,  TRUE,  cib_prepare_data, cib_cleanup_data,   cib_process_modify},
-    {CIB_OP_APPLY_DIFF,TRUE,  TRUE,  TRUE,  cib_prepare_diff, cib_cleanup_data,   cib_server_process_diff},
-    {CIB_OP_REPLACE,   TRUE,  TRUE,  TRUE,  cib_prepare_data, cib_cleanup_data,   cib_process_replace_svr},
-    {CIB_OP_CREATE,    TRUE,  TRUE,  TRUE,  cib_prepare_data, cib_cleanup_data,   cib_process_create},
-    {CIB_OP_DELETE,    TRUE,  TRUE,  TRUE,  cib_prepare_data, cib_cleanup_data,   cib_process_delete},
-    {CIB_OP_SYNC,      FALSE, TRUE,  FALSE, cib_prepare_sync, cib_cleanup_none,   cib_process_sync},
-    {CIB_OP_BUMP,      TRUE,  TRUE,  TRUE,  cib_prepare_none, cib_cleanup_output, cib_process_bump},
-    {CIB_OP_ERASE,     TRUE,  TRUE,  TRUE,  cib_prepare_none, cib_cleanup_output, cib_process_erase},
-    {CRM_OP_NOOP,      FALSE, FALSE, FALSE, cib_prepare_none, cib_cleanup_none,   cib_process_default},
-    {CIB_OP_DELETE_ALT,TRUE,  TRUE,  TRUE,  cib_prepare_data, cib_cleanup_data,   cib_process_delete_absolute},
-    {CIB_OP_UPGRADE,   TRUE,  TRUE,  TRUE,  cib_prepare_none, cib_cleanup_output, cib_process_upgrade_server},
-    {CIB_OP_SLAVE,     FALSE, TRUE,  FALSE, cib_prepare_none, cib_cleanup_none,   cib_process_readwrite},
-    {CIB_OP_SLAVEALL,  FALSE, TRUE,  FALSE, cib_prepare_none, cib_cleanup_none,   cib_process_readwrite},
-    {CIB_OP_SYNC_ONE,  FALSE, TRUE,  FALSE, cib_prepare_sync, cib_cleanup_none,   cib_process_sync_one},
-    {CIB_OP_MASTER,    TRUE,  TRUE,  FALSE, cib_prepare_data, cib_cleanup_data,   cib_process_readwrite},
-    {CIB_OP_ISMASTER,  FALSE, TRUE,  FALSE, cib_prepare_none, cib_cleanup_none,   cib_process_readwrite},
-    {"cib_shutdown_req",FALSE, TRUE, FALSE, cib_prepare_sync, cib_cleanup_none,   cib_process_shutdown_req},
-    {CRM_OP_PING,      FALSE, FALSE, FALSE, cib_prepare_none, cib_cleanup_output, cib_process_ping},
+    // Booleans are modifies_cib, needs_privileges
+    {
+        NULL, FALSE, FALSE,
+        cib_prepare_none, cib_cleanup_none, cib_process_default
+    },
+    {
+        PCMK__CIB_REQUEST_QUERY, FALSE, FALSE,
+        cib_prepare_none, cib_cleanup_query, cib_process_query
+    },
+    {
+        PCMK__CIB_REQUEST_MODIFY, TRUE, TRUE,
+        cib_prepare_data, cib_cleanup_data, cib_process_modify
+    },
+    {
+        PCMK__CIB_REQUEST_APPLY_PATCH, TRUE, TRUE,
+        cib_prepare_diff, cib_cleanup_data, cib_server_process_diff
+    },
+    {
+        PCMK__CIB_REQUEST_REPLACE, TRUE, TRUE,
+        cib_prepare_data, cib_cleanup_data, cib_process_replace_svr
+    },
+    {
+        PCMK__CIB_REQUEST_CREATE, TRUE, TRUE,
+        cib_prepare_data, cib_cleanup_data, cib_process_create
+    },
+    {
+        PCMK__CIB_REQUEST_DELETE, TRUE, TRUE,
+        cib_prepare_data, cib_cleanup_data, cib_process_delete
+    },
+    {
+        PCMK__CIB_REQUEST_SYNC_TO_ALL, FALSE, TRUE,
+        cib_prepare_sync, cib_cleanup_none, cib_process_sync
+    },
+    {
+        PCMK__CIB_REQUEST_BUMP, TRUE, TRUE,
+        cib_prepare_none, cib_cleanup_output, cib_process_bump
+    },
+    {
+        PCMK__CIB_REQUEST_ERASE, TRUE, TRUE,
+        cib_prepare_none, cib_cleanup_output, cib_process_erase
+    },
+    {
+        PCMK__CIB_REQUEST_NOOP, FALSE, FALSE,
+        cib_prepare_none, cib_cleanup_none, cib_process_default
+    },
+    {
+        PCMK__CIB_REQUEST_ABS_DELETE, TRUE, TRUE,
+        cib_prepare_data, cib_cleanup_data, cib_process_delete_absolute
+    },
+    {
+        PCMK__CIB_REQUEST_UPGRADE, TRUE, TRUE,
+        cib_prepare_none, cib_cleanup_output, cib_process_upgrade_server
+    },
+    {
+        PCMK__CIB_REQUEST_SECONDARY, FALSE, TRUE,
+        cib_prepare_none, cib_cleanup_none, cib_process_readwrite
+    },
+    {
+        PCMK__CIB_REQUEST_ALL_SECONDARY, FALSE, TRUE,
+        cib_prepare_none, cib_cleanup_none, cib_process_readwrite
+    },
+    {
+        PCMK__CIB_REQUEST_SYNC_TO_ONE, FALSE, TRUE,
+        cib_prepare_sync, cib_cleanup_none, cib_process_sync_one
+    },
+    {
+        PCMK__CIB_REQUEST_PRIMARY, TRUE, TRUE,
+        cib_prepare_data, cib_cleanup_data, cib_process_readwrite
+    },
+    {
+        PCMK__CIB_REQUEST_IS_PRIMARY, FALSE, TRUE,
+        cib_prepare_none, cib_cleanup_none, cib_process_readwrite
+    },
+    {
+        PCMK__CIB_REQUEST_SHUTDOWN, FALSE, TRUE,
+        cib_prepare_sync, cib_cleanup_none, cib_process_shutdown_req
+    },
+    {
+        CRM_OP_PING, FALSE, FALSE,
+        cib_prepare_none, cib_cleanup_output, cib_process_ping
+    },
 };
 
 int
@@ -223,7 +281,6 @@ cib_msg_copy(xmlNode * msg, gboolean with_data)
         F_CIB_EXISTING,
         F_CIB_SEENCOUNT,
         F_CIB_TIMEOUT,
-        F_CIB_CALLBACK_TOKEN,
         F_CIB_GLOBAL_UPDATE,
         F_CIB_CLIENTNAME,
         F_CIB_USER,
@@ -272,20 +329,11 @@ cib_op_modifies(int call_type)
 }
 
 int
-cib_op_can_run(int call_type, int call_options, gboolean privileged, gboolean global_update)
+cib_op_can_run(int call_type, int call_options, bool privileged)
 {
-    if (privileged == FALSE && cib_server_ops[call_type].needs_privileges) {
-        /* abort */
+    if (!privileged && cib_server_ops[call_type].needs_privileges) {
         return -EACCES;
     }
-#if 0
-    if (rc == pcmk_ok
-        && stand_alone == FALSE
-        && global_update == FALSE
-        && (call_options & cib_quorum_override) == 0 && cib_server_ops[call_type].needs_quorum) {
-        return -pcmk_err_no_quorum;
-    }
-#endif
     return pcmk_ok;
 }
 

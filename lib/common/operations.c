@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -13,7 +13,6 @@
 #  define _GNU_SOURCE
 #endif
 
-#include <regex.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -26,8 +25,6 @@
 #include <crm/common/xml.h>
 #include <crm/common/xml_internal.h>
 #include <crm/common/util.h>
-
-static regex_t *notify_migrate_re = NULL;
 
 /*!
  * \brief Generate an operation key (RESOURCE_ACTION_INTERVAL)
@@ -65,164 +62,121 @@ convert_interval(const char *s, guint *interval_ms)
     return TRUE;
 }
 
-static gboolean
-try_fast_match(const char *key, const char *underbar1, const char *underbar2,
-               char **rsc_id, char **op_type, guint *interval_ms)
+/*!
+ * \internal
+ * \brief Check for underbar-separated substring match
+ *
+ * \param[in] key       Overall string being checked
+ * \param[in] position  Match before underbar at this \p key index
+ * \param[in] matches   Substrings to match (may contain underbars)
+ *
+ * \return \p key index of underbar before any matching substring,
+ *         or 0 if none
+ */
+static size_t
+match_before(const char *key, size_t position, const char **matches)
 {
-    if (interval_ms) {
-        if (!convert_interval(underbar2+1, interval_ms)) {
-            return FALSE;
-        }
-    }
+    for (int i = 0; matches[i] != NULL; ++i) {
+        const size_t match_len = strlen(matches[i]);
 
-    if (rsc_id) {
-        *rsc_id = strndup(key, underbar1-key);
-    }
+        // Must have at least X_MATCH before position
+        if (position > (match_len + 1)) {
+            const size_t possible = position - match_len - 1;
 
-    if (op_type) {
-        *op_type = strndup(underbar1+1, underbar2-underbar1-1);
-    }
-
-    return TRUE;
-}
-
-static gboolean
-try_basic_match(const char *key, char **rsc_id, char **op_type, guint *interval_ms)
-{
-    char *interval_sep = NULL;
-    char *type_sep = NULL;
-
-    // Parse interval at end of string
-    interval_sep = strrchr(key, '_');
-    if (interval_sep == NULL) {
-        return FALSE;
-    }
-
-    if (interval_ms) {
-        if (!convert_interval(interval_sep+1, interval_ms)) {
-            return FALSE;
-        }
-    }
-
-    type_sep = interval_sep-1;
-
-    while (1) {
-        if (*type_sep == '_') {
-            break;
-        } else if (type_sep == key) {
-            if (interval_ms) {
-                *interval_ms = 0;
+            if ((key[possible] == '_')
+                && (strncmp(key + possible + 1, matches[i], match_len) == 0)) {
+                return possible;
             }
-
-            return FALSE;
-        }
-
-        type_sep--;
-    }
-
-    if (op_type) {
-        // Add one here to skip the leading underscore we landed on in the
-        // while loop.
-        *op_type = strndup(type_sep+1, interval_sep-type_sep-1);
-    }
-
-    // Everything else is the name of the resource.
-    if (rsc_id) {
-        *rsc_id = strndup(key, type_sep-key);
-    }
-
-    return TRUE;
-}
-
-static gboolean
-try_migrate_notify_match(const char *key, char **rsc_id, char **op_type, guint *interval_ms)
-{
-    int rc = 0;
-    size_t nmatch = 8;
-    regmatch_t pmatch[nmatch];
-
-    if (notify_migrate_re == NULL) {
-        // cppcheck-suppress memleak
-        notify_migrate_re = calloc(1, sizeof(regex_t));
-        rc = regcomp(notify_migrate_re, "^(.*)_(migrate_(from|to)|(pre|post)_notify_([a-z]+|migrate_(from|to)))_([0-9]+)$",
-                     REG_EXTENDED);
-        CRM_ASSERT(rc == 0);
-    }
-
-    rc = regexec(notify_migrate_re, key, nmatch, pmatch, 0);
-    if (rc == REG_NOMATCH) {
-        return FALSE;
-    }
-
-    if (rsc_id) {
-        *rsc_id = strndup(key+pmatch[1].rm_so, pmatch[1].rm_eo-pmatch[1].rm_so);
-    }
-
-    if (op_type) {
-        *op_type = strndup(key+pmatch[2].rm_so, pmatch[2].rm_eo-pmatch[2].rm_so);
-    }
-
-    if (interval_ms) {
-        if (!convert_interval(key+pmatch[7].rm_so, interval_ms)) {
-            if (rsc_id) {
-                free(*rsc_id);
-                *rsc_id = NULL;
-            }
-
-            if (op_type) {
-                free(*op_type);
-                *op_type = NULL;
-            }
-
-            return FALSE;
         }
     }
-
-    return TRUE;
+    return 0;
 }
 
 gboolean
 parse_op_key(const char *key, char **rsc_id, char **op_type, guint *interval_ms)
 {
-    char *underbar1 = NULL;
-    char *underbar2 = NULL;
-    char *underbar3 = NULL;
+    guint local_interval_ms = 0;
+    const size_t key_len = (key == NULL)? 0 : strlen(key);
+
+    // Operation keys must be formatted as RSC_ACTION_INTERVAL
+    size_t action_underbar = 0;   // Index in key of underbar before ACTION
+    size_t interval_underbar = 0; // Index in key of underbar before INTERVAL
+    size_t possible = 0;
+
+    /* Underbar was a poor choice of separator since both RSC and ACTION can
+     * contain underbars. Here, list action names and name prefixes that can.
+     */
+    const char *actions_with_underbars[] = {
+        CRMD_ACTION_MIGRATED,
+        CRMD_ACTION_MIGRATE,
+        NULL
+    };
+    const char *action_prefixes_with_underbars[] = {
+        "pre_" CRMD_ACTION_NOTIFY,
+        "post_" CRMD_ACTION_NOTIFY,
+        "confirmed-pre_" CRMD_ACTION_NOTIFY,
+        "confirmed-post_" CRMD_ACTION_NOTIFY,
+        NULL,
+    };
 
     // Initialize output variables in case of early return
     if (rsc_id) {
         *rsc_id = NULL;
     }
-
     if (op_type) {
         *op_type = NULL;
     }
-
     if (interval_ms) {
         *interval_ms = 0;
     }
 
-    CRM_CHECK(key && *key, return FALSE);
-
-    underbar1 = strchr(key, '_');
-    if (!underbar1) {
+    // RSC_ACTION_INTERVAL implies a minimum of 5 characters
+    if (key_len < 5) {
         return FALSE;
     }
 
-    underbar2 = strchr(underbar1+1, '_');
-    if (!underbar2) {
+    // Find, parse, and validate interval
+    interval_underbar = key_len - 2;
+    while ((interval_underbar > 2) && (key[interval_underbar] != '_')) {
+        --interval_underbar;
+    }
+    if ((interval_underbar == 2)
+        || !convert_interval(key + interval_underbar + 1, &local_interval_ms)) {
         return FALSE;
     }
 
-    underbar3 = strchr(underbar2+1, '_');
-
-    if (!underbar3) {
-        return try_fast_match(key, underbar1, underbar2,
-                              rsc_id, op_type, interval_ms);
-    } else if (try_migrate_notify_match(key, rsc_id, op_type, interval_ms)) {
-        return TRUE;
-    } else {
-        return try_basic_match(key, rsc_id, op_type, interval_ms);
+    // Find the base (OCF) action name, disregarding prefixes
+    action_underbar = match_before(key, interval_underbar,
+                                   actions_with_underbars);
+    if (action_underbar == 0) {
+        action_underbar = interval_underbar - 2;
+        while ((action_underbar > 0) && (key[action_underbar] != '_')) {
+            --action_underbar;
+        }
+        if (action_underbar == 0) {
+            return FALSE;
+        }
     }
+    possible = match_before(key, action_underbar,
+                            action_prefixes_with_underbars);
+    if (possible != 0) {
+        action_underbar = possible;
+    }
+
+    // Set output variables
+    if (rsc_id != NULL) {
+        *rsc_id = strndup(key, action_underbar);
+        CRM_ASSERT(*rsc_id != NULL);
+    }
+    if (op_type != NULL) {
+        *op_type = strndup(key + action_underbar + 1,
+                           interval_underbar - action_underbar - 1);
+        CRM_ASSERT(*op_type != NULL);
+    }
+    if (interval_ms != NULL) {
+        *interval_ms = local_interval_ms;
+    }
+    return TRUE;
 }
 
 char *
@@ -263,7 +217,7 @@ decode_transition_magic(const char *magic, char **uuid, int *transition_id, int 
 
     CRM_CHECK(magic != NULL, return FALSE);
 
-#ifdef SSCANF_HAS_M
+#ifdef HAVE_SSCANF_M
     res = sscanf(magic, "%d:%d;%ms", &local_op_status, &local_op_rc, &key);
 #else
     key = calloc(1, strlen(magic) - 3); // magic must have >=4 other characters
@@ -272,7 +226,7 @@ decode_transition_magic(const char *magic, char **uuid, int *transition_id, int 
 #endif
     if (res == EOF) {
         crm_err("Could not decode transition information '%s': %s",
-                magic, pcmk_strerror(errno));
+                magic, pcmk_rc_str(errno));
         result = FALSE;
     } else if (res < 3) {
         crm_warn("Transition information '%s' incomplete (%d of 3 expected items)",
@@ -423,7 +377,7 @@ pcmk__filter_op_for_digest(xmlNode *param_set)
 }
 
 int
-rsc_op_expected_rc(lrmd_event_data_t * op)
+rsc_op_expected_rc(const lrmd_event_data_t *op)
 {
     int rc = 0;
 
@@ -437,15 +391,17 @@ gboolean
 did_rsc_op_fail(lrmd_event_data_t * op, int target_rc)
 {
     switch (op->op_status) {
-        case PCMK_LRM_OP_CANCELLED:
-        case PCMK_LRM_OP_PENDING:
+        case PCMK_EXEC_CANCELLED:
+        case PCMK_EXEC_PENDING:
             return FALSE;
 
-        case PCMK_LRM_OP_NOTSUPPORTED:
-        case PCMK_LRM_OP_TIMEOUT:
-        case PCMK_LRM_OP_ERROR:
-        case PCMK_LRM_OP_NOT_CONNECTED:
-        case PCMK_LRM_OP_INVALID:
+        case PCMK_EXEC_NOT_SUPPORTED:
+        case PCMK_EXEC_TIMEOUT:
+        case PCMK_EXEC_ERROR:
+        case PCMK_EXEC_NOT_CONNECTED:
+        case PCMK_EXEC_NO_FENCE_DEVICE:
+        case PCMK_EXEC_NO_SECRETS:
+        case PCMK_EXEC_INVALID:
             return TRUE;
 
         default:
@@ -460,11 +416,11 @@ did_rsc_op_fail(lrmd_event_data_t * op, int target_rc)
 /*!
  * \brief Create a CIB XML element for an operation
  *
- * \param[in] parent         If not NULL, make new XML node a child of this one
- * \param[in] prefix         Generate an ID using this prefix
- * \param[in] task           Operation task to set
- * \param[in] interval_spec  Operation interval to set
- * \param[in] timeout        If not NULL, operation timeout to set
+ * \param[in,out] parent         If not NULL, make new XML node a child of this
+ * \param[in]     prefix         Generate an ID using this prefix
+ * \param[in]     task           Operation task to set
+ * \param[in]     interval_spec  Operation interval to set
+ * \param[in]     timeout        If not NULL, operation timeout to set
  *
  * \return New XML object on success, NULL otherwise
  */
@@ -492,32 +448,83 @@ crm_create_op_xml(xmlNode *parent, const char *prefix, const char *task,
  * \param[in] rsc_class  Resource agent class (or NULL to skip class check)
  * \param[in] op         Operation action (or NULL to skip op check)
  *
- * \return TRUE if operation needs meta-data, FALSE otherwise
+ * \return true if operation needs meta-data, false otherwise
  * \note At least one of rsc_class and op must be specified.
  */
 bool
 crm_op_needs_metadata(const char *rsc_class, const char *op)
 {
-    /* Agent meta-data is used to determine whether an agent reload is possible,
-     * and to evaluate versioned parameters -- so if this op is not relevant to
-     * those features, we don't need the meta-data.
+    /* Agent metadata is used to determine whether an agent reload is possible,
+     * so if this op is not relevant to that feature, we don't need metadata.
      */
 
     CRM_CHECK((rsc_class != NULL) || (op != NULL), return false);
 
     if ((rsc_class != NULL)
         && !pcmk_is_set(pcmk_get_ra_caps(rsc_class), pcmk_ra_cap_params)) {
-        /* Meta-data is only needed for resource classes that use parameters */
+        // Metadata is needed only for resource classes that use parameters
         return false;
     }
     if (op == NULL) {
         return true;
     }
 
-    /* Meta-data is only needed for these actions */
+    // Metadata is needed only for these actions
     return pcmk__str_any_of(op, CRMD_ACTION_START, CRMD_ACTION_STATUS,
                             CRMD_ACTION_PROMOTE, CRMD_ACTION_DEMOTE,
                             CRMD_ACTION_RELOAD, CRMD_ACTION_RELOAD_AGENT,
                             CRMD_ACTION_MIGRATE, CRMD_ACTION_MIGRATED,
                             CRMD_ACTION_NOTIFY, NULL);
+}
+
+/*!
+ * \internal
+ * \brief Check whether an action name is for a fencing action
+ *
+ * \param[in] action  Action name to check
+ *
+ * \return true if \p action is "off", "reboot", or "poweroff", otherwise false
+ */
+bool
+pcmk__is_fencing_action(const char *action)
+{
+    return pcmk__str_any_of(action, "off", "reboot", "poweroff", NULL);
+}
+
+bool
+pcmk_is_probe(const char *task, guint interval)
+{
+    if (task == NULL) {
+        return false;
+    }
+
+    return (interval == 0) && pcmk__str_eq(task, CRMD_ACTION_STATUS, pcmk__str_none);
+}
+
+bool
+pcmk_xe_is_probe(const xmlNode *xml_op)
+{
+    const char *task = crm_element_value(xml_op, XML_LRM_ATTR_TASK);
+    const char *interval_ms_s = crm_element_value(xml_op, XML_LRM_ATTR_INTERVAL_MS);
+    int interval_ms;
+
+    pcmk__scan_min_int(interval_ms_s, &interval_ms, 0);
+    return pcmk_is_probe(task, interval_ms);
+}
+
+bool
+pcmk_xe_mask_probe_failure(const xmlNode *xml_op)
+{
+    int status = PCMK_EXEC_UNKNOWN;
+    int rc = PCMK_OCF_OK;
+
+    if (!pcmk_xe_is_probe(xml_op)) {
+        return false;
+    }
+
+    crm_element_value_int(xml_op, XML_LRM_ATTR_OPSTATUS, &status);
+    crm_element_value_int(xml_op, XML_LRM_ATTR_RC, &rc);
+
+    return rc == PCMK_OCF_NOT_INSTALLED || rc == PCMK_OCF_INVALID_PARAM ||
+           status == PCMK_EXEC_NOT_INSTALLED;
 }

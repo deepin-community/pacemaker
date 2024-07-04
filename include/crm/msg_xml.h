@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -7,8 +7,14 @@
  * version 2.1 or later (LGPLv2.1+) WITHOUT ANY WARRANTY.
  */
 
-#ifndef XML_TAGS__H
-#  define XML_TAGS__H
+#ifndef PCMK__CRM_MSG_XML__H
+#  define PCMK__CRM_MSG_XML__H
+
+#  include <crm/common/xml.h>
+
+#if !defined(PCMK_ALLOW_DEPRECATED) || (PCMK_ALLOW_DEPRECATED == 1)
+#include <crm/msg_xml_compat.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,19 +24,24 @@ extern "C" {
  * attribute names).
  *
  * For consistency, new constants should start with "PCMK_", followed by "XE"
- * for XML element names and "XA" for XML attribute names. Old names that don't
- * follow this policy should eventually be deprecated and replaced with names
- * that do.
+ * for XML element names, "XA" for XML attribute names, and "META" for meta
+ * attribute names. Old names that don't follow this policy should eventually be
+ * deprecated and replaced with names that do.
  */
 
 /*
  * XML elements
  */
 
+#define PCMK_XE_DATE_EXPRESSION             "date_expression"
+#define PCMK_XE_OP_EXPRESSION               "op_expression"
+
 /* This has been deprecated as a CIB element (an alias for <clone> with
  * "promotable" set to "true") since 2.0.0.
  */
 #define PCMK_XE_PROMOTABLE_LEGACY           "master"
+
+#define PCMK_XE_RSC_EXPRESSION              "rsc_expression"
 
 
 /*
@@ -40,8 +51,16 @@ extern "C" {
 /* These have been deprecated as CIB <clone> element attributes (aliases for
  * "promoted-max" and "promoted-node-max") since 2.0.0.
  */
-#define PCMK_XE_PROMOTED_MAX_LEGACY         "master-max"
-#define PCMK_XE_PROMOTED_NODE_MAX_LEGACY    "master-node-max"
+#define PCMK_XA_PROMOTED_MAX_LEGACY         "master-max"
+#define PCMK_XA_PROMOTED_NODE_MAX_LEGACY    "master-node-max"
+
+
+/*
+ * Meta attributes
+ */
+
+#define PCMK_META_ENABLED                   "enabled"
+
 
 /*
  * Older constants that don't follow current naming
@@ -112,7 +131,6 @@ extern "C" {
 #  define XML_ATTR_CRM_VERSION		"crm_feature_set"
 #  define XML_ATTR_DIGEST		"digest"
 #  define XML_ATTR_VALIDATION		"validate-with"
-#  define XML_ATTR_RA_VERSION		"ra-version"
 
 #  define XML_ATTR_QUORUM_PANIC		"no-quorum-panic"
 #  define XML_ATTR_HAVE_QUORUM		"have-quorum"
@@ -127,6 +145,7 @@ extern "C" {
 #  define XML_ATTR_VERSION		"version"
 #  define XML_ATTR_DESC			"description"
 #  define XML_ATTR_ID			"id"
+#  define XML_ATTR_NAME			"name"
 #  define XML_ATTR_IDREF			"id-ref"
 #  define XML_ATTR_ID_LONG		"long-id"
 #  define XML_ATTR_TYPE			"type"
@@ -149,7 +168,6 @@ extern "C" {
 #  define XML_ATTR_RESPONSE		"response"
 
 #  define XML_ATTR_UNAME		"uname"
-#  define XML_ATTR_UUID			"id"
 #  define XML_ATTR_REFERENCE		"reference"
 
 #  define XML_CRM_TAG_PING		"ping_response"
@@ -163,6 +181,7 @@ extern "C" {
 #  define XML_PING_ATTR_PACEMAKERDSTATE_RUNNING "running"
 #  define XML_PING_ATTR_PACEMAKERDSTATE_SHUTTINGDOWN "shutting_down"
 #  define XML_PING_ATTR_PACEMAKERDSTATE_SHUTDOWNCOMPLETE "shutdown_complete"
+#  define XML_PING_ATTR_PACEMAKERDSTATE_REMOTE "remote"
 
 #  define XML_TAG_FRAGMENT		"cib_fragment"
 
@@ -203,9 +222,6 @@ extern "C" {
 #  define XML_TAG_ATTR_SETS	   	"instance_attributes"
 #  define XML_TAG_META_SETS	   	"meta_attributes"
 #  define XML_TAG_ATTRS			"attributes"
-#  define XML_TAG_RSC_VER_ATTRS	"rsc_versioned_attrs"
-#  define XML_TAG_OP_VER_ATTRS         "op_versioned_attrs"
-#  define XML_TAG_OP_VER_META          "op_versioned_meta"
 #  define XML_TAG_PARAMS		"parameters"
 #  define XML_TAG_PARAM			"param"
 #  define XML_TAG_UTILIZATION		"utilization"
@@ -266,7 +282,9 @@ extern "C" {
 #  define XML_AGENT_ATTR_CLASS		"class"
 #  define XML_AGENT_ATTR_PROVIDER	"provider"
 
+//! \deprecated Do not use (will be removed in a future release)
 #  define XML_CIB_ATTR_REPLACE       	"replace"
+
 #  define XML_CIB_ATTR_SOURCE       	"source"
 
 #  define XML_CIB_ATTR_PRIORITY     	"priority"
@@ -356,9 +374,13 @@ extern "C" {
 #  define XML_COLOC_ATTR_TARGET		"with-rsc"
 #  define XML_COLOC_ATTR_TARGET_ROLE	"with-rsc-role"
 #  define XML_COLOC_ATTR_NODE_ATTR	"node-attribute"
-#  define XML_COLOC_ATTR_SOURCE_INSTANCE	"rsc-instance"
-#  define XML_COLOC_ATTR_TARGET_INSTANCE	"with-rsc-instance"
 #  define XML_COLOC_ATTR_INFLUENCE          "influence"
+
+//! \deprecated Deprecated since 2.1.5
+#  define XML_COLOC_ATTR_SOURCE_INSTANCE	"rsc-instance"
+
+//! \deprecated Deprecated since 2.1.5
+#  define XML_COLOC_ATTR_TARGET_INSTANCE	"with-rsc-instance"
 
 #  define XML_LOC_ATTR_SOURCE           "rsc"
 #  define XML_LOC_ATTR_SOURCE_PATTERN   "rsc-pattern"
@@ -367,9 +389,13 @@ extern "C" {
 #  define XML_ORDER_ATTR_THEN		"then"
 #  define XML_ORDER_ATTR_FIRST_ACTION	"first-action"
 #  define XML_ORDER_ATTR_THEN_ACTION	"then-action"
-#  define XML_ORDER_ATTR_FIRST_INSTANCE	"first-instance"
-#  define XML_ORDER_ATTR_THEN_INSTANCE	"then-instance"
 #  define XML_ORDER_ATTR_KIND		"kind"
+
+//! \deprecated Deprecated since 2.1.5
+#  define XML_ORDER_ATTR_FIRST_INSTANCE	"first-instance"
+
+//! \deprecated Deprecated since 2.1.5
+#  define XML_ORDER_ATTR_THEN_INSTANCE	"then-instance"
 
 #  define XML_TICKET_ATTR_TICKET	"ticket"
 #  define XML_TICKET_ATTR_LOSS_POLICY	"loss-policy"
@@ -451,15 +477,8 @@ extern "C" {
 #  define XML_DIFF_PATH                 "path"
 #  define XML_DIFF_POSITION             "position"
 
-#  include <crm/common/xml.h>
-
 #  define ID(x) crm_element_value(x, XML_ATTR_ID)
 #  define TYPE(x) crm_element_name(x)
-
-
-#if !defined(PCMK_ALLOW_DEPRECATED) || (PCMK_ALLOW_DEPRECATED == 1)
-#include <crm/msg_xml_compat.h>
-#endif
 
 #ifdef __cplusplus
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2020 the Pacemaker project contributors
+ * Copyright 2020-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -31,7 +31,8 @@ static const char *pacemakerd_state_str[] = {
     XML_PING_ATTR_PACEMAKERDSTATE_WAITPING,
     XML_PING_ATTR_PACEMAKERDSTATE_RUNNING,
     XML_PING_ATTR_PACEMAKERDSTATE_SHUTTINGDOWN,
-    XML_PING_ATTR_PACEMAKERDSTATE_SHUTDOWNCOMPLETE
+    XML_PING_ATTR_PACEMAKERDSTATE_SHUTDOWNCOMPLETE,
+    XML_PING_ATTR_PACEMAKERDSTATE_REMOTE,
 };
 
 enum pcmk_pacemakerd_state
@@ -60,6 +61,62 @@ pcmk_pacemakerd_api_daemon_state_enum2text(
         return pacemakerd_state_str[state];
     }
     return "invalid";
+}
+
+/*!
+ * \internal
+ * \brief Return a friendly string representation of a \p pacemakerd state
+ *
+ * \param[in] state  \p pacemakerd state
+ *
+ * \return A user-friendly string representation of \p state, or
+ *         <tt>"Invalid pacemakerd state"</tt>
+ */
+const char *
+pcmk__pcmkd_state_enum2friendly(enum pcmk_pacemakerd_state state)
+{
+    switch (state) {
+        case pcmk_pacemakerd_state_init:
+            return "Initializing pacemaker";
+        case pcmk_pacemakerd_state_starting_daemons:
+            return "Pacemaker daemons are starting";
+        case pcmk_pacemakerd_state_wait_for_ping:
+            return "Waiting for startup trigger from SBD";
+        case pcmk_pacemakerd_state_running:
+            return "Pacemaker is running";
+        case pcmk_pacemakerd_state_shutting_down:
+            return "Pacemaker daemons are shutting down";
+        case pcmk_pacemakerd_state_shutdown_complete:
+            /* Assuming pacemakerd won't process messages while in
+             * shutdown_complete state unless reporting to SBD
+             */
+            return "Pacemaker daemons are shut down (reporting to SBD)";
+        case pcmk_pacemakerd_state_remote:
+            return "pacemaker-remoted is running (on a Pacemaker Remote node)";
+        default:
+            return "Invalid pacemakerd state";
+    }
+}
+
+/*!
+ * \internal
+ * \brief Get a string representation of a \p pacemakerd API reply type
+ *
+ * \param[in] reply  \p pacemakerd API reply type
+ *
+ * \return String representation of a \p pacemakerd API reply type
+ */
+const char *
+pcmk__pcmkd_api_reply2str(enum pcmk_pacemakerd_api_reply reply)
+{
+    switch (reply) {
+        case pcmk_pacemakerd_reply_ping:
+            return "ping";
+        case pcmk_pacemakerd_reply_shutdown:
+            return "shutdown";
+        default:
+            return "unknown";
+    }
 }
 
 // \return Standard Pacemaker return code
@@ -133,7 +190,7 @@ reply_expected(pcmk_ipc_api_t *api, xmlNode *request)
     return pcmk__str_any_of(command, CRM_OP_PING, CRM_OP_QUIT, NULL);
 }
 
-static void
+static bool
 dispatch(pcmk_ipc_api_t *api, xmlNode *reply)
 {
     crm_exit_t status = CRM_EX_OK;
@@ -144,20 +201,24 @@ dispatch(pcmk_ipc_api_t *api, xmlNode *reply)
     const char *value = NULL;
     long long value_ll = 0;
 
-    if (pcmk__str_eq((const char *) reply->name, "ack", pcmk__str_casei)) {
-        return;
+    if (pcmk__str_eq((const char *) reply->name, "ack", pcmk__str_none)) {
+        long long int ack_status = 0;
+        pcmk__scan_ll(crm_element_value(reply, "status"), &ack_status, CRM_EX_OK);
+        return ack_status == CRM_EX_INDETERMINATE;
     }
 
     value = crm_element_value(reply, F_CRM_MSG_TYPE);
-    if ((value == NULL) || (strcmp(value, XML_ATTR_RESPONSE))) {
-        crm_debug("Unrecognizable pacemakerd message: invalid message type '%s'",
-                  crm_str(value));
+    if (pcmk__str_empty(value)
+        || !pcmk__str_eq(value, XML_ATTR_RESPONSE, pcmk__str_none)) {
+        crm_info("Unrecognizable message from pacemakerd: "
+                 "message type '%s' not '" XML_ATTR_RESPONSE "'",
+                 pcmk__s(value, ""));
         status = CRM_EX_PROTOCOL;
         goto done;
     }
 
-    if (crm_element_value(reply, XML_ATTR_REFERENCE) == NULL) {
-        crm_debug("Unrecognizable pacemakerd message: no reference");
+    if (pcmk__str_empty(crm_element_value(reply, XML_ATTR_REFERENCE))) {
+        crm_info("Unrecognizable message from pacemakerd: no reference");
         status = CRM_EX_PROTOCOL;
         goto done;
     }
@@ -176,24 +237,26 @@ dispatch(pcmk_ipc_api_t *api, xmlNode *reply)
         reply_data.data.ping.status =
             pcmk__str_eq(crm_element_value(msg_data, XML_PING_ATTR_STATUS), "ok",
                          pcmk__str_casei)?pcmk_rc_ok:pcmk_rc_error;
-        reply_data.data.ping.last_good = (time_t) value_ll;
+        reply_data.data.ping.last_good = (value_ll < 0)? 0 : (time_t) value_ll;
         reply_data.data.ping.sys_from = crm_element_value(msg_data,
                                             XML_PING_ATTR_SYSFROM);
     } else if (pcmk__str_eq(value, CRM_OP_QUIT, pcmk__str_none)) {
         reply_data.reply_type = pcmk_pacemakerd_reply_shutdown;
         reply_data.data.shutdown.status = atoi(crm_element_value(msg_data, XML_LRM_ATTR_OPSTATUS));
     } else {
-        crm_debug("Unrecognizable pacemakerd message: '%s'", crm_str(value));
+        crm_info("Unrecognizable message from pacemakerd: "
+                 "unknown command '%s'", pcmk__s(value, ""));
         status = CRM_EX_PROTOCOL;
         goto done;
     }
 
 done:
     pcmk__call_ipc_callback(api, pcmk_ipc_event_reply, status, &reply_data);
+    return false;
 }
 
 pcmk__ipc_methods_t *
-pcmk__pacemakerd_api_methods()
+pcmk__pacemakerd_api_methods(void)
 {
     pcmk__ipc_methods_t *cmds = calloc(1, sizeof(pcmk__ipc_methods_t));
 
@@ -215,20 +278,22 @@ do_pacemakerd_api_call(pcmk_ipc_api_t *api, const char *ipc_name, const char *ta
     xmlNode *cmd;
     int rc;
 
-    CRM_CHECK(api != NULL, return -EINVAL);
+    if (api == NULL) {
+        return EINVAL;
+    }
+
     private = api->api_data;
     CRM_ASSERT(private != NULL);
 
     cmd = create_request(task, NULL, NULL, CRM_SYSTEM_MCP,
-        ipc_name?ipc_name:((crm_system_name? crm_system_name : "client")),
-        private->client_uuid);
+                         pcmk__ipc_sys_name(ipc_name, "client"),
+                         private->client_uuid);
 
     if (cmd) {
         rc = pcmk__send_ipc_request(api, cmd);
         if (rc != pcmk_rc_ok) {
-            crm_debug("Couldn't ping pacemakerd: %s rc=%d",
-                pcmk_rc_str(rc), rc);
-            rc = ECOMM;
+            crm_debug("Couldn't send request to pacemakerd: %s rc=%d",
+                      pcmk_rc_str(rc), rc);
         }
         free_xml(cmd);
     } else {

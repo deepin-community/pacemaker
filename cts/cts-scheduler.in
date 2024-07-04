@@ -2,7 +2,7 @@
 """ Regression tests for Pacemaker's scheduler
 """
 
-__copyright__ = "Copyright 2004-2021 the Pacemaker project contributors"
+__copyright__ = "Copyright 2004-2023 the Pacemaker project contributors"
 __license__ = "GNU General Public License version 2 or later (GPLv2+) WITHOUT ANY WARRANTY"
 
 import io
@@ -15,6 +15,19 @@ import shutil
 import argparse
 import subprocess
 import platform
+import tempfile
+
+# These imports allow running from a source checkout after running `make`.
+# Note that while this doesn't necessarily mean it will successfully run tests,
+# but being able to see --help output can be useful.
+if os.path.exists("@abs_top_srcdir@/python"):
+    sys.path.insert(0, "@abs_top_srcdir@/python")
+
+if os.path.exists("@abs_top_builddir@/python") and "@abs_top_builddir@" != "@abs_top_srcdir@":
+    sys.path.insert(0, "@abs_top_builddir@/python")
+
+from pacemaker.buildoptions import BuildOptions
+from pacemaker.exitstatus import ExitStatus
 
 DESC = """Regression tests for Pacemaker's scheduler"""
 
@@ -53,11 +66,17 @@ TESTS = [
         [ "group15", "Negative group colocation" ],
         [ "bug-1573", "Partial stop of a group with two children" ],
         [ "bug-1718", "Mandatory group ordering - Stop group_FUN" ],
-        [ "bug-lf-2613", "Move group on failure" ],
+        [ "failed-sticky-group", "Move group on last member failure despite infinite stickiness" ],
+        [ "failed-sticky-anticolocated-group",
+          "Move group on last member failure despite infinite stickiness and optional anti-colocation"
+        ],
         [ "bug-lf-2619", "Move group on clone failure" ],
         [ "group-fail", "Ensure stop order is preserved for partially active groups" ],
         [ "group-unmanaged", "No need to restart r115 because r114 is unmanaged" ],
         [ "group-unmanaged-stopped", "Make sure r115 is stopped when r114 fails" ],
+        [ "partial-unmanaged-group",
+          "New member in partially unmanaged group"
+        ],
         [ "group-dependents", "Account for the location preferences of things colocated with a group" ],
         [ "group-stop-ordering", "Ensure blocked group member stop does not force other member stops" ],
         [ "colocate-unmanaged-group", "Respect mandatory colocations even if earlier group member is unmanaged" ],
@@ -92,6 +111,7 @@ TESTS = [
         [ "not-reschedule-unneeded-monitor",
                      "Do not reschedule unneeded monitors while resource definitions have changed" ],
         [ "reload-becomes-restart", "Cancel reload if restart becomes required" ],
+        [ "restart-with-extra-op-params", "Restart if with extra operation parameters upon changes of any" ],
     ],
     [
         [ "target-0", "Target Role : baseline" ],
@@ -112,6 +132,9 @@ TESTS = [
         [ "probe-3", "Probe (pending node)" ],
         [ "probe-4", "Probe (pending node + stopped resource)" ],
         [ "probe-pending-node", "Probe (pending node + unmanaged resource)" ],
+        [ "failed-probe-primitive", "Maskable vs. unmaskable probe failures on primitive resources" ],
+        [ "failed-probe-clone", "Maskable vs. unmaskable probe failures on cloned resources" ],
+        [ "expired-failed-probe-primitive", "Maskable, expired probe failure on primitive resources" ],
         [ "standby", "Standby" ],
         [ "comments", "Comments" ],
     ],
@@ -229,11 +252,27 @@ TESTS = [
           "cl#5187 - Prevent resources in an anti-colocation from even temporarily running on a same node" ],
         [ "anti-colocation-promoted", "Organize order of actions for promoted resources in anti-colocations" ],
         [ "anti-colocation-unpromoted", "Organize order of actions for unpromoted resources in anti-colocations" ],
+        [ "group-anticolocation", "Group with failed last member anti-colocated with another group" ],
+        [ "group-colocation-failure",
+          "Group with sole member failed, colocated with another group"
+        ],
         [ "enforce-colo1", "Always enforce B with A INFINITY" ],
         [ "complex_enforce_colo", "Always enforce B with A INFINITY. (make sure heat-engine stops)" ],
         [ "coloc-dependee-should-stay", "Stickiness outweighs group colocation" ],
         [ "coloc-dependee-should-move", "Group colocation outweighs stickiness" ],
         [ "colocation-influence", "Respect colocation influence" ],
+        [ "colocation-priority-group", "Apply group colocations in order of primary priority" ],
+        [ "colocation-vs-stickiness", "Group stickiness outweighs anti-colocation score" ],
+        [ "promoted-with-blocked", "Promoted role colocated with a resource with blocked start" ],
+        [ "primitive-with-group-with-clone",
+          "Consider group dependent when colocating with clone"
+        ],
+        [ "primitive-with-group-with-promoted",
+          "Consider group dependent when colocating with promoted role"
+        ],
+        [ "primitive-with-unrunnable-group",
+          "Block primitive colocated with group that can't start",
+        ],
     ],
     [
         [ "rsc-sets-seq-true", "Resource Sets - sequential=false" ],
@@ -270,6 +309,8 @@ TESTS = [
         [ "rec-rsc-7", "Resource Recover - multiple - stop" ],
         [ "rec-rsc-8", "Resource Recover - multiple - block" ],
         [ "rec-rsc-9", "Resource Recover - group/group" ],
+        [ "stop-unexpected", "Recover multiply active group with stop_unexpected" ],
+        [ "stop-unexpected-2", "Resource multiply active primitve with stop_unexpected" ],
         [ "monitor-recovery", "on-fail=block + resource recovery detected by recurring monitor" ],
         [ "stop-failure-no-quorum", "Stop failure without quorum" ],
         [ "stop-failure-no-fencing", "Stop failure without fencing available" ],
@@ -370,10 +411,12 @@ TESTS = [
           "Advanced migrate logic, A clone then B, B moving while A is start/stopping" ],
         [ "a-promote-then-b-migrate", "A promote then B start. migrate B" ],
         [ "a-demote-then-b-migrate", "A demote then B stop. migrate B" ],
-
-        # @TODO: If pacemaker implements versioned attributes, uncomment this test
-        #[ "migrate-versioned", "Disable migration for versioned resources" ],
-
+        [ "probe-target-of-failed-migrate_to-1", "Failed migrate_to, target rejoins" ],
+        [ "probe-target-of-failed-migrate_to-2", "Failed migrate_to, target rejoined and probed" ],
+        [ "partial-live-migration-multiple-active", "Prevent running on multiple nodes due to partial live migration" ],
+        [ "migration-intermediary-cleaned",
+          "Probe live-migration intermediary with no history"
+        ],
         [ "bug-lf-2422", "Dependency on partially active group - stop ocfs:*" ],
     ],
     [
@@ -406,9 +449,6 @@ TESTS = [
         [ "bug-lf-2153", "Clone ordering constraints" ],
         [ "bug-lf-2361", "Ensure clones observe mandatory ordering constraints if the LHS is unrunnable" ],
         [ "bug-lf-2317", "Avoid needless restart of primitive depending on a clone" ],
-        [ "clone-colocate-instance-1", "Colocation with a specific clone instance (negative example)" ],
-        [ "clone-colocate-instance-2", "Colocation with a specific clone instance" ],
-        [ "clone-order-instance", "Ordering with specific clone instances" ],
         [ "bug-lf-2453", "Enforce mandatory clone ordering without colocation" ],
         [ "bug-lf-2508", "Correctly reconstruct the status of anonymous cloned groups" ],
         [ "bug-lf-2544", "Balanced clone placement" ],
@@ -522,6 +562,7 @@ TESTS = [
         [ "on_fail_demote4", "Recovery with on-fail=\"demote\" on failed cluster, remote, guest, and bundle nodes" ],
         [ "no_quorum_demote", "Promotable demotion and primitive stop with no-quorum-policy=\"demote\"" ],
         [ "no-promote-on-unrunnable-guest", "Don't select bundle instance for promotion when container can't run" ],
+        [ "leftover-pending-monitor", "Prevent a leftover pending monitor from causing unexpected stop of other instances" ],
     ],
     [
         [ "history-1", "Correctly parse stateful-1 resource state" ],
@@ -651,6 +692,7 @@ TESTS = [
         [ "asymmetrical-order-restart", "Respect asymmetrical ordering when restarting dependent resource" ],
         [ "start-then-stop-with-unfence", "Avoid graph loop with start-then-stop constraint plus unfencing" ],
         [ "order-expired-failure", "Order failcount cleanup after remote fencing" ],
+        [ "expired-stop-1", "Expired stop failure should not block resource" ],
     
         [ "ignore_stonith_rsc_order1",
           "cl#5056- Ignore order constraint between stonith and non-stonith rsc" ],
@@ -690,6 +732,7 @@ TESTS = [
         [ "systemhealthp1", "System Health (Progessive)     #1" ],
         [ "systemhealthp2", "System Health (Progessive)     #2" ],
         [ "systemhealthp3", "System Health (Progessive)     #3" ],
+        [ "allow-unhealthy-nodes", "System Health (migrate-on-red + allow-unhealth-nodes)" ],
     ],
     [
         [ "utilization", "Placement Strategy - utilization" ],
@@ -707,6 +750,7 @@ TESTS = [
         [ "utilization-order2", "Utilization Order - Complex" ],
         [ "utilization-order3", "Utilization Order - Migrate" ],
         [ "utilization-order4", "Utilization Order - Live Migration (bnc#695440)" ],
+        [ "utilization-complex", "Utilization with complex relationships" ],
         [ "utilization-shuffle",
           "Don't displace prmExPostgreSQLDB2 on act2, Start prmExPostgreSQLDB1 on act3" ],
         [ "load-stopped-loop", "Avoid transition loop due to load_stopped (cl#5044)" ],
@@ -934,6 +978,8 @@ TESTS = [
         [ "bundle-order-startup-clone", "Prevent startup because bundle isn't promoted" ],
         [ "bundle-order-startup-clone-2", "Bundle startup with clones" ],
         [ "bundle-order-stop-clone", "Stop bundle because clone is stopping" ],
+        [ "bundle-interleave-start", "Interleave bundle starts" ],
+        [ "bundle-interleave-promote", "Interleave bundle promotes" ],
         [ "bundle-nested-colocation", "Colocation of nested connection resources" ],
         [ "bundle-order-fencing",
           "Order pseudo bundle fencing after parent node fencing if both are happening" ],
@@ -942,6 +988,7 @@ TESTS = [
         [ "bundle-probe-order-3", "order 3" ],
         [ "bundle-probe-remotes", "Ensure remotes get probed too" ],
         [ "bundle-replicas-change", "Change bundle from 1 replica to multiple" ],
+        [ "bundle-connection-with-container", "Don't move a container due to connection preferences" ],
         [ "nested-remote-recovery", "Recover bundle's container hosted on remote node" ],
     ],
     [
@@ -1000,6 +1047,7 @@ TESTS = [
         [ "remote-reconnect-delay", "Waiting for remote reconnect interval to expire" ],
         [ "remote-connection-unrecoverable",
           "Remote connection host must be fenced, with connection unrecoverable" ],
+        [ "remote-connection-shutdown", "Remote connection shutdown" ],
         [ "cancel-behind-moving-remote",
           "Route recurring monitor cancellations through original node of a moving remote connection" ],
     ],
@@ -1021,19 +1069,6 @@ TESTS = [
     [   [ "ocf_degraded-remap-ocf_ok", "Test degraded remapped to OK" ],
         [ "ocf_degraded_promoted-remap-ocf_ok", "Test degraded promoted remapped to OK"],
     ],
-    
-    # @TODO: If pacemaker implements versioned attributes, uncomment these tests
-    #[
-    #    [ "versioned-resources", "Start resources with #ra-version rules" ],
-    #    [ "restart-versioned", "Restart resources on #ra-version change" ],
-    #    [ "reload-versioned", "Reload resources on #ra-version change" ],
-    #],
-    #[
-    #    [ "versioned-operations-1", "Use #ra-version to configure operations of native resources" ],
-    #    [ "versioned-operations-2", "Use #ra-version to configure operations of stonith resources" ],
-    #    [ "versioned-operations-3", "Use #ra-version to configure operations of promotable resources" ],
-    #    [ "versioned-operations-4", "Use #ra-version to configure operations of groups of the resources" ],
-    #],
 ]
 
 TESTS_64BIT = [
@@ -1041,21 +1076,6 @@ TESTS_64BIT = [
         [ "year-2038", "Check handling of timestamps beyond 2038-01-19 03:14:08 UTC" ],
     ],
 ]
-
-# Constants substituted in the build process
-class BuildVars(object):
-    SBINDIR = "@sbindir@"
-    BUILDDIR = "@abs_top_builddir@"
-    CRM_SCHEMA_DIRECTORY = "@CRM_SCHEMA_DIRECTORY@"
-
-
-# These values must be kept in sync with crm_exit_t
-class CrmExit(object):
-    OK                   =    0
-    ERROR                =    1
-    NOT_INSTALLED        =    5
-    NOINPUT              =   66
-    CANTCREAT            =   73
 
 
 def is_executable(path):
@@ -1208,14 +1228,14 @@ class CtsScheduler(object):
         """ Locate the simulation binary """
 
         if self.args.binary is None:
-            self.args.binary = BuildVars.BUILDDIR + "/tools/crm_simulate"
+            self.args.binary = BuildOptions._BUILD_DIR + "/tools/crm_simulate"
             if not is_executable(self.args.binary):
-                self.args.binary = BuildVars.SBINDIR + "/crm_simulate"
+                self.args.binary = BuildOptions.SBIN_DIR + "/crm_simulate"
 
         if not is_executable(self.args.binary):
             # @TODO it would be more pythonic to raise an exception
             self._error("Test binary " + self.args.binary + " not found")
-            sys.exit(CrmExit.NOT_INSTALLED)
+            sys.exit(ExitStatus.NOT_INSTALLED)
 
         return [ self.args.binary ] + shlex.split(self.args.testcmd_options)
 
@@ -1225,14 +1245,17 @@ class CtsScheduler(object):
         try:
             return os.environ['PCMK_schema_directory']
         except KeyError:
-            for d in [ os.path.join(BuildVars.BUILDDIR, "xml"),
-                       BuildVars.CRM_SCHEMA_DIRECTORY ]:
+            for d in [ os.path.join(BuildOptions._BUILD_DIR, "xml"),
+                       BuildOptions.SCHEMA_DIR ]:
                 if os.path.isdir(d):
                     os.environ['PCMK_schema_directory'] = d
                     return d
             return None
 
     def __init__(self, argv=sys.argv):
+
+        # Ensure all command output is in portable locale for comparison
+        os.environ['LC_ALL'] = "C"
 
         self._parse_args(argv)
 
@@ -1250,13 +1273,17 @@ class CtsScheduler(object):
         self.summary_dir = os.path.join(self.args.io_dir, "summary")
         self.stderr_expected_dir = os.path.join(self.args.io_dir, "stderr")
 
+        # Create a temporary directory to store diff file
+        self.failed_dir = tempfile.mkdtemp(prefix='cts-scheduler_')
+
         # Where to store generated files
         if self.args.out_dir is None:
             self.args.out_dir = self.args.io_dir
-            self.failed_filename = os.path.join(self.test_home, ".regression.failed.diff")
+            self.failed_filename = os.path.join(self.failed_dir, "test-output.diff")
         else:
-            self.failed_filename = os.path.join(self.args.out_dir, ".regression.failed.diff")
+            self.failed_filename = os.path.join(self.args.out_dir, "test-output.diff")
         os.environ['CIB_shadow_dir'] = self.args.out_dir
+        
         self.failed_file = None
 
         self.outfile_out_dir = os.path.join(self.args.out_dir, "out")
@@ -1287,7 +1314,7 @@ class CtsScheduler(object):
         # We don't want to create it with os.makedirs below
         if not os.path.isdir(self.args.out_dir):
             self._error("Output directory missing; can't create output files")
-            sys.exit(CrmExit.CANTCREAT)
+            sys.exit(ExitStatus.CANTCREAT)
 
         # Create output subdirectories if they don't exist
         try:
@@ -1307,14 +1334,14 @@ class CtsScheduler(object):
                 self.summary_out_dir,
                 self.stderr_out_dir,
             ])
-            sys.exit(CrmExit.CANTCREAT)
+            sys.exit(ExitStatus.CANTCREAT)
 
     def _compare_files(self, filename1, filename2):
         """ Add any file differences to failed results """
 
         if diff(filename1, filename2, stdout=subprocess.DEVNULL) != 0:
             diff(filename1, filename2, stdout=self.failed_file, stderr=subprocess.DEVNULL)
-            self.failed_file.write("\n");
+            self.failed_file.write("\n")
             return True
         return False
 
@@ -1367,10 +1394,10 @@ class CtsScheduler(object):
         if not os.path.isfile(input_filename):
             self._error("No input")
             self.num_failed = self.num_failed + 1
-            return CrmExit.NOINPUT
+            return ExitStatus.NOINPUT
         if not self.args.update and not os.path.isfile(expected_filename):
             self._error("no stored output")
-            return CrmExit.NOINPUT
+            return ExitStatus.NOINPUT
 
         # Run simulation to generate summary output
         if self.args.run: # Single test mode
@@ -1409,7 +1436,7 @@ class CtsScheduler(object):
             rc = subprocess.call(test_cmd_full, stdout=f_score, stderr=f_stderr, env=os.environ)
 
         # Check for test command failure
-        if rc != CrmExit.OK:
+        if rc != ExitStatus.OK:
             self._failed("Test returned: %d" % rc)
             did_fail = True
             print(" ".join(test_cmd_full))
@@ -1446,7 +1473,7 @@ class CtsScheduler(object):
             did_fail = True
             self.num_failed = self.num_failed + 1
             remove_files([ output_filename ])
-            return CrmExit.ERROR
+            return ExitStatus.ERROR
         normalize(output_filename)
 
         # Check whether dot output exists, and sort it
@@ -1456,7 +1483,7 @@ class CtsScheduler(object):
             did_fail = True
             self.num_failed = self.num_failed + 1
             remove_files([ dot_output_filename, output_filename ])
-            return CrmExit.ERROR
+            return ExitStatus.ERROR
         with io.open(dot_output_filename, "rt") as f:
             first_line = f.readline() # "digraph" line with opening brace
             lines = f.readlines()
@@ -1475,7 +1502,7 @@ class CtsScheduler(object):
             did_fail = True
             self.num_failed = self.num_failed + 1
             remove_files([ score_output_filename, output_filename ])
-            return CrmExit.ERROR
+            return ExitStatus.ERROR
         else:
             sort_file(score_output_filename)
 
@@ -1505,14 +1532,15 @@ class CtsScheduler(object):
             did_fail = True
 
         remove_files([ output_filename,
+                       dot_output_filename,
                        score_output_filename,
                        summary_output_filename])
 
         if did_fail:
             self.num_failed = self.num_failed + 1
-            return CrmExit.ERROR
+            return ExitStatus.ERROR
 
-        return CrmExit.OK
+        return ExitStatus.OK
 
     def run_all(self):
         """ Run all defined tests """
@@ -1542,7 +1570,8 @@ class CtsScheduler(object):
 
     def _test_results(self):
         if self.num_failed == 0:
-            return CrmExit.OK
+            shutil.rmtree(self.failed_dir)
+            return ExitStatus.OK
 
         if os.path.isfile(self.failed_filename) and os.stat(self.failed_filename).st_size != 0:
             if self.args.verbose:
@@ -1557,11 +1586,16 @@ class CtsScheduler(object):
             self._error("%d (of %d) tests failed (no diff results)" %
                 (self.num_failed, self.num_tests))
             if os.path.isfile(self.failed_filename):
-                os.remove(self.failed_filename)
-        return CrmExit.ERROR
+                shutil.rmtree(self.failed_dir)
+        return ExitStatus.ERROR
 
     def run(self):
         """ Run test(s) as specified """
+
+        # Check for pre-existing core so we don't think it's from us
+        if os.path.exists("core"):
+            self._failed("Can't run with core already present in " + self.test_home)
+            return ExitStatus.OSFILE
 
         self._print_summary()
 
@@ -1578,7 +1612,10 @@ class CtsScheduler(object):
         else:
             rc = self.run_one(self.args.run, "Single shot", self.single_test_args)
             self.failed_file.close()
-            cat(self.failed_filename)
+            if self.num_failed > 0:
+              print("\nFailures:\nThese have also been written to: " + self.failed_filename + "\n")
+              cat(self.failed_filename)
+              shutil.rmtree(self.failed_dir)
 
         return rc
 

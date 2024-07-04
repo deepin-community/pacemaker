@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -20,7 +20,6 @@
 #include <crm/msg_xml.h>
 #include <crm/common/xml.h>
 #include <crm/common/xml_internal.h>
-#include <crm/common/iso8601_internal.h>
 #include "crmcommon_private.h"
 
 /*
@@ -54,8 +53,8 @@ pcmk__new_nvpair(const char *name, const char *value)
     nvpair = calloc(1, sizeof(pcmk_nvpair_t));
     CRM_ASSERT(nvpair);
 
-    nvpair->name = strdup(name);
-    nvpair->value = value? strdup(value) : NULL;
+    pcmk__str_update(&nvpair->name, name);
+    pcmk__str_update(&nvpair->value, value);
     return nvpair;
 }
 
@@ -63,7 +62,7 @@ pcmk__new_nvpair(const char *name, const char *value)
  * \internal
  * \brief Free a name/value pair
  *
- * \param[in] nvpair  Name/value pair to free
+ * \param[in,out] nvpair  Name/value pair to free
  */
 static void
 pcmk__free_nvpair(gpointer data)
@@ -97,7 +96,7 @@ pcmk_prepend_nvpair(GSList *nvpairs, const char *name, const char *value)
 /*!
  * \brief Free a list of name/value pairs
  *
- * \param[in] list  List to free
+ * \param[in,out] list  List to free
  */
 void
 pcmk_free_nvpairs(GSList *nvpairs)
@@ -159,7 +158,7 @@ pcmk_sort_nvpairs(GSList *list)
  *       \c pcmk_free_nvpairs().
  */
 GSList *
-pcmk_xml_attrs2nvpairs(xmlNode *xml)
+pcmk_xml_attrs2nvpairs(const xmlNode *xml)
 {
     GSList *result = NULL;
 
@@ -195,7 +194,7 @@ pcmk__nvpair_add_xml_attr(gpointer data, gpointer user_data)
 /*!
  * \brief Add XML attributes based on a list of name/value pairs
  *
- * \param[in]     list  List of name/value pairs
+ * \param[in,out] list  List of name/value pairs
  * \param[in,out] xml   XML node to add attributes to
  */
 void
@@ -221,7 +220,7 @@ pcmk_nvpairs2xml_attrs(GSList *list, xmlNode *xml)
 int
 pcmk__scan_nvpair(const char *input, char **name, char **value)
 {
-#ifdef SSCANF_HAS_M
+#ifdef HAVE_SSCANF_M
     *name = NULL;
     *value = NULL;
     if (sscanf(input, "%m[^=]=%m[^\n]", name, value) <= 0) {
@@ -287,27 +286,6 @@ pcmk__format_nvpair(const char *name, const char *value, const char *units)
     return crm_strdup_printf("%s=\"%s%s\"", name, value, units ? units : "");
 }
 
-/*!
- * \internal
- * \brief Format a name/time pair.
- *
- * See pcmk__format_nvpair() for more details.
- *
- * \note The caller is responsible for freeing the return value after use.
- *
- * \param[in]     name       The name for the time.
- * \param[in]     epoch_time The time to format.
- *
- * \return Newly allocated string with name/value pair
- */
-char *
-pcmk__format_named_time(const char *name, time_t epoch_time)
-{
-    const char *now_str = pcmk__epoch2str(&epoch_time);
-
-    return crm_strdup_printf("%s=\"%s\"", name, now_str ? now_str : "");
-}
-
 // XML attribute handling
 
 /*!
@@ -332,18 +310,6 @@ crm_xml_add(xmlNode *node, const char *name, const char *value)
     if (value == NULL) {
         return NULL;
     }
-#if XML_PARANOIA_CHECKS
-    {
-        const char *old_value = NULL;
-
-        old_value = crm_element_value(node, name);
-
-        /* Could be re-setting the same value */
-        CRM_CHECK(old_value != value,
-                  crm_err("Cannot reset %s with crm_xml_add(%s)", name, value);
-                  return value);
-    }
-#endif
 
     if (pcmk__tracking_xml_changes(node, FALSE)) {
         const char *old = crm_element_value(node, name);
@@ -353,7 +319,7 @@ crm_xml_add(xmlNode *node, const char *name, const char *value)
         }
     }
 
-    if (dirty && (pcmk__check_acl(node, name, xpf_acl_create) == FALSE)) {
+    if (dirty && (pcmk__check_acl(node, name, pcmk__xf_acl_create) == FALSE)) {
         crm_trace("Cannot add %s=%s to %s", name, value, node->name);
         return NULL;
     }
@@ -392,7 +358,7 @@ crm_xml_replace(xmlNode *node, const char *name, const char *value)
     /* Could be re-setting the same value */
     CRM_CHECK(old_value != value, return value);
 
-    if (pcmk__check_acl(node, name, xpf_acl_write) == FALSE) {
+    if (pcmk__check_acl(node, name, pcmk__xf_acl_write) == FALSE) {
         /* Create a fake object linked to doc->_private instead? */
         crm_trace("Cannot replace %s=%s to %s", name, value, node->name);
         return NULL;
@@ -556,9 +522,9 @@ crm_element_value(const xmlNode *data, const char *name)
  *
  * This is like \c crm_element_value() but getting the value as an integer.
  *
- * \param[in] data   XML node to check
- * \param[in] name   Attribute name to check
- * \param[in] dest   Where to store element value
+ * \param[in]  data  XML node to check
+ * \param[in]  name  Attribute name to check
+ * \param[out] dest  Where to store element value
  *
  * \return 0 on success, -1 otherwise
  */
@@ -588,9 +554,9 @@ crm_element_value_int(const xmlNode *data, const char *name, int *dest)
  *
  * This is like \c crm_element_value() but getting the value as a long long int.
  *
- * \param[in] data   XML node to check
- * \param[in] name   Attribute name to check
- * \param[in] dest   Where to store element value
+ * \param[in]  data  XML node to check
+ * \param[in]  name  Attribute name to check
+ * \param[out] dest  Where to store element value
  *
  * \return 0 on success, -1 otherwise
  */
@@ -727,11 +693,8 @@ char *
 crm_element_value_copy(const xmlNode *data, const char *name)
 {
     char *value_copy = NULL;
-    const char *value = crm_element_value(data, name);
 
-    if (value != NULL) {
-        value_copy = strdup(value);
-    }
+    pcmk__str_update(&value_copy, crm_element_value(data, name));
     return value_copy;
 }
 
@@ -744,9 +707,9 @@ crm_element_value_copy(const xmlNode *data, const char *name)
  * name starts with a digit, this will instead add a \<param name=NAME
  * value=VALUE/> child to the XML (for legacy compatibility with heartbeat).
  *
- * \param[in] key        Key of hash table entry
- * \param[in] value      Value of hash table entry
- * \param[in] user_data  XML node
+ * \param[in]     key        Key of hash table entry
+ * \param[in]     value      Value of hash table entry
+ * \param[in,out] user_data  XML node
  */
 void
 hash2smartfield(gpointer key, gpointer value, gpointer user_data)
@@ -778,9 +741,9 @@ hash2smartfield(gpointer key, gpointer value, gpointer user_data)
  * and value, with an XML node passed as user data, and adds an XML attribute
  * with the specified name and value if it does not already exist.
  *
- * \param[in] key        Key of hash table entry
- * \param[in] value      Value of hash table entry
- * \param[in] user_data  XML node
+ * \param[in]     key        Key of hash table entry
+ * \param[in]     value      Value of hash table entry
+ * \param[in,out] user_data  XML node
  */
 void
 hash2field(gpointer key, gpointer value, gpointer user_data)
@@ -806,9 +769,9 @@ hash2field(gpointer key, gpointer value, gpointer user_data)
  * with the meta-attribute version of the specified name and value if it does
  * not already exist and if the name does not appear to be cluster-internal.
  *
- * \param[in] key        Key of hash table entry
- * \param[in] value      Value of hash table entry
- * \param[in] user_data  XML node
+ * \param[in]     key        Key of hash table entry
+ * \param[in]     value      Value of hash table entry
+ * \param[in,out] user_data  XML node
  */
 void
 hash2metafield(gpointer key, gpointer value, gpointer user_data)
@@ -838,10 +801,10 @@ hash2metafield(gpointer key, gpointer value, gpointer user_data)
 /*!
  * \brief Create an XML name/value pair
  *
- * \param[in] parent  If not \c NULL, make new XML node a child of this one
- * \param[in] id      If not \c NULL, use this as ID (otherwise auto-generate)
- * \param[in] name    Name to use
- * \param[in] value   Value to use
+ * \param[in,out] parent  If not \c NULL, make new XML node a child of this one
+ * \param[in]     id      Set this as XML ID (or NULL to auto-generate)
+ * \param[in]     name    Name to use
+ * \param[in]     value   Value to use
  *
  * \return New XML object on success, \c NULL otherwise
  */
@@ -879,9 +842,9 @@ crm_create_nvpair_xml(xmlNode *parent, const char *id, const char *name,
  * and value, with an XML node passed as the user data, and adds an \c nvpair
  * XML element with the specified name and value.
  *
- * \param[in] key        Key of hash table entry
- * \param[in] value      Value of hash table entry
- * \param[in] user_data  XML node
+ * \param[in]     key        Key of hash table entry
+ * \param[in]     value      Value of hash table entry
+ * \param[in,out] user_data  XML node
  */
 void
 hash2nvpair(gpointer key, gpointer value, gpointer user_data)
@@ -909,7 +872,7 @@ hash2nvpair(gpointer key, gpointer value, gpointer user_data)
  *       \c g_hash_table_destroy().
  */
 GHashTable *
-xml2list(xmlNode *parent)
+xml2list(const xmlNode *parent)
 {
     xmlNode *child = NULL;
     xmlAttrPtr pIter = NULL;
@@ -954,7 +917,51 @@ xml2list(xmlNode *parent)
     return nvpair_hash;
 }
 
+void
+pcmk__xe_set_bool_attr(xmlNodePtr node, const char *name, bool value)
+{
+    crm_xml_add(node, name, value ? XML_BOOLEAN_TRUE : XML_BOOLEAN_FALSE);
+}
+
+int
+pcmk__xe_get_bool_attr(const xmlNode *node, const char *name, bool *value)
+{
+    const char *xml_value = NULL;
+    int ret, rc;
+
+    if (node == NULL) {
+        return ENODATA;
+    } else if (name == NULL || value == NULL) {
+        return EINVAL;
+    }
+
+    xml_value = crm_element_value(node, name);
+
+    if (xml_value == NULL) {
+        return ENODATA;
+    }
+
+    rc = crm_str_to_boolean(xml_value, &ret);
+    if (rc == 1) {
+        *value = ret;
+        return pcmk_rc_ok;
+    } else {
+        return pcmk_rc_bad_input;
+    }
+}
+
+bool
+pcmk__xe_attr_is_true(const xmlNode *node, const char *name)
+{
+    bool value = false;
+    int rc;
+
+    rc = pcmk__xe_get_bool_attr(node, name, &value);
+    return rc == pcmk_rc_ok && value == true;
+}
+
 // Deprecated functions kept only for backward API compatibility
+// LCOV_EXCL_START
 
 #include <crm/common/util_compat.h>
 
@@ -974,7 +981,12 @@ pcmk_format_nvpair(const char *name, const char *value,
 char *
 pcmk_format_named_time(const char *name, time_t epoch_time)
 {
-    return pcmk__format_named_time(name, epoch_time);
+    char *now_s = pcmk__epoch2str(&epoch_time, 0);
+    char *result = crm_strdup_printf("%s=\"%s\"", name, pcmk__s(now_s, ""));
+
+    free(now_s);
+    return result;
 }
 
+// LCOV_EXCL_STOP
 // End deprecated API

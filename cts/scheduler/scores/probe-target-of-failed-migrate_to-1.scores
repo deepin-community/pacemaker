@@ -1,0 +1,5 @@
+
+pcmk__primitive_assign: dummy1 allocation score on node1: INFINITY
+pcmk__primitive_assign: dummy1 allocation score on node2: 0
+pcmk__primitive_assign: st-sbd allocation score on node1: 0
+pcmk__primitive_assign: st-sbd allocation score on node2: 0

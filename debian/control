@@ -7,16 +7,20 @@ Uploaders:
  Adrian Vondendriesch <adrian.vondendriesch@credativ.de>,
 Build-Depends:
  cluster-glue-dev,
- debhelper-compat (= 12),
+ debhelper-compat (= 13),
  dh-exec,
- dh-python,
+ dh-sequence-python3,
 # resource agent man pages are generated via:
  docbook-xsl,
+# ensure that the time64 feature is enabled:
+ dpkg-dev (>= 1.22.5),
  help2man,
  libbz2-dev,
  libcfg-dev (>= 1.99),
  libcmap-dev (>= 1.99),
  libcpg-dev (>= 1.99),
+# for unit tests:
+ libcmocka-dev,
  libdbus-1-dev,
  libglib2.0-dev,
  libgnutls28-dev,
@@ -28,21 +32,22 @@ Build-Depends:
  libxml2-dev,
  libxml2-utils,
  libxslt1-dev,
- pkg-config,
- python3,
-# not in Build-Depends-Indep because we always load the sphinxdoc dh addon:
- python3-sphinx,
+ pkgconf,
+# 'pacemaker' is a pure Python package:
+ python3-all,
  systemd [linux-any],
  uuid-dev,
 # detecting docbook-xsl needs:
  xsltproc,
 Build-Depends-Indep:
  asciidoc,
+ dh-sequence-sphinxdoc,
  doxygen,
  graphviz,
  inkscape,
+ python3-sphinx,
 Rules-Requires-Root: no
-Standards-Version: 4.6.0
+Standards-Version: 4.6.2
 Homepage: https://www.clusterlabs.org/
 Vcs-Git: https://salsa.debian.org/ha-team/pacemaker.git
 Vcs-Browser: https://salsa.debian.org/ha-team/pacemaker
@@ -74,6 +79,9 @@ Depends:
  procps,
  resource-agents,
  ${misc:Depends},
+Recommends:
+# the ClusterMon and Stateful agents use crm_* utilities:
+ pacemaker-cli-utils,
 Description: cluster resource manager general resource agents
  ${S:X-Common-Description}
  .
@@ -87,16 +95,17 @@ Pre-Depends:
 Depends:
  corosync (>= 1.99),
  dbus,
-# the init script sources /lib/lsb/init-functions:
- lsb-base (>= 3.0-6),
  pacemaker-common,
  pacemaker-resource-agents,
  ${misc:Depends},
- ${python3:Depends},
  ${shlibs:Depends},
 Recommends:
  fence-agents,
  pacemaker-cli-utils,
+# trigger dh_python3 for fence_legacy and fence_watchdog:
+ ${python3:Depends},
+# fence_legacy also needs:
+ python3-pacemaker (= ${source:Version}),
 Suggests:
 # the fence_legacy helper uses /usr/sbin/stonith from cluster-glue:
  cluster-glue,
@@ -120,8 +129,11 @@ Depends:
 Breaks:
 # took over cibsecret from cluster-glue:
  cluster-glue (<< 1.0.12-18~),
+# took over crm_attribute:
+ pacemaker (<< 2.1.4-1~),
 Replaces:
  cluster-glue (<< 1.0.12-18~),
+ pacemaker (<< 2.1.4-1~),
 Description: cluster resource manager command line utilities
  ${S:X-Common-Description}
  .
@@ -133,8 +145,6 @@ Architecture: any
 Pre-Depends:
  ${misc:Pre-Depends},
 Depends:
-# the init script sources /lib/lsb/init-functions:
- lsb-base (>= 3.0-6),
  pacemaker-common,
  pacemaker-resource-agents,
  ${misc:Depends},
@@ -158,6 +168,8 @@ Multi-Arch: foreign
 Depends:
  ${misc:Depends},
  ${sphinxdoc:Depends},
+Built-Using:
+ ${sphinxdoc:Built-Using},
 Description: cluster resource manager HTML documentation
  ${S:X-Common-Description}
  .
@@ -169,7 +181,10 @@ Description: cluster resource manager HTML documentation
   * the Pacemaker Explained book and
   * the Pacemaker Remote book.
 
-Package: libcib27
+Package: libcib27t64
+Provides: ${t64:Provides}
+Replaces: libcib27
+Breaks: libcib27 (<< ${source:Version})
 Architecture: any
 Multi-Arch: same
 Section: libs
@@ -181,7 +196,10 @@ Description: cluster resource manager CIB library
  .
  This package contains the Cluster Information Base library.
 
-Package: libcrmcluster29
+Package: libcrmcluster29t64
+Provides: ${t64:Provides}
+Replaces: libcrmcluster29
+Breaks: libcrmcluster29 (<< ${source:Version})
 Architecture: any
 Multi-Arch: same
 Section: libs
@@ -193,7 +211,10 @@ Description: cluster resource manager cluster library
  .
  This package contains the cluster library.
 
-Package: libcrmcommon34
+Package: libcrmcommon34t64
+Provides: ${t64:Provides}
+Replaces: libcrmcommon34
+Breaks: libcrmcommon34 (<< ${source:Version})
 Architecture: any
 Multi-Arch: same
 Section: libs
@@ -205,7 +226,10 @@ Description: cluster resource manager common library
  .
  This package contains the common library.
 
-Package: libcrmservice28
+Package: libcrmservice28t64
+Provides: ${t64:Provides}
+Replaces: libcrmservice28
+Breaks: libcrmservice28 (<< ${source:Version})
 Architecture: any
 Multi-Arch: same
 Section: libs
@@ -217,7 +241,10 @@ Description: cluster resource manager service library
  .
  This package contains the service library.
 
-Package: liblrmd28
+Package: liblrmd28t64
+Provides: ${t64:Provides}
+Replaces: liblrmd28
+Breaks: liblrmd28 (<< ${source:Version})
 Architecture: any
 Multi-Arch: same
 Section: libs
@@ -229,7 +256,10 @@ Description: cluster resource manager LRMD library
  .
  This package contains the Local Resource Manager Daemon library.
 
-Package: libpacemaker1
+Package: libpacemaker1t64
+Provides: ${t64:Provides}
+Replaces: libpacemaker1
+Breaks: libpacemaker1 (<< ${source:Version})
 Architecture: any
 Multi-Arch: same
 Section: libs
@@ -242,7 +272,10 @@ Description: cluster resource manager utility library
  This package contains the utility library resulting from the merge
  of libpengine and libtransitioner.
 
-Package: libpe-rules26
+Package: libpe-rules26t64
+Provides: ${t64:Provides}
+Replaces: libpe-rules26
+Breaks: libpe-rules26 (<< ${source:Version})
 Architecture: any
 Multi-Arch: same
 Section: libs
@@ -254,7 +287,10 @@ Description: cluster resource manager Policy Engine rules library
  .
  This package contains the Policy Engine rules library.
 
-Package: libpe-status28
+Package: libpe-status28t64
+Provides: ${t64:Provides}
+Replaces: libpe-status28
+Breaks: libpe-status28 (<< ${source:Version})
 Architecture: any
 Multi-Arch: same
 Section: libs
@@ -266,7 +302,10 @@ Description: cluster resource manager Policy Engine status library
  .
  This package contains the Policy Engine status library.
 
-Package: libstonithd26
+Package: libstonithd26t64
+Provides: ${t64:Provides}
+Replaces: libstonithd26
+Breaks: libstonithd26 (<< ${source:Version})
 Architecture: any
 Multi-Arch: same
 Section: libs
@@ -278,21 +317,38 @@ Description: cluster resource manager STONITH daemon library
  .
  This package contains the STONITH daemon library.
 
+Package: pacemaker-cts
+Section: python
+Architecture: all
+Depends:
+ ${misc:Depends},
+ ${python3:Depends},
+ pacemaker-cli-utils (>= ${source:Version}),
+ procps,
+ psmisc,
+ python3-pacemaker (= ${source:Version}),
+ python3-psutil,
+ python3-systemd,
+Description: test framework for cluster-related technologies like Pacemaker
+ ${S:X-Common-Description}
+ .
+ This package contains the Cluster Test Framework.
+
 Package: pacemaker-dev
 Architecture: any
 Multi-Arch: same
 Section: libdevel
 Depends:
  ${misc:Depends},
- libcib27 (= ${binary:Version}),
- libcrmcluster29 (= ${binary:Version}),
- libcrmcommon34 (= ${binary:Version}),
- libcrmservice28 (= ${binary:Version}),
- liblrmd28 (= ${binary:Version}),
- libpacemaker1 (= ${binary:Version}),
- libpe-rules26 (= ${binary:Version}),
- libpe-status28 (= ${binary:Version}),
- libstonithd26 (= ${binary:Version}),
+ libcib27t64 (= ${binary:Version}),
+ libcrmcluster29t64 (= ${binary:Version}),
+ libcrmcommon34t64 (= ${binary:Version}),
+ libcrmservice28t64 (= ${binary:Version}),
+ liblrmd28t64 (= ${binary:Version}),
+ libpacemaker1t64 (= ${binary:Version}),
+ libpe-rules26t64 (= ${binary:Version}),
+ libpe-status28t64 (= ${binary:Version}),
+ libstonithd26t64 (= ${binary:Version}),
 # we include headers from these:
  libcpg-dev,
  libglib2.0-dev,
@@ -313,3 +369,14 @@ Description: cluster resource manager development
  .
  This package contains the headers and other necessary files to build
  applications or libraries that use the Pacemaker libraries.
+
+Package: python3-pacemaker
+Section: python
+Architecture: all
+Depends:
+ ${misc:Depends},
+ ${python3:Depends},
+Description: Pacemaker API for Python3
+ ${S:X-Common-Description}
+ .
+ This package contains the Python 3 API.

@@ -1,3 +1,501 @@
+* Wed May 24 2023 Ken Gaillot <kgaillot@redhat.com> Pacemaker-2.1.6
+- 1124 commits with 402 files changed, 25220 insertions(+), 14751 deletions(-)
+
+- Features added since Pacemaker-2.1.5
+  + CIB: deprecate "moon" in date_spec elements in rules
+  + CIB: deprecate support for Nagios resources
+  + CIB: utilization attributes may be set as transient
+  + CIB: alerts and alert recipients support an "enabled" meta-attribute
+  + All daemons support --output-as/--output-to options including
+    XML output with interactive options
+  + tools: attrd_updater supports --wait parameter that can be set to
+           "no" (return immediately after submitting request, which is
+           the default and previous behavior), "local" (return after the
+           new value has taken effect on the local node), or "cluster" (return
+           after new value has taken effect on all nodes)
+  + tools: attrd_updater supports -z/--utilization to modify utilization
+           attributes
+  + tools: attrd_updater supports --pattern to affect all attributes
+           matching a given pattern
+  + tools: crm_attribute supports --pattern with permanent node attributes
+           (in addition to previous support for transient attributes)
+  + tools: crm_mon displays resource descriptions if --show-description or
+           --show-detail is given
+  + tools: crm_mon shows maintenance mode when enabled per-resource
+  + tools: crm_mon --interval can be used to update XML and text output
+           (in addition to previous support for HTML)
+  + tools: crm_mon fencing history includes microseconds in timestamps
+  + tools: crm_mon shows which node it was run on
+  + tools: crm_mon shows whether Pacemaker or Pacemaker Remote is running or
+           shutting down
+  + tools: deprecate crm_mon --simple-status
+  + tools: crm_resource --element option can be used with --get-parameter,
+           --set-parameter, and --delete-parameter to modify resource
+           properties such as class, provider, type, and description
+  + tools: crm_resource --list shows resource descriptions better
+           (including when --output-as=xml is used)
+  + tools: crm_shadow supports standard --output-as/--output-to arguments
+
+- Fixes since Pacemaker-2.1.5
+  + pacemakerd: -S should wait for cluster to shut down before returning
+                (regression introduced in 2.1.1)
+  + Pacemaker Remote: remote nodes wait for all-clear from cluster before
+                      shutting down (regression introduced in 2.1.5)
+  + tools: attrd_updater --query without --node shows attributes from all
+           nodes instead of local node (regression introduced in 2.1.5)
+  + pacemaker-attrd: Preserve a Pacemaker Remote node's transient attributes
+                     if its connection to the cluster is lost but reconnects
+  + CIB manager: successful CIB schema upgrade always forces a write
+  + controller: avoid election storm when joining node has CIB newer than DC
+                can accept
+  + controller: avoid election storm due to incompatible CIB
+  + controller: avoid use-after-free when disconnecting proxy IPCs during shutdown
+  + controller: avoid double-incrementing failcount for simulated failures
+  + controller: avoid reprobing remote nodes when target is a cluster node
+  + controller: delay join finalization if a transition is in progress
+  + controller: initial fencing timeout includes any priority-fencing-delay
+  + controller: shutdown gracefully if scheduler connection is interrupted
+                during shutdown
+  + fencer: avoid crash during shutdown when action is pending
+  + fencer: calculate fencing timeout correctly when watchdog is used with
+            topology
+  + fencer: apply priority-fencing-delay only to first device tried
+  + fencer: total and per-device fencing timeouts include any
+            priority-fencing-delay and pcmk_delay_base
+  + scheduler: fix a number of corner cases with colocations, including
+               preventing a resource from starting if it has a mandatory
+               colocation with a group whose start is blocked, preventing
+               optional anti-colocation from overriding infinite stickiness,
+               and correctly considering a group's colocation dependents
+               when the group is itself colocated with a clone
+  + scheduler: honor as many mandatory colocations as possible before
+               considering any optional ones
+  + scheduler: ensure earlier group member starts occur after later member stops
+  + scheduler: handle orderings with bundles more correctly
+  + scheduler: ensure expired results never affect resource state
+  + scheduler: handle cleaned migrate_from history correctly
+  + scheduler: prevent pending monitor of one clone instance from causing
+               unexpected stop of other instances
+  + scheduler: prevent inactive clone instances from starting if probe is
+               unrunnable on any node
+  + agents: SysInfo calculates cpu_load correctly
+  + tools: cibadmin --scope accepts status
+  + tools: crm_attribute -p "" works same as -p when called from resource agent
+  + tools: crm_attribute recognizes "-INFINITY" as value instead of options
+  + tools: crm_mon avoids displaying recurring monitors as pending if first
+           attempt fails
+  + tools: crm_mon --daemonize shows disconnected message when CIB connection
+           is lost instead of continuing to display last known state
+  + tools: crm_mon avoids crash when built without curses library support
+  + tools: crm_mon supports --output-as=none correctly
+  + tools: crm_resource --ban or --move works with single-replica bundles
+  + tools: crm_shadow --commit now works with CIB_file
+  + tools: crm_simulate failure injection avoids crash if node name is unknown
+
+- Public API changes since Pacemaker-2.1.5
+  + Python: New "pacemaker" Python module (packaged as python3-pacemaker in
+            RPMs built with "make rpm") contains supported public API with
+            BuildOptions and ExitStatus classes
+  + libcib: add client_id() method member to cib_api_operations_t
+  + libcib: deprecate cib_database
+  + libcib: deprecate cib_quorum_override
+  + libcib: deprecate the cib_api_operations_t:update() method
+  + libcrmcluster: add pcmk_cluster_new()
+  + libcrmcluster: add crm_join_nack_quiet
+  + libcrmcluster: add pcmk_cluster_free()
+  + libcrmcluster: node argument to send_cluster_message() is now const
+  + libcrmcluster: node argument to send_cluster_text() is now const
+  + libcrmcommon: add crm_time_usecs
+  + libcrmcommon: add PCMK_META_ENABLED
+  + libcrmcommon: add pcmk_pacemakerd_state_remote
+  + libcrmcommon: add pcmk_rc_bad_xml_patch
+  + libcrmcommon: add pcmk_rc_bad_input
+  + libcrmcommon: add pcmk_rc_disabled
+  + libcrmcommon: deprecate add_xml_nocopy()
+  + libcrmcommon: deprecate log_data_element()
+  + libcrmcommon: deprecate PCMK_RESOURCE_CLASS_NAGIOS
+  + libcrmcommon: deprecate PCMK_RESOURCE_CLASS_UPSTART
+  + libcrmcommon: deprecate XML_ATTR_UUID
+  + libcrmcommon: deprecate XML_CIB_ATTR_REPLACE
+  + libcrmcommon: deprecate xml_log_changes()
+  + libcrmcommon: deprecate xml_log_options enum
+  + libcrmcommon: deprecate xml_log_patchset()
+  + libcrmcommon: argument to pcmk_xe_is_probe() is now const
+  + libcrmcommon: argument to pcmk_xe_mask_probe_failure() is now const
+  + libcrmcommon: patchset argument of xml_log_patchset() is now const
+  + libcrmcommon: rsc_op_expected_rc() argument is now const
+  + libcrmcommon: second argument to copy_in_properties() is now const
+  + libcrmcommon: xml argument of xml_log_changes() is now const
+  + libcrmservice: deprecate enum nagios_exitcode
+  + libpacemaker: add pcmk_query_node_info()
+  + libpacemaker: add pcmk_query_node_name()
+  + libpacemaker: multiple arguments to pcmk_simulate() are now const
+  + libpacemaker: node argument to pcmk_resource_digests() is now const
+  + libpacemaker: node_types argument to pcmk_list_nodes() is now const
+  + libpacemaker: pcmk_controller_status() node name arg is now const
+  + libpe_rules: last argument to pe_expand_re_matches() is now const
+  + libpe_rules: rule_data argument to pe_eval_nvpairs() is now const
+  + libpe_rules: second argument to pe_eval_expr() and pe_eval_subexpr() is now const
+  + libpe_rules: second argument to pe_eval_rules() is now const
+  + libpe_rules: second argument to pe_unpack_nvpairs() is now const
+  + libpe_status: add pe_rsc_detect_loop
+  + libpe_status: add pe_rsc_replica_container
+  + libpe_status: deprecate fixed member of pe_node_t
+  + libpe_status: argument to pe_rsc_is_bundled() is now const
+  + libpe_status: argument to rsc_printable_id() is now const
+  + libpe_status: first argument to calculate_active_ops() is now const
+  + libpe_status: first argument to pe_find_node() is now const
+  + libpe_status: first argument to pe_find_node_any() is now const
+  + libpe_status: first argument to pe_find_node_id() is now const
+  + libpe_status: first argument to resource_object_functions_t:is_filtered() is now const
+
+* Wed Dec 7 2022 Ken Gaillot <kgaillot@redhat.com> Pacemaker-2.1.5
+- 1287 commits with 447 files changed, 33546 insertions(+), 21518 deletions(-)
+
+- Features added since Pacemaker-2.1.4
+  + CIB: access control lists (ACLs) for groups are supported
+  + CIB: ACL target and group XML supports "name" attribute to specify a name
+         that is not a unique XML ID
+  + CIB: deprecate pacemaker-next schema
+  + CIB: deprecate first-instance and then-instance in ordering constraints
+         and rsc-instance and with-rsc-instance in colocation constraints
+         (only usable with pacemaker-next schema)
+  + CIB: deprecate "collocated" and "ordered" meta-attributes for groups
+         (true is default, and resource sets should be used instead of false)
+  + build: support building with -D_TIME_BITS=64
+  + build: support building with compilers that are strict about void
+  + build: allow building RPMs from source distribution
+  + fencer: deprecate stand-alone mode
+  + agents: ClusterMon, controld, HealthCPU, ifspeed, and SysInfo agents support
+            OCF 1.1 standard
+  + agents: non-functional SystemHealth agent has been removed
+  + tools: non-functional ipmiservicelogd and notifyServicelogEvent tools have
+           been removed
+  + tools: crm_attribute supports querying all attributes on a given node
+  + tools: crm_attribute --query, --delete, and --update support
+           regular expressions
+  + tools: crm_error supports standard --output-as/--output-to arguments
+  + tools: crm_error lists all return codes if none are specified
+  + tools: crm_mon --show-detail displays the CRM feature set of each node
+           and makes display of fencing actions more technical
+  + tools: crm_resource --why checks node health
+  + tools: crm_resource --constraints now accepts --recursive (equivalent to
+           --stack) and --force (to show constraints for a group member
+           instead of the group)
+
+- Fixes since Pacemaker-2.1.4
+  + tools: crm_error does not print spurious output when given a negative
+           return code argument (regression introduced in 2.0.4)
+  + tools: avoid crash if crm_resource is given extraneous arguments
+           (regression introduced in 2.0.5)
+  + tools: stonith_admin --validate XML output shows correct validation status
+           and errors (regressions introduced in 2.0.5 and 2.1.2)
+  + tools: crm_resource --list-operations shows pending operations as pending
+           instead of complete (regression introduced in 2.1.0)
+  + controller: move resources if appropriate after they are reordered in CIB
+                (regression introduced in 2.1.3)
+  + fencing: allow fence devices to be registered if local node is not in CIB
+             (regression introduced in 2.1.3)
+  + tools: crm_mon --one-shot should succeed even if pacemaker is shutting down
+           (regression introduced in 2.1.3)
+  + tools: avoid memory leak in crm_mon (regression introduced in 2.1.3)
+  + tools: crm_attribute --quiet outputs nothing instead of "(null)" if
+           attribute has no value (regression introduced in 2.1.3)
+  + tools: accept deprecated and unused attrd_updater --quiet option
+           (regression introduced in 2.1.3)
+  + CIB: avoid crashes when XML IDs grow very long
+  + controller: pre-load agent metadata asynchronously to avoid timeout when
+                agent's metadata action runs crm_node
+  + controller: avoid timing issue that increments resource fail count twice
+  + fencing: unfence all nodes after device configuration changes
+  + fencing: avoid memory leaks when processing topology requests
+  + fencing: ignore node that executed action when checking whether actions
+             are equivalent
+  + scheduler,controller: calculate secure digest consistently
+  + scheduler: consider roles when blocking colocation dependents
+  + scheduler: prioritize group colocations properly
+  + scheduler: properly consider effect of "with group" colocations
+  + scheduler: handle corner cases in live migrations
+  + scheduler: avoid perpetual moving of bundle containers in certain situations
+  + scheduler: properly calculate resource parameter digests without history
+  + scheduler: do not enforce stop if newer monitor indicates resource was not
+               running on target of failed migrate_to
+  + scheduler: do not enforce stop on rejoined node after failed migrate_to
+  + scheduler: don't demote on expected node when multiple-active is set to
+               stop_unexpected
+  + scheduler: prevent resources running on multiple nodes after partial live
+               migration
+  + scheduler: restart resource instead of reload if extra parameters in
+               operation change
+  + schemas: Consider days, minutes, seconds, and yeardays in date expressions
+             valid
+  + schemas: Consider in_range with an end and duration valid
+  + schemas: Consider score and score-attribute optional in rules
+  + tools: crm_resource --digests uses most recent operation history entry
+  + tools: if multiple return code options are given to crm_error, use the
+           last one
+  + tools: crm_resource correctly detects if a resource is unmanaged
+           or disabled even if there are multiple settings using rules
+
+- Public API changes since Pacemaker-2.1.4
+  + libcib: add cib_api_operations_t:set_primary
+  + libcib: add cib_api_operations_t:set_secondary
+  + libcib: deprecate cib_api_operations_t:delete_absolute()
+  + libcib: deprecate cib_api_operations_t:is_master
+  + libcib: deprecate cib_api_operations_t:set_master
+  + libcib: deprecate cib_api_operations_t:set_slave
+  + libcib: deprecate cib_api_operations_t:set_slave_all
+  + libcrmcommon: deprecated XML_CIB_TAG_MASTER constant is usable again
+                  (regression introduced in 2.1.0)
+  + libcrmcommon: pcmk_ipc_api_t supports attribute manager IPC
+  + libcrmcommon: add pcmk_rc_unpack_error
+  + libcrmcommon: add CRM_EX_FAILED_PROMOTED
+  + libcrmcommon: add CRM_EX_NONE
+  + libcrmcommon: add CRM_EX_PROMOTED
+  + libcrmcommon: add pcmk_readable_score()
+  + libcrmcommon: add PCMK_XA_PROMOTED_MAX_LEGACY string constant
+  + libcrmcommon: add PCMK_XA_PROMOTED_NODE_MAX_LEGACY string constant
+  + libcrmcommon: argument to crm_time_check() is now const
+  + libcrmcommon: argument to pcmk_controld_api_replies_expected() is now const
+  + libcrmcommon: argument to pcmk_xml_attrs2nvpairs() is now const
+  + libcrmcommon: argument to xml2list() is now const
+  + libcrmcommon: argument to xml_acl_denied() is now const
+  + libcrmcommon: argument to xml_acl_enabled() is now const
+  + libcrmcommon: argument to xml_get_path() is now const
+  + libcrmcommon: arguments to crm_time_add() are now const
+  + libcrmcommon: arguments to crm_time_compare() are now const
+  + libcrmcommon: arguments to crm_time_subtract() are now const
+  + libcrmcommon: argv argument to crm_log_preinit() is now char *const *
+  + libcrmcommon: crm_time_calculate_duration() arguments are now const
+  + libcrmcommon: deprecate CRM_ATTR_RA_VERSION
+  + libcrmcommon: deprecate crm_destroy_xml()
+  + libcrmcommon: deprecate crm_ipc_server_error
+  + libcrmcommon: deprecate crm_ipc_server_info
+  + libcrmcommon: deprecate CRM_OP_LRM_QUERY
+  + libcrmcommon: deprecate crm_str()
+  + libcrmcommon: deprecate PCMK_XE_PROMOTED_MAX_LEGACY string constant
+  + libcrmcommon: deprecate PCMK_XE_PROMOTED_NODE_MAX_LEGACY constant
+  + libcrmcommon: deprecate score2char()
+  + libcrmcommon: deprecate score2char_stack()
+  + libcrmcommon: deprecate XML_ATTR_RA_VERSION
+  + libcrmcommon: deprecate xml_get_path()
+  + libcrmcommon: deprecate XML_PARANOIA_CHECKS
+  + libcrmcommon: deprecate XML_TAG_OP_VER_ATTRS
+  + libcrmcommon: deprecate XML_TAG_OP_VER_META
+  + libcrmcommon: deprecate XML_TAG_RSC_VER_ATTRS
+  + libcrmcommon: dt argument of crm_time_get_gregorian() is now const
+  + libcrmcommon: dt argument of crm_time_get_isoweek() is now const
+  + libcrmcommon: dt argument of crm_time_get_ordinal() is now const
+  + libcrmcommon: dt argument of crm_time_get_timeofday() is now const
+  + libcrmcommon: dt argument of crm_time_get_timezone() is now const
+  + libcrmcommon: first argument to create_reply() is now const
+  + libcrmcommon: first argument to crm_copy_xml_element() is now const
+  + libcrmcommon: first argument to find_xml_node() is now const
+  + libcrmcommon: first argument to get_message_xml() is now const
+  + libcrmcommon: first argument to pcmk_ipc_name() is now const
+  + libcrmcommon: first argument to xml_patch_versions() is now const
+  + libcrmcommon: last argument to crm_write_blackbox() is now const
+  + libcrmcommon: add pcmk_rc_duplicate_id
+  + libcrmcommon: add pcmk_result_get_strings()
+  + libcrmcommon: add pcmk_result_type enum
+  + libcrmcommon: add PCMK_XE_DATE_EXPRESSION constant
+  + libcrmcommon: add PCMK_XE_OP_EXPRESSION constant
+  + libcrmcommon: add PCMK_XE_RSC_EXPRESSION constant
+  + libcrmcommon: first argument to crm_time_as_string() is now const
+  + libcrmcommon: crm_time_t argument to crm_time_log_alias() is now const
+  + libcrmcommon: argument to crm_time_get_seconds() is now const
+  + libcrmcommon: argument to crm_time_get_seconds_since_epoch() is now const
+  + libcrmcommon: sixth argument to log_data_element() is now const
+  + libcrmcommon: source argument to crm_time_set() is now const
+  + libcrmcommon: source argument to crm_time_set_timet() is now const
+  + libcrmcommon: source argument to pcmk_copy_time() is now const
+  + libpacemaker: add pcmk_check_rule()
+  + libpacemaker: add pcmk_check_rules()
+  + libpacemaker: add pcmk_show_result_code()
+  + libpacemaker: add pcmk_list_result_codes()
+  + libpacemaker: add pcmk_rc_disp_flags enum
+  + libpacemaker: ipc_name argument to pcmk_pacemakerd_status() is now const
+  + libpe_rules: deprecate version_expr enum value
+  + libpe_rules: second argument to pe_eval_nvpairs() is now const
+  + libpe_status: argument to pe_rsc_is_anon_clone() is now const
+  + libpe_status: argument to pe_rsc_is_unique_clone() is now const
+  + libpe_status: deprecate enum pe_graph_flags
+  + libpe_status: first argument to pe_rsc_is_clone() is now const
+  + libpe_status: two arguments to get_rsc_attributes() are now const
+  + libpe_status: second argument to pe_eval_versioned_attributes() is now const
+  + libpe_status: second argument to pe_rsc_params() is now const
+  + libstonithd: deprecate stonith_event_t:message
+  + libstonithd: deprecate stonith_event_t:type
+  + libstonithd: last argument to stonith_api_operations_t:register_device()
+                 is now const
+  + libstonithd: last argument to stonith_api_operations_t:register_level() is
+                 now const
+  + libstonithd: last argument to
+                 stonith_api_operations_t:register_level_full() is now const
+  + libstonithd: params argument to stonith_api_operations_t:validate() is now
+                 const
+
+* Mon Jun 13 2022 Ken Gaillot <kgaillot@redhat.com> Pacemaker-2.1.4
+- Changesets: 17
+- Diff: 9 files changed, 52 insertions(+), 18 deletions(-)
+
+- Fixes since Pacemaker-2.1.3
+  + fencing: get target-by-attribute working again (regression in 2.1.3)
+  + fencing: avoid use-after-free when processing self-fencing requests
+             with topology (regression in 2.1.3)
+  + resources: typo in HealthSMART meta-data (regression in 2.1.3)
+  + fencing: avoid memory leaks when processing topology requests
+  + fencing: delegate shouldn't matter when checking equivalent fencing
+  + tools: fix CSS syntax error in crm_mon --output-as=html
+
+* Wed Jun 1 2022 Ken Gaillot <kgaillot@redhat.com> Pacemaker-2.1.3
+- Changesets: 814
+- Diff: 332 files changed, 23435 insertions(+), 12137 deletions(-)
+
+- Features added since Pacemaker-2.1.2
+  + Internal failures of resource actions (such as an OCF agent not being
+    found) are shown with a detailed exit reason in logs, crm_mon output, etc.
+  + Support for CIB <node> entries with type="ping" is deprecated (this was an
+    undocumented means of defining a quorum-only node)
+  + build: configure script supports experimental --enable-nls option to
+           enable native language translations (currently only Chinese
+           translations of certain help text are available)
+  + rpm: crm_attribute is now part of the pacemaker-cli package instead of
+         the pacemaker package
+  + CIB: resources support allow-unhealthy-nodes meta-attribute to exempt
+         the resource from bans due to node health checks (particularly useful
+         for health monitoring resources themselves)
+  + CIB: multiple-active cluster property can be set to "stop_unexpected" to
+         leave the expected instance running and stop only any unexpected ones
+  + CIB: bundles support resource utilization
+  + pacemakerd: regularly check that subdaemons are active and accepting IPC
+                connections so sbd can self-fence a node with a malfunctioning
+                subdaemon
+  + pacemaker-schedulerd: support --output-as/--output-to options including
+                          XML output with interactive options
+  + tools: cibadmin --show-access option to show CIB colorized for ACLs
+  + tools: crm_attribute supports standard --output-as/--output-to options
+  + tools: crm_mon output indicates if a node's health is yellow or red
+  + tools: for probes that failed because the service is not installed or
+           locally configured, crm_mon displays the resource as stopped rather
+           than failed
+  + tools: crm_rule supports standard --output-as/--output-to options,
+           allows passing multiple -r options, and is no longer experimental
+  + tools: stonith_admin fencing commands display reasons for failures
+  + resource agents: HealthSMART supports OCF 1.1 standard and new
+                     OCF_RESKEY_dampen and OCF_RESKEY_smartctl parameters
+
+- Fixes since Pacemaker-2.1.2
+  + build: avoid circular library dependency (regression introduced in 2.1.0)
+  + systemd: if pacemakerd exits immediately after starting, wait 1 second
+             before trying to respawn, and allow 5 attempts
+  + fencer: get fencing completion time correctly
+            (regression introduced in 2.1.2)
+  + fencer: avoid memory leak when broadcasting history differences
+            (regression introduced in 2.1.0)
+  + controller: correctly match "node down" events so remote nodes don't get
+                fenced when connection is stopped
+                (regression introduced in 2.1.2)
+  + executor: avoid possible double free during notify operation
+              (regression introduced in 2.1.1)
+  + tools: get stonith_admin -T/--tag option working again
+           (regression introduced in 2.0.3)
+  + resources: use correct syntax in Stateful meta-data
+               (regression introduced in 2.1.0)
+  + corosync: repeat corosync_cfg_trackstart if first attempt fails
+  + libcrmcommon: retry IPC requests after EAGAIN errors
+  + executor,scheduler: treat "no secrets" fence results as a hard error
+  + fencing: handle dynamic target query failures better
+  + fencing: don't set stonith action to pending if fork fails
+  + pacemakerd: avoid race condition when subdaemaon is checked while exiting
+  + scheduler: avoid memory leak when displaying clones in certain conditions
+  + scheduler: properly set data set flags when scheduling actions
+  + tools: support command-line crm_attribute calls on Pacemaker remote nodes
+           whose node name in the cluster differs from their local hostname
+  + tools: prevent possible crm_resource crashes if multiple commands specified
+
+- Public API changes since Pacemaker-2.1.2
+  + libcrmcommon: pcmk_ipc_api_t supports scheduler IPC
+  + libpacemaker: add pcmk_status() (equivalent to crm_mon)
+  + libcib: deprecate get_object_parent()
+  + libcib: deprecate get_object_path()
+  + libcib: deprecate get_object_root()
+  + libcrmcommon: add pcmk_cib_parent_name_for()
+  + libcrmcommon: add pcmk_cib_xpath_for()
+  + libcrmcommon: add pcmk_find_cib_element()
+  + libcrmcommon: deprecate crm_xml_add_boolean()
+  + libpe_status: add pe_flag_check_config
+  + libpe_status: add pe_node_shared_s:data_set
+  + libpe_status: add pe_rsc_restarting flag
+  + libpe_status: add pe_rsc_stop_unexpected flag
+  + libpe_status: add recovery_stop_unexpected to enum rsc_recovery_type
+  + libpe_status: deprecate node_ping
+  + libpe_status: deprecate pe_order_stonith_stop
+  + libpe_status: deprecate pe_rsc_starting and pe_rsc_stopping
+  + libstonithd: add exit_reason member to stonith_history_t
+  + libstonithd: deprecate stonith_t:call_timeout
+  + libstonithd: stonith_api_del_notification() with NULL second argument
+                 removes all notifications
+
+* Tue Nov 23 2021 Ken Gaillot <kgaillot@redhat.com> Pacemaker-2.1.2
+- Changesets: 462
+- Diff: 223 files changed, 16518 insertions(+), 11743 deletions(-)
+
+- Features added since Pacemaker-2.1.1
+  + build: when built with --with-initdir, Pacemaker uses the value to find
+           LSB resources (in addition to being where Pacemaker's own
+           init scripts are installed)
+  + build: cmocka is new dependency for unit tests ("make check")
+  + rpm: fence_watchdog now comes with pacemaker package (not pacemaker-cli)
+  + daemons: metadata for cluster options supports OCF 1.1 standard
+  + executor: nagios warning results now map to OCF "degraded" result code
+  + fencing: pcmk_delay_base can optionally specify different delays per node
+  + fencing: pcmk_host_map supports escaped characters such as spaces in values
+  + resources: HealthIOWait agent supports OCF 1.1 standard, and validate works
+  + tools: crm_mon shows exit reasons for actions failed due to internal errors
+  + tools: crm_mon failed action display is more human-friendly by default
+  + tools: crm_resource --force-* now outputs exit reasons if available
+
+- Fixes since Pacemaker-2.1.1
+  + pkg-config: return correct value for ocfdir (regression introduced in 2.1.0)
+  + tools: fix crm_mon --hide-headers and related options
+           (regression introduced in 2.0.4)
+  + attrd: check election status upon node loss to avoid election timeout
+  + controller: improved handling of executor connection failures
+  + executor: properly detect systemd unit existence
+  + pacemakerd: recover properly from Corosync crash
+  + fencing: fencing results are now sorted with sub-second resolution
+  + fencing: fix fence_watchdog version output, metadata output, and man page
+  + fencing: mark state as done if remapped "on" times out
+  + tools: map LSB status to OCF correctly with crm_resource --force-check
+
+- Public API changes since Pacemaker-2.1.1
+  + libcrmcommon: deprecate PCMK_OCF_EXEC_ERROR
+  + libcrmcommon: deprecate PCMK_OCF_PENDING
+  + libcrmcommon: deprecate PCMK_OCF_SIGNAL
+  + libcrmcommon: add CRM_EX_DEGRADED and CRM_EX_DEGRADED_PROMOTED
+  + libcrmcommon: add enum pcmk_exec_status
+  + libcrmcommon: add PCMK_EXEC_MAX
+  + libcrmcommon: add PCMK_EXEC_NO_FENCE_DEVICE
+  + libcrmcommon: add PCMK_EXEC_NO_SECRETS
+  + libcrmcommon: add pcmk_exec_status_str()
+  + libcrmcommon: add pcmk_rc2ocf()
+  + libcrmcommon: deprecate PCMK_OCF_TIMEOUT
+  + libcrmservice: add services_result2ocf()
+  + libcrmservice: deprecate enum op_status
+  + libcrmservice: deprecate LSB_ROOT_DIR
+  + libcrmservice: deprecate NAGIOS_NOT_INSTALLED
+  + libcrmservice: deprecate NAGIOS_STATE_DEPENDENT
+  + libcrmservice: deprecate services_get_ocf_exitcode()
+  + libcrmservice: deprecate services_list() and services_action_create()
+  + libcrmservice: deprecate services_lrm_status_str()
+  + libpacemaker: add enum pcmk_sim_flags
+  + libpacemaker: add pcmk_injections_t
+  + libpacemaker: add pcmk_free_injections()
+  + libpacemaker: add pcmk_simulate()
+  + libstonithd: add opaque member to stonith_event_t
+  + libstonithd: add opaque member to stonith_callback_data_t
+
 * Thu Sep 09 2021 Ken Gaillot <kgaillot@redhat.com> Pacemaker-2.1.1
 - Changesets: 231
 - Diff:
@@ -35,6 +533,9 @@
            argument (regression introduced in 2.1.0)
   + tools: avoid crm_mon memory leaks when filtering by resource or node
            (regressions introduced in 2.0.4 and 2.0.5)
+  + tools: exit with status 0 (not 64) for --version argument to crm_rule,
+           crm_error, crm_diff, and crm_node (regression introduced in 2.0.4)
+           and crm_attribute (regression introduced in 2.1.0)
   + tools: crm_mon should show active unmanaged resources on offline nodes
            without requiring -r/--inactive
   + tools: better crm_resource error messages for unsupported resource types
@@ -132,6 +633,9 @@
   + tools: correctly treat unspecified node as all nodes instead of local node
            when attrd_updater --query or crm_resource --cleanup is run on a
            Pacemaker Remote node (regressions introduced in 1.1.14 and 1.1.17)
+  + tools: exit with status 0 (not 64) for --version argument to crm_simulate
+           (regression introduced in 2.0.4) and crm_resource and crmadmin
+           (regression introduced in 2.0.5)
   + pacemaker-attrd: avoid race condition where transient attributes for a
                      leaving node could be reinstated when the node rejoins,
                      potentially causing a node that was just rebooted to exit
@@ -755,7 +1259,7 @@
     compare a node attribute against a resource parameter
   + New "stonith-max-attempts" cluster option to specify how many times
     fencing can fail for a target before the cluster will no longer
-    immediately re-attempt it (previously hard-coded at 10) 
+    immediately re-attempt it (previously hard-coded at 10)
   + New "cluster-ipc-limit" cluster option to avoid IPC client eviction in
     large clusters
   + Failures are now tracked per operation type, as well as per node and

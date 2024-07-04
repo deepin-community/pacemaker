@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2021 the Pacemaker project contributors
+ * Copyright 2019-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -15,20 +15,26 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+#include <crm/common/cmdline_internal.h>
 #include <crm/common/xml.h>
 
 static const char *stylesheet_default =
     ".bold { font-weight: bold }\n"
-    ".maint { color: blue }\n"
-    ".offline { color: red }\n"
+
     ".online { color: green }\n"
+    ".offline { color: red }\n"
+    ".maint { color: blue }\n"
+    ".standby { color: blue }\n"
+    ".health_red { color: red }\n"
+    ".health_yellow { color: GoldenRod }\n"
+
     ".rsc-failed { color: red }\n"
-    ".rsc-failure-ignored { color: yellow }\n"
-    ".rsc-managed { color: yellow }\n"
+    ".rsc-failure-ignored { color: DarkGreen }\n"
+    ".rsc-managed { color: blue }\n"
     ".rsc-multiple { color: orange }\n"
     ".rsc-ok { color: green }\n"
-    ".standby { color: orange }\n"
-    ".warning { color: red, font-weight: bold }";
+
+    ".warning { color: red; font-weight: bold }";
 
 static gboolean cgi_output = FALSE;
 static char *stylesheet_link = NULL;
@@ -67,11 +73,13 @@ typedef struct private_data_s {
 
 static void
 html_free_priv(pcmk__output_t *out) {
-    private_data_t *priv = out->priv;
+    private_data_t *priv = NULL;
 
-    if (priv == NULL) {
+    if (out == NULL || out->priv == NULL) {
         return;
     }
+
+    priv = out->priv;
 
     xmlFreeNode(priv->root);
     g_queue_free(priv->parent_q);
@@ -83,6 +91,8 @@ html_free_priv(pcmk__output_t *out) {
 static bool
 html_init(pcmk__output_t *out) {
     private_data_t *priv = NULL;
+
+    CRM_ASSERT(out != NULL);
 
     /* If html_init was previously called on this output struct, just return. */
     if (out->priv != NULL) {
@@ -119,9 +129,13 @@ add_error_node(gpointer data, gpointer user_data) {
 
 static void
 html_finish(pcmk__output_t *out, crm_exit_t exit_status, bool print, void **copy_dest) {
-    private_data_t *priv = out->priv;
+    private_data_t *priv = NULL;
     htmlNodePtr head_node = NULL;
     htmlNodePtr charset_node = NULL;
+
+    CRM_ASSERT(out != NULL);
+
+    priv = out->priv;
 
     /* If root is NULL, html_init failed and we are being called from pcmk__output_free
      * in the pcmk__output_new path.
@@ -202,7 +216,7 @@ html_reset(pcmk__output_t *out) {
 
 static void
 html_subprocess_output(pcmk__output_t *out, int exit_status,
-                      const char *proc_stdout, const char *proc_stderr) {
+                       const char *proc_stdout, const char *proc_stderr) {
     char *rc_buf = NULL;
 
     CRM_ASSERT(out != NULL);
@@ -231,7 +245,9 @@ html_version(pcmk__output_t *out, bool extended) {
     pcmk__output_create_xml_text_node(out, "h2", "Version Information");
     pcmk__output_create_html_node(out, "div", NULL, NULL, "Program: Pacemaker");
     pcmk__output_create_html_node(out, "div", NULL, NULL, crm_strdup_printf("Version: %s", PACEMAKER_VERSION));
-    pcmk__output_create_html_node(out, "div", NULL, NULL, "Author: Andrew Beekhof");
+    pcmk__output_create_html_node(out, "div", NULL, NULL,
+                                  "Author: Andrew Beekhof and "
+                                  "the Pacemaker project contributors");
     pcmk__output_create_html_node(out, "div", NULL, NULL, crm_strdup_printf("Build: %s", BUILD_VERSION));
     pcmk__output_create_html_node(out, "div", NULL, NULL, crm_strdup_printf("Features: %s", CRM_FEATURES));
 }
@@ -384,7 +400,7 @@ pcmk__mk_html_output(char **argv) {
     }
 
     retval->fmt_name = "html";
-    retval->request = argv == NULL ? NULL : g_strjoinv(" ", argv);
+    retval->request = pcmk__quote_cmdline(argv);
 
     retval->init = html_init;
     retval->free_priv = html_free_priv;
@@ -397,6 +413,7 @@ pcmk__mk_html_output(char **argv) {
     retval->subprocess_output = html_subprocess_output;
     retval->version = html_version;
     retval->info = html_info;
+    retval->transient = html_info;
     retval->err = html_err;
     retval->output_xml = html_output_xml;
 
@@ -415,10 +432,11 @@ pcmk__mk_html_output(char **argv) {
 
 xmlNodePtr
 pcmk__output_create_html_node(pcmk__output_t *out, const char *element_name, const char *id,
-                       const char *class_name, const char *text) {
+                              const char *class_name, const char *text) {
     htmlNodePtr node = NULL;
 
     CRM_ASSERT(out != NULL);
+    CRM_CHECK(pcmk__str_eq(out->fmt_name, "html", pcmk__str_none), return NULL);
 
     node = pcmk__output_create_xml_text_node(out, element_name, text);
 
