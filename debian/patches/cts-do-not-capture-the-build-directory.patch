@@ -1,0 +1,113 @@
+From: =?utf-8?q?Ferenc_W=C3=A1gner?= <wferi@debian.org>
+Date: Thu, 28 Sep 2023 08:44:56 +0200
+Subject: cts: do not capture the build directory
+
+---
+ cts/cts-attrd.in      | 10 ----------
+ cts/cts-exec.in       |  9 ---------
+ cts/cts-fencing.in    |  9 ---------
+ cts/cts-regression.in |  9 ---------
+ cts/cts-scheduler.in  |  9 ---------
+ 5 files changed, 46 deletions(-)
+
+diff --git a/cts/cts-attrd.in b/cts/cts-attrd.in
+index b7ad538..89e476f 100644
+--- a/cts/cts-attrd.in
++++ b/cts/cts-attrd.in
+@@ -17,16 +17,6 @@ import subprocess
+ import sys
+ import tempfile
+ 
+-# These imports allow running from a source checkout after running `make`.
+-# Note that while this doesn't necessarily mean it will successfully run tests,
+-# but being able to see --help output can be useful.
+-if os.path.exists("@abs_top_srcdir@/python"):
+-    sys.path.insert(0, "@abs_top_srcdir@/python")
+-
+-# pylint: disable=comparison-of-constants,comparison-with-itself,condition-evals-to-constant
+-if os.path.exists("@abs_top_builddir@/python") and "@abs_top_builddir@" != "@abs_top_srcdir@":
+-    sys.path.insert(0, "@abs_top_builddir@/python")
+-
+ from pacemaker.buildoptions import BuildOptions
+ from pacemaker.exitstatus import ExitStatus
+ from pacemaker._cts.corosync import Corosync
+diff --git a/cts/cts-exec.in b/cts/cts-exec.in
+index be19d07..acd10af 100644
+--- a/cts/cts-exec.in
++++ b/cts/cts-exec.in
+@@ -20,15 +20,6 @@ import time
+ # Prefer the source tree if available
+ TEST_DIR = sys.path[0]
+ 
+-# These imports allow running from a source checkout after running `make`.
+-# Note that while this doesn't necessarily mean it will successfully run tests,
+-# but being able to see --help output can be useful.
+-if os.path.exists("@abs_top_srcdir@/python"):
+-    sys.path.insert(0, "@abs_top_srcdir@/python")
+-
+-if os.path.exists("@abs_top_builddir@/python") and "@abs_top_builddir@" != "@abs_top_srcdir@":
+-    sys.path.insert(0, "@abs_top_builddir@/python")
+-
+ from pacemaker.buildoptions import BuildOptions
+ from pacemaker.exitstatus import ExitStatus
+ from pacemaker._cts.errors import ExitCodeError, OutputFoundError, OutputNotFoundError
+diff --git a/cts/cts-fencing.in b/cts/cts-fencing.in
+index c2ed29a..99a1286 100644
+--- a/cts/cts-fencing.in
++++ b/cts/cts-fencing.in
+@@ -11,15 +11,6 @@ import sys
+ import subprocess
+ import tempfile
+ 
+-# These imports allow running from a source checkout after running `make`.
+-# Note that while this doesn't necessarily mean it will successfully run tests,
+-# but being able to see --help output can be useful.
+-if os.path.exists("@abs_top_srcdir@/python"):
+-    sys.path.insert(0, "@abs_top_srcdir@/python")
+-
+-if os.path.exists("@abs_top_builddir@/python") and "@abs_top_builddir@" != "@abs_top_srcdir@":
+-    sys.path.insert(0, "@abs_top_builddir@/python")
+-
+ from pacemaker.buildoptions import BuildOptions
+ from pacemaker.exitstatus import ExitStatus
+ from pacemaker._cts.corosync import Corosync, localname
+diff --git a/cts/cts-regression.in b/cts/cts-regression.in
+index c6837c4..c32ae96 100644
+--- a/cts/cts-regression.in
++++ b/cts/cts-regression.in
+@@ -13,15 +13,6 @@ import subprocess
+ import sys
+ import textwrap
+ 
+-# These imports allow running from a source checkout after running `make`.
+-# Note that while this doesn't necessarily mean it will successfully run tests,
+-# but being able to see --help output can be useful.
+-if os.path.exists("@abs_top_srcdir@/python"):
+-    sys.path.insert(0, "@abs_top_srcdir@/python")
+-
+-if os.path.exists("@abs_top_builddir@/python") and "@abs_top_builddir@" != "@abs_top_srcdir@":
+-    sys.path.insert(0, "@abs_top_builddir@/python")
+-
+ from pacemaker.buildoptions import BuildOptions
+ from pacemaker.exitstatus import ExitStatus
+ 
+diff --git a/cts/cts-scheduler.in b/cts/cts-scheduler.in
+index ee0cb7b..99f90fc 100644
+--- a/cts/cts-scheduler.in
++++ b/cts/cts-scheduler.in
+@@ -17,15 +17,6 @@ import subprocess
+ import platform
+ import tempfile
+ 
+-# These imports allow running from a source checkout after running `make`.
+-# Note that while this doesn't necessarily mean it will successfully run tests,
+-# but being able to see --help output can be useful.
+-if os.path.exists("@abs_top_srcdir@/python"):
+-    sys.path.insert(0, "@abs_top_srcdir@/python")
+-
+-if os.path.exists("@abs_top_builddir@/python") and "@abs_top_builddir@" != "@abs_top_srcdir@":
+-    sys.path.insert(0, "@abs_top_builddir@/python")
+-
+ from pacemaker.buildoptions import BuildOptions
+ from pacemaker.exitstatus import ExitStatus
+ 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -33,7 +33,7 @@ static GHashTable *client_connections = NULL;
  * \return Number of active IPC client connections
  */
 guint
-pcmk__ipc_client_count()
+pcmk__ipc_client_count(void)
 {
     return client_connections? g_hash_table_size(client_connections) : 0;
 }
@@ -42,8 +42,8 @@ pcmk__ipc_client_count()
  * \internal
  * \brief Execute a function for each active IPC client connection
  *
- * \param[in] func       Function to call
- * \param[in] user_data  Pointer to pass to function
+ * \param[in]     func       Function to call
+ * \param[in,out] user_data  Pointer to pass to function
  *
  * \note The parameters are the same as for g_hash_table_foreach().
  */
@@ -56,7 +56,7 @@ pcmk__foreach_ipc_client(GHFunc func, gpointer user_data)
 }
 
 pcmk__client_t *
-pcmk__find_client(qb_ipcs_connection_t *c)
+pcmk__find_client(const qb_ipcs_connection_t *c)
 {
     if (client_connections) {
         return g_hash_table_lookup(client_connections, c);
@@ -69,11 +69,11 @@ pcmk__find_client(qb_ipcs_connection_t *c)
 pcmk__client_t *
 pcmk__find_client_by_id(const char *id)
 {
-    gpointer key;
-    pcmk__client_t *client;
-    GHashTableIter iter;
+    if ((client_connections != NULL) && (id != NULL)) {
+        gpointer key;
+        pcmk__client_t *client = NULL;
+        GHashTableIter iter;
 
-    if (client_connections && id) {
         g_hash_table_iter_init(&iter, client_connections);
         while (g_hash_table_iter_next(&iter, &key, (gpointer *) & client)) {
             if (strcmp(client->id, id) == 0) {
@@ -81,8 +81,7 @@ pcmk__find_client_by_id(const char *id)
             }
         }
     }
-
-    crm_trace("No client found with id=%s", id);
+    crm_trace("No client found with id='%s'", pcmk__s(id, ""));
     return NULL;
 }
 
@@ -96,7 +95,7 @@ pcmk__find_client_by_id(const char *id)
  * \note This is intended to be used in format strings like "client %s".
  */
 const char *
-pcmk__client_name(pcmk__client_t *c)
+pcmk__client_name(const pcmk__client_t *c)
 {
     if (c == NULL) {
         return "(unspecified)";
@@ -118,11 +117,12 @@ pcmk__client_cleanup(void)
     if (client_connections != NULL) {
         int active = g_hash_table_size(client_connections);
 
-        if (active) {
-            crm_err("Exiting with %d active IPC client%s",
-                    active, pcmk__plural_s(active));
+        if (active > 0) {
+            crm_warn("Exiting with %d active IPC client%s",
+                     active, pcmk__plural_s(active));
         }
-        g_hash_table_destroy(client_connections); client_connections = NULL;
+        g_hash_table_destroy(client_connections);
+        client_connections = NULL;
     }
 }
 
@@ -154,8 +154,8 @@ pcmk__drop_all_clients(qb_ipcs_service_t *service)
  * \internal
  * \brief Allocate a new pcmk__client_t object based on an IPC connection
  *
- * \param[in] c           IPC connection (or NULL to allocate generic client)
- * \param[in] key         Connection table key (or NULL to use sane default)
+ * \param[in] c           IPC connection (NULL to allocate generic client)
+ * \param[in] key         Connection table key (NULL to use sane default)
  * \param[in] uid_client  UID corresponding to c (ignored if c is NULL)
  *
  * \return Pointer to new pcmk__client_t (or NULL on error)
@@ -187,12 +187,6 @@ client_from_connection(qb_ipcs_connection_t *c, void *key, uid_t uid_client)
     }
 
     client->id = crm_generate_uuid();
-    if (client->id == NULL) {
-        crm_err("Could not generate UUID for client");
-        free(client->user);
-        free(client);
-        return NULL;
-    }
     if (key == NULL) {
         key = client->id;
     }
@@ -274,7 +268,7 @@ pcmk__new_ipc_event(void)
 /*!
  * \brief Free an I/O vector created by pcmk__ipc_prepare_iov()
  *
- * \param[in] event  I/O vector to free
+ * \param[in,out] event  I/O vector to free
  */
 void
 pcmk_free_ipc_event(struct iovec *event)
@@ -381,10 +375,10 @@ pcmk__client_pid(qb_ipcs_connection_t *c)
  * \internal
  * \brief Retrieve message XML from data read from client IPC
  *
- * \param[in]  c       IPC client connection
- * \param[in]  data    Data read from client connection
- * \param[out] id      Where to store message ID from libqb header
- * \param[out] flags   Where to store flags from libqb header
+ * \param[in,out]  c       IPC client connection
+ * \param[in]      data    Data read from client connection
+ * \param[out]     id      Where to store message ID from libqb header
+ * \param[out]     flags   Where to store flags from libqb header
  *
  * \return Message XML on success, NULL otherwise
  */
@@ -476,7 +470,7 @@ delay_next_flush(pcmk__client_t *c, unsigned int queue_len)
  * \internal
  * \brief Send client any messages in its queue
  *
- * \param[in]  c  Client to flush
+ * \param[in,out] c  Client to flush
  *
  * \return Standard Pacemaker return value
  */
@@ -574,11 +568,11 @@ crm_ipcs_flush_events(pcmk__client_t *c)
  * \internal
  * \brief Create an I/O vector for sending an IPC XML message
  *
- * \param[in]  request        Identifier for libqb response header
- * \param[in]  message        XML message to send
- * \param[in]  max_send_size  If 0, default IPC buffer size is used
- * \param[out] result         Where to store prepared I/O vector
- * \param[out] bytes          Size of prepared data in bytes
+ * \param[in]     request        Identifier for libqb response header
+ * \param[in,out] message        XML message to send
+ * \param[in]     max_send_size  If 0, default IPC buffer size is used
+ * \param[out]    result         Where to store prepared I/O vector
+ * \param[out]    bytes          Size of prepared data in bytes
  *
  * \return Standard Pacemaker return code
  */
@@ -771,15 +765,45 @@ pcmk__ipc_send_xml(pcmk__client_t *c, uint32_t request, xmlNode *message,
 
 /*!
  * \internal
+ * \brief Create an acknowledgement with a status code to send to a client
+ *
+ * \param[in] function  Calling function
+ * \param[in] line      Source file line within calling function
+ * \param[in] flags     IPC flags to use when sending
+ * \param[in] tag       Element name to use for acknowledgement
+ * \param[in] ver       IPC protocol version (can be NULL)
+ * \param[in] status    Exit status code to add to ack
+ *
+ * \return Newly created XML for ack
+ * \note The caller is responsible for freeing the return value with free_xml().
+ */
+xmlNode *
+pcmk__ipc_create_ack_as(const char *function, int line, uint32_t flags,
+                        const char *tag, const char *ver, crm_exit_t status)
+{
+    xmlNode *ack = NULL;
+
+    if (pcmk_is_set(flags, crm_ipc_client_response)) {
+        ack = create_xml_node(NULL, tag);
+        crm_xml_add(ack, "function", function);
+        crm_xml_add_int(ack, "line", line);
+        crm_xml_add_int(ack, "status", (int) status);
+        crm_xml_add(ack, PCMK__XA_IPC_PROTO_VERSION, ver);
+    }
+    return ack;
+}
+
+/*!
+ * \internal
  * \brief Send an acknowledgement with a status code to a client
  *
  * \param[in] function  Calling function
  * \param[in] line      Source file line within calling function
  * \param[in] c         Client to send ack to
  * \param[in] request   Request ID being replied to
- * \param[in] status    Exit status code to add to ack
  * \param[in] flags     IPC flags to use when sending
  * \param[in] tag       Element name to use for acknowledgement
+ * \param[in] ver       IPC protocol version (can be NULL)
  * \param[in] status    Status code to send with acknowledgement
  *
  * \return Standard Pacemaker return code
@@ -787,19 +811,15 @@ pcmk__ipc_send_xml(pcmk__client_t *c, uint32_t request, xmlNode *message,
 int
 pcmk__ipc_send_ack_as(const char *function, int line, pcmk__client_t *c,
                       uint32_t request, uint32_t flags, const char *tag,
-                      crm_exit_t status)
+                      const char *ver, crm_exit_t status)
 {
     int rc = pcmk_rc_ok;
+    xmlNode *ack = pcmk__ipc_create_ack_as(function, line, flags, tag, ver, status);
 
-    if (pcmk_is_set(flags, crm_ipc_client_response)) {
-        xmlNode *ack = create_xml_node(NULL, tag);
-
+    if (ack != NULL) {
         crm_trace("Ack'ing IPC message from client %s as <%s status=%d>",
                   pcmk__client_name(c), tag, status);
         c->request_id = 0;
-        crm_xml_add(ack, "function", function);
-        crm_xml_add_int(ack, "line", line);
-        crm_xml_add_int(ack, "status", (int) status);
         rc = pcmk__ipc_send_xml(c, request, ack, flags);
         free_xml(ack);
     }
@@ -879,6 +899,7 @@ pcmk__serve_controld_ipc(struct qb_ipcs_service_handlers *cb)
  * \internal
  * \brief Add an IPC server to the main loop for the pacemaker-attrd API
  *
+ * \param[out] ipcs  Where to store newly created IPC server
  * \param[in] cb  IPC callbacks
  *
  * \note This function exits fatally if unable to create the servers.
@@ -900,7 +921,8 @@ pcmk__serve_attrd_ipc(qb_ipcs_service_t **ipcs,
  * \internal
  * \brief Add an IPC server to the main loop for the pacemaker-fenced API
  *
- * \param[in] cb  IPC callbacks
+ * \param[out] ipcs  Where to store newly created IPC server
+ * \param[in]  cb    IPC callbacks
  *
  * \note This function exits fatally if unable to create the servers.
  */
@@ -922,7 +944,8 @@ pcmk__serve_fenced_ipc(qb_ipcs_service_t **ipcs,
  * \internal
  * \brief Add an IPC server to the main loop for the pacemakerd API
  *
- * \param[in] cb  IPC callbacks
+ * \param[out] ipcs  Where to store newly created IPC server
+ * \param[in]  cb    IPC callbacks
  *
  * \note This function exits with CRM_EX_OSERR if unable to create the servers.
  */
@@ -942,6 +965,21 @@ pcmk__serve_pacemakerd_ipc(qb_ipcs_service_t **ipcs,
          */
         crm_exit(CRM_EX_OSERR);
     }
+}
+
+/*!
+ * \internal
+ * \brief Add an IPC server to the main loop for the pacemaker-schedulerd API
+ *
+ * \param[in] cb  IPC callbacks
+ *
+ * \return Newly created IPC server
+ * \note This function exits fatally if unable to create the servers.
+ */
+qb_ipcs_service_t *
+pcmk__serve_schedulerd_ipc(struct qb_ipcs_service_handlers *cb)
+{
+    return mainloop_add_ipc_server(CRM_SYSTEM_PENGINE, QB_IPC_NATIVE, cb);
 }
 
 /*!

@@ -1,5 +1,5 @@
 /*
- * Copyright 2006-2021 the Pacemaker project contributors
+ * Copyright 2006-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -42,6 +42,16 @@
 #  include <crm/common/output_internal.h>
 #  include <crm/common/xml_internal.h>
 #  include <crm/common/internal.h>
+#  include <locale.h>
+#  include <gettext.h>
+
+#define N_(String) (String)
+
+#ifdef ENABLE_NLS
+#  define _(String) gettext(String)
+#else
+#  define _(String) (String)
+#endif
 
 
 /*
@@ -61,13 +71,22 @@
 #define PCMK__XA_ATTR_RESOURCE          "attr_resource"
 #define PCMK__XA_ATTR_SECTION           "attr_section"
 #define PCMK__XA_ATTR_SET               "attr_set"
+#define PCMK__XA_ATTR_SET_TYPE          "attr_set_type"
+#define PCMK__XA_ATTR_SYNC_POINT        "attr_sync_point"
 #define PCMK__XA_ATTR_USER              "attr_user"
 #define PCMK__XA_ATTR_UUID              "attr_key"
 #define PCMK__XA_ATTR_VALUE             "attr_value"
 #define PCMK__XA_ATTR_VERSION           "attr_version"
 #define PCMK__XA_ATTR_WRITER            "attr_writer"
+#define PCMK__XA_CONFIG_ERRORS          "config-errors"
+#define PCMK__XA_CONFIG_WARNINGS        "config-warnings"
+#define PCMK__XA_CONFIRM                "confirm"
+#define PCMK__XA_GRAPH_ERRORS           "graph-errors"
+#define PCMK__XA_GRAPH_WARNINGS         "graph-warnings"
 #define PCMK__XA_MODE                   "mode"
 #define PCMK__XA_TASK                   "task"
+#define PCMK__XA_UPTIME                 "uptime"
+#define PCMK__XA_CONN_HOST              "connection_host"
 
 
 /*
@@ -92,14 +111,8 @@
 #define PCMK__ATTRD_CMD_SYNC            "sync"
 #define PCMK__ATTRD_CMD_SYNC_RESPONSE   "sync-response"
 #define PCMK__ATTRD_CMD_CLEAR_FAILURE   "clear-failure"
+#define PCMK__ATTRD_CMD_CONFIRM         "confirm"
 
 #define PCMK__CONTROLD_CMD_NODES        "list-nodes"
-
-/*
- * Environment variables used by Pacemaker
- */
-
-#define PCMK__ENV_PHYSICAL_HOST         "physical_host"
-
 
 #endif                          /* CRM_INTERNAL__H */

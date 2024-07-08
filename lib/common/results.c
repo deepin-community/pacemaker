@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2020 the Pacemaker project contributors
+ * Copyright 2004-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -24,6 +24,96 @@
 
 G_DEFINE_QUARK(pcmk-rc-error-quark, pcmk__rc_error)
 G_DEFINE_QUARK(pcmk-exitc-error-quark, pcmk__exitc_error)
+
+// General (all result code types)
+
+/*!
+ * \brief Get the name and description of a given result code
+ *
+ * A result code can be interpreted as a member of any one of several families.
+ *
+ * \param[in]  code  The result code to look up
+ * \param[in]  type  How \p code should be interpreted
+ * \param[out] name  Where to store the result code's name
+ * \param[out] desc  Where to store the result code's description
+ *
+ * \return Standard Pacemaker return code
+ */
+int
+pcmk_result_get_strings(int code, enum pcmk_result_type type, const char **name,
+                        const char **desc)
+{
+    const char *code_name = NULL;
+    const char *code_desc = NULL;
+
+    switch (type) {
+        case pcmk_result_legacy:
+            code_name = pcmk_errorname(code);
+            code_desc = pcmk_strerror(code);
+            break;
+        case pcmk_result_rc:
+            code_name = pcmk_rc_name(code);
+            code_desc = pcmk_rc_str(code);
+            break;
+        case pcmk_result_exitcode:
+            code_name = crm_exit_name(code);
+            code_desc = crm_exit_str((crm_exit_t) code);
+            break;
+        default:
+            return pcmk_rc_undetermined;
+    }
+
+    if (name != NULL) {
+        *name = code_name;
+    }
+    
+    if (desc != NULL) {
+        *desc = code_desc;
+    }
+    return pcmk_rc_ok;
+}
+
+/*!
+ * \internal
+ * \brief Get the lower and upper bounds of a result code family
+ *
+ * \param[in]   type    Type of result code
+ * \param[out]  lower   Where to store the lower bound
+ * \param[out]  upper   Where to store the upper bound
+ *
+ * \return Standard Pacemaker return code
+ *
+ * \note There is no true upper bound on standard Pacemaker return codes or
+ *       legacy return codes. All system \p errno values are valid members of
+ *       these result code families, and there is no global upper limit nor a
+ *       constant by which to refer to the highest \p errno value on a given
+ *       system.
+ */
+int
+pcmk__result_bounds(enum pcmk_result_type type, int *lower, int *upper)
+{
+    CRM_ASSERT((lower != NULL) && (upper != NULL));
+
+    switch (type) {
+        case pcmk_result_legacy:
+            *lower = pcmk_ok;
+            *upper = 256;   // should be enough for almost any system error code
+            break;
+        case pcmk_result_rc:
+            *lower = pcmk_rc_error - pcmk__n_rc + 1;
+            *upper = 256;
+            break;
+        case pcmk_result_exitcode:
+            *lower = CRM_EX_OK;
+            *upper = CRM_EX_MAX;
+            break;
+        default:
+            *lower = 0;
+            *upper = -1;
+            return pcmk_rc_undetermined;
+    }
+    return pcmk_rc_ok;
+}
 
 // @COMPAT Legacy function return codes
 
@@ -57,75 +147,7 @@ pcmk_errorname(int rc)
 const char *
 pcmk_strerror(int rc)
 {
-    if (rc == 0) {
-        return "OK";
-    }
-
-    rc = abs(rc);
-
-    // Of course rc > 0 ... unless someone passed INT_MIN as rc
-    if ((rc > 0) && (rc < PCMK_ERROR_OFFSET)) {
-        return strerror(rc);
-    }
-
-    switch (rc) {
-        case pcmk_err_generic:
-            return "Generic Pacemaker error";
-        case pcmk_err_no_quorum:
-            return "Operation requires quorum";
-        case pcmk_err_schema_validation:
-            return "Update does not conform to the configured schema";
-        case pcmk_err_transform_failed:
-            return "Schema transform failed";
-        case pcmk_err_old_data:
-            return "Update was older than existing configuration";
-        case pcmk_err_diff_failed:
-            return "Application of an update diff failed";
-        case pcmk_err_diff_resync:
-            return "Application of an update diff failed, requesting a full refresh";
-        case pcmk_err_cib_modified:
-            return "The on-disk configuration was manually modified";
-        case pcmk_err_cib_backup:
-            return "Could not archive the previous configuration";
-        case pcmk_err_cib_save:
-            return "Could not save the new configuration to disk";
-        case pcmk_err_cib_corrupt:
-            return "Could not parse on-disk configuration";
-        case pcmk_err_multiple:
-            return "Resource active on multiple nodes";
-        case pcmk_err_node_unknown:
-            return "Node not found";
-        case pcmk_err_already:
-            return "Situation already as requested";
-        case pcmk_err_bad_nvpair:
-            return "Bad name/value pair given";
-        case pcmk_err_schema_unchanged:
-            return "Schema is already the latest available";
-        case pcmk_err_unknown_format:
-            return "Unknown output format";
-
-            /* The following cases will only be hit on systems for which they are non-standard */
-            /* coverity[dead_error_condition] False positive on non-Linux */
-        case ENOTUNIQ:
-            return "Name not unique on network";
-            /* coverity[dead_error_condition] False positive on non-Linux */
-        case ECOMM:
-            return "Communication error on send";
-            /* coverity[dead_error_condition] False positive on non-Linux */
-        case ELIBACC:
-            return "Can not access a needed shared library";
-            /* coverity[dead_error_condition] False positive on non-Linux */
-        case EREMOTEIO:
-            return "Remote I/O error";
-            /* coverity[dead_error_condition] False positive on non-Linux */
-        case EUNATCH:
-            return "Protocol driver not attached";
-            /* coverity[dead_error_condition] False positive on non-Linux */
-        case ENOKEY:
-            return "Required key not available";
-    }
-    crm_err("Unknown error code: %d", rc);
-    return "Unknown error";
+    return pcmk_rc_str(pcmk_legacy2rc(rc));
 }
 
 // Standard Pacemaker API return codes
@@ -134,7 +156,7 @@ pcmk_strerror(int rc)
  * kept in the exact reverse order of the enum value numbering (i.e. add new
  * values to the end of the array).
  */
-static struct pcmk__rc_info {
+static const struct pcmk__rc_info {
     const char *name;
     const char *desc;
     int legacy_rc;
@@ -207,19 +229,19 @@ static struct pcmk__rc_info {
       "Operation requires quorum",
       -pcmk_err_no_quorum,
     },
-    { "pcmk_rc_ipc_pid_only",
-      "IPC server process is active but not accepting connections",
+    { "pcmk_rc_ipc_unauthorized",
+      "IPC server is blocked by unauthorized process",
       -pcmk_err_generic,
     },
     { "pcmk_rc_ipc_unresponsive",
       "IPC server is unresponsive",
       -pcmk_err_generic,
     },
-    { "pcmk_rc_ipc_unauthorized",
-      "IPC server is blocked by unauthorized process",
+    { "pcmk_rc_ipc_pid_only",
+      "IPC server process is active but not accepting connections",
       -pcmk_err_generic,
     },
-    { "pcmk_rc_op_unsatisifed",
+    { "pcmk_rc_op_unsatisfied",
       "Not applicable under current conditions",
       -pcmk_err_generic,
     },
@@ -250,10 +272,50 @@ static struct pcmk__rc_info {
     { "pcmk_rc_underflow",
       "Value too small to be stored in data type",
       -pcmk_err_generic,
-    }
+    },
+    { "pcmk_rc_dot_error",
+      "Error writing dot(1) file",
+      -pcmk_err_generic,
+    },
+    { "pcmk_rc_graph_error",
+      "Error writing graph file",
+      -pcmk_err_generic,
+    },
+    { "pcmk_rc_invalid_transition",
+      "Cluster simulation produced invalid transition",
+      -pcmk_err_generic,
+    },
+    { "pcmk_rc_unpack_error",
+      "Unable to parse CIB XML",
+      -pcmk_err_generic,
+    },
+    { "pcmk_rc_duplicate_id",
+      "Two or more XML elements have the same ID",
+      -pcmk_err_generic,
+    },
+    { "pcmk_rc_disabled",
+      "Disabled",
+      -pcmk_err_generic,
+    },
+    { "pcmk_rc_bad_input",
+      "Bad input value provided",
+      -pcmk_err_generic,
+    },
+    { "pcmk_rc_bad_xml_patch",
+      "Bad XML patch format",
+      -pcmk_err_generic,
+    },
 };
 
-#define PCMK__N_RC (sizeof(pcmk__rcs) / sizeof(struct pcmk__rc_info))
+/*!
+ * \internal
+ * \brief The number of <tt>enum pcmk_rc_e</tt> values, excluding \c pcmk_rc_ok
+ *
+ * This constant stores the number of negative standard Pacemaker return codes.
+ * These represent Pacemaker-custom error codes. The count does not include
+ * positive system error numbers, nor does it include \c pcmk_rc_ok (success).
+ */
+const size_t pcmk__n_rc = PCMK__NELEM(pcmk__rcs);
 
 /*!
  * \brief Get a return code constant name as a string
@@ -265,7 +327,7 @@ static struct pcmk__rc_info {
 const char *
 pcmk_rc_name(int rc)
 {
-    if ((rc <= pcmk_rc_error) && ((pcmk_rc_error - rc) < PCMK__N_RC)) {
+    if ((rc <= pcmk_rc_error) && ((pcmk_rc_error - rc) < pcmk__n_rc)) {
         return pcmk__rcs[pcmk_rc_error - rc].name;
     }
     switch (rc) {
@@ -330,8 +392,12 @@ pcmk_rc_name(int rc)
         case ENOMSG:            return "ENOMSG";
         case ENOPROTOOPT:       return "ENOPROTOOPT";
         case ENOSPC:            return "ENOSPC";
+#ifdef ENOSR
         case ENOSR:             return "ENOSR";
+#endif
+#ifdef ENOSTR
         case ENOSTR:            return "ENOSTR";
+#endif
         case ENOSYS:            return "ENOSYS";
         case ENOTBLK:           return "ENOTBLK";
         case ENOTCONN:          return "ENOTCONN";
@@ -364,7 +430,9 @@ pcmk_rc_name(int rc)
         case ETIME:             return "ETIME";
         case ETIMEDOUT:         return "ETIMEDOUT";
         case ETXTBSY:           return "ETXTBSY";
+#ifdef EUNATCH
         case EUNATCH:           return "EUNATCH";
+#endif
         case EUSERS:            return "EUSERS";
         /* case EWOULDBLOCK:    return "EWOULDBLOCK"; */
         case EXDEV:             return "EXDEV";
@@ -380,9 +448,9 @@ pcmk_rc_name(int rc)
 #ifdef EISNAM // Not available on OS X, Illumos, Solaris
         case EISNAM:            return "EISNAM";
         case EKEYEXPIRED:       return "EKEYEXPIRED";
-        case EKEYREJECTED:      return "EKEYREJECTED";
         case EKEYREVOKED:       return "EKEYREVOKED";
 #endif
+        case EKEYREJECTED:      return "EKEYREJECTED";
         case EL2HLT:            return "EL2HLT";
         case EL2NSYNC:          return "EL2NSYNC";
         case EL3HLT:            return "EL3HLT";
@@ -422,13 +490,41 @@ pcmk_rc_str(int rc)
     if (rc == pcmk_rc_ok) {
         return "OK";
     }
-    if ((rc <= pcmk_rc_error) && ((pcmk_rc_error - rc) < PCMK__N_RC)) {
+    if ((rc <= pcmk_rc_error) && ((pcmk_rc_error - rc) < pcmk__n_rc)) {
         return pcmk__rcs[pcmk_rc_error - rc].desc;
     }
     if (rc < 0) {
-        return "Unknown error";
+        return "Error";
     }
-    return strerror(rc);
+
+    // Handle values that could be defined by system or by portability.h
+    switch (rc) {
+#ifdef PCMK__ENOTUNIQ
+        case ENOTUNIQ:      return "Name not unique on network";
+#endif
+#ifdef PCMK__ECOMM
+        case ECOMM:         return "Communication error on send";
+#endif
+#ifdef PCMK__ELIBACC
+        case ELIBACC:       return "Can not access a needed shared library";
+#endif
+#ifdef PCMK__EREMOTEIO
+        case EREMOTEIO:     return "Remote I/O error";
+#endif
+#ifdef PCMK__ENOKEY
+        case ENOKEY:        return "Required key not available";
+#endif
+#ifdef PCMK__ENODATA
+        case ENODATA:       return "No data available";
+#endif
+#ifdef PCMK__ETIME
+        case ETIME:         return "Timer expired";
+#endif
+#ifdef PCMK__EKEYREJECTED
+        case EKEYREJECTED:  return "Key was rejected by service";
+#endif
+        default:            return strerror(rc);
+    }
 }
 
 // This returns negative values for errors
@@ -439,7 +535,7 @@ pcmk_rc2legacy(int rc)
     if (rc >= 0) {
         return -rc; // OK or system errno
     }
-    if ((rc <= pcmk_rc_error) && ((pcmk_rc_error - rc) < PCMK__N_RC)) {
+    if ((rc <= pcmk_rc_error) && ((pcmk_rc_error - rc) < pcmk__n_rc)) {
         return pcmk__rcs[pcmk_rc_error - rc].legacy_rc;
     }
     return -pcmk_err_generic;
@@ -487,6 +583,8 @@ crm_exit_name(crm_exit_t exit_code)
         case CRM_EX_NOT_INSTALLED: return "CRM_EX_NOT_INSTALLED";
         case CRM_EX_NOT_CONFIGURED: return "CRM_EX_NOT_CONFIGURED";
         case CRM_EX_NOT_RUNNING: return "CRM_EX_NOT_RUNNING";
+        case CRM_EX_PROMOTED: return "CRM_EX_PROMOTED";
+        case CRM_EX_FAILED_PROMOTED: return "CRM_EX_FAILED_PROMOTED";
         case CRM_EX_USAGE: return "CRM_EX_USAGE";
         case CRM_EX_DATAERR: return "CRM_EX_DATAERR";
         case CRM_EX_NOINPUT: return "CRM_EX_NOINPUT";
@@ -517,6 +615,9 @@ crm_exit_name(crm_exit_t exit_code)
         case CRM_EX_UNSATISFIED: return "CRM_EX_UNSATISFIED";
         case CRM_EX_OLD: return "CRM_EX_OLD";
         case CRM_EX_TIMEOUT: return "CRM_EX_TIMEOUT";
+        case CRM_EX_DEGRADED: return "CRM_EX_DEGRADED";
+        case CRM_EX_DEGRADED_PROMOTED: return "CRM_EX_DEGRADED_PROMOTED";
+        case CRM_EX_NONE: return "CRM_EX_NONE";
         case CRM_EX_MAX: return "CRM_EX_UNKNOWN";
     }
     return "CRM_EX_UNKNOWN";
@@ -534,6 +635,8 @@ crm_exit_str(crm_exit_t exit_code)
         case CRM_EX_NOT_INSTALLED: return "Not installed";
         case CRM_EX_NOT_CONFIGURED: return "Not configured";
         case CRM_EX_NOT_RUNNING: return "Not running";
+        case CRM_EX_PROMOTED: return "Promoted";
+        case CRM_EX_FAILED_PROMOTED: return "Failed in promoted role";
         case CRM_EX_USAGE: return "Incorrect usage";
         case CRM_EX_DATAERR: return "Invalid data given";
         case CRM_EX_NOINPUT: return "Input file not available";
@@ -564,49 +667,15 @@ crm_exit_str(crm_exit_t exit_code)
         case CRM_EX_UNSATISFIED: return "Not applicable under current conditions";
         case CRM_EX_OLD: return "Update was older than existing configuration";
         case CRM_EX_TIMEOUT: return "Timeout occurred";
+        case CRM_EX_DEGRADED: return "Service is active but might fail soon";
+        case CRM_EX_DEGRADED_PROMOTED: return "Service is promoted but might fail soon";
+        case CRM_EX_NONE: return "No exit status available";
         case CRM_EX_MAX: return "Error occurred";
     }
     if ((exit_code > 128) && (exit_code < CRM_EX_MAX)) {
         return "Interrupted by signal";
     }
     return "Unknown exit status";
-}
-
-//! \deprecated Use standard return codes and pcmk_rc2exitc() instead
-crm_exit_t
-crm_errno2exit(int rc)
-{
-    rc = abs(rc); // Convenience for functions that return -errno
-    switch (rc) {
-        case pcmk_ok:
-            return CRM_EX_OK;
-
-        case pcmk_err_no_quorum:
-            return CRM_EX_QUORUM;
-
-        case pcmk_err_old_data:
-            return CRM_EX_OLD;
-
-        case pcmk_err_schema_validation:
-        case pcmk_err_transform_failed:
-            return CRM_EX_CONFIG;
-
-        case pcmk_err_bad_nvpair:
-            return CRM_EX_INVALID_PARAM;
-
-        case pcmk_err_already:
-            return CRM_EX_EXISTS;
-
-        case pcmk_err_multiple:
-            return CRM_EX_MULTIPLE;
-
-        case pcmk_err_node_unknown:
-        case pcmk_err_unknown_format:
-            return CRM_EX_NOSUCH;
-
-        default:
-            return pcmk_rc2exitc(rc); // system errno
-    }
 }
 
 /*!
@@ -621,6 +690,7 @@ pcmk_rc2exitc(int rc)
 {
     switch (rc) {
         case pcmk_rc_ok:
+        case pcmk_rc_no_output: // quiet mode, or nothing to output
             return CRM_EX_OK;
 
         case pcmk_rc_no_quorum:
@@ -631,6 +701,7 @@ pcmk_rc2exitc(int rc)
 
         case pcmk_rc_schema_validation:
         case pcmk_rc_transform_failed:
+        case pcmk_rc_unpack_error:
             return CRM_EX_CONFIG;
 
         case pcmk_rc_bad_nvpair:
@@ -671,7 +742,8 @@ pcmk_rc2exitc(int rc)
             return CRM_EX_EXISTS;
 
         case EIO:
-        case pcmk_rc_no_output:
+        case pcmk_rc_dot_error:
+        case pcmk_rc_graph_error:
             return CRM_EX_IOERR;
 
         case ENOTSUP:
@@ -684,10 +756,14 @@ pcmk_rc2exitc(int rc)
         case pcmk_rc_multiple:
             return CRM_EX_MULTIPLE;
 
+        case ENODEV:
+        case ENOENT:
         case ENXIO:
-        case pcmk_rc_node_unknown:
         case pcmk_rc_unknown_format:
             return CRM_EX_NOSUCH;
+
+        case pcmk_rc_node_unknown:
+            return CRM_EX_NOHOST;
 
         case ETIME:
         case ETIMEDOUT:
@@ -715,10 +791,49 @@ pcmk_rc2exitc(int rc)
         case pcmk_rc_no_input:
             return CRM_EX_NOINPUT;
 
+        case pcmk_rc_duplicate_id:
+            return CRM_EX_MULTIPLE;
+
+        case pcmk_rc_bad_input:
+        case pcmk_rc_bad_xml_patch:
+            return CRM_EX_DATAERR;
+
         default:
             return CRM_EX_ERROR;
     }
 }
+
+/*!
+ * \brief Map a function return code to the most similar OCF exit code
+ *
+ * \param[in] rc  Function return code
+ *
+ * \return Most similar OCF exit code
+ */
+enum ocf_exitcode
+pcmk_rc2ocf(int rc)
+{
+    switch (rc) {
+        case pcmk_rc_ok:
+            return PCMK_OCF_OK;
+
+        case pcmk_rc_bad_nvpair:
+            return PCMK_OCF_INVALID_PARAM;
+
+        case EACCES:
+            return PCMK_OCF_INSUFFICIENT_PRIV;
+
+        case ENOTSUP:
+#if EOPNOTSUPP != ENOTSUP
+        case EOPNOTSUPP:
+#endif
+            return PCMK_OCF_UNIMPLEMENT_FEATURE;
+
+        default:
+            return PCMK_OCF_UNKNOWN_ERROR;
+    }
+}
+
 
 // Other functions
 
@@ -752,7 +867,7 @@ bz2_strerror(int rc)
         case BZ_OUTBUFF_FULL:
             return "output data will not fit into the buffer provided";
     }
-    return "Unknown error";
+    return "Data compression error";
 }
 
 crm_exit_t
@@ -768,7 +883,7 @@ crm_exit(crm_exit_t rc)
     mainloop_cleanup();
     crm_xml_cleanup();
 
-    pcmk__cli_option_cleanup();
+    free(pcmk__our_nodename);
 
     if (crm_system_name) {
         crm_info("Exiting %s " CRM_XS " with status %d", crm_system_name, rc);
@@ -776,7 +891,159 @@ crm_exit(crm_exit_t rc)
     } else {
         crm_trace("Exiting with status %d", rc);
     }
+    pcmk__free_common_logger();
     qb_log_fini(); // Don't log anything after this point
 
     exit(rc);
 }
+
+/*
+ * External action results
+ */
+
+/*!
+ * \internal
+ * \brief Set the result of an action
+ *
+ * \param[out] result        Where to set action result
+ * \param[in]  exit_status   OCF exit status to set
+ * \param[in]  exec_status   Execution status to set
+ * \param[in]  exit_reason   Human-friendly description of event to set
+ */
+void
+pcmk__set_result(pcmk__action_result_t *result, int exit_status,
+                 enum pcmk_exec_status exec_status, const char *exit_reason)
+{
+    if (result == NULL) {
+        return;
+    }
+
+    result->exit_status = exit_status;
+    result->execution_status = exec_status;
+
+    if (!pcmk__str_eq(result->exit_reason, exit_reason, pcmk__str_none)) {
+        free(result->exit_reason);
+        result->exit_reason = (exit_reason == NULL)? NULL : strdup(exit_reason);
+    }
+}
+
+
+/*!
+ * \internal
+ * \brief Set the result of an action, with a formatted exit reason
+ *
+ * \param[out] result        Where to set action result
+ * \param[in]  exit_status   OCF exit status to set
+ * \param[in]  exec_status   Execution status to set
+ * \param[in]  format        printf-style format for a human-friendly
+ *                           description of reason for result
+ * \param[in]  ...           arguments for \p format
+ */
+G_GNUC_PRINTF(4, 5)
+void
+pcmk__format_result(pcmk__action_result_t *result, int exit_status,
+                    enum pcmk_exec_status exec_status,
+                    const char *format, ...)
+{
+    va_list ap;
+    int len = 0;
+    char *reason = NULL;
+
+    if (result == NULL) {
+        return;
+    }
+
+    result->exit_status = exit_status;
+    result->execution_status = exec_status;
+
+    if (format != NULL) {
+        va_start(ap, format);
+        len = vasprintf(&reason, format, ap);
+        CRM_ASSERT(len > 0);
+        va_end(ap);
+    }
+    free(result->exit_reason);
+    result->exit_reason = reason;
+}
+
+/*!
+ * \internal
+ * \brief Set the output of an action
+ *
+ * \param[out] result         Action result to set output for
+ * \param[in]  out            Action output to set (must be dynamically
+ *                            allocated)
+ * \param[in]  err            Action error output to set (must be dynamically
+ *                            allocated)
+ *
+ * \note \p result will take ownership of \p out and \p err, so the caller
+ *       should not free them.
+ */
+void
+pcmk__set_result_output(pcmk__action_result_t *result, char *out, char *err)
+{
+    if (result == NULL) {
+        return;
+    }
+
+    free(result->action_stdout);
+    result->action_stdout = out;
+
+    free(result->action_stderr);
+    result->action_stderr = err;
+}
+
+/*!
+ * \internal
+ * \brief Clear a result's exit reason, output, and error output
+ *
+ * \param[in,out] result  Result to reset
+ */
+void
+pcmk__reset_result(pcmk__action_result_t *result)
+{
+    if (result == NULL) {
+        return;
+    }
+
+    free(result->exit_reason);
+    result->exit_reason = NULL;
+
+    free(result->action_stdout);
+    result->action_stdout = NULL;
+
+    free(result->action_stderr);
+    result->action_stderr = NULL;
+}
+
+/*!
+ * \internal
+ * \brief Copy the result of an action
+ *
+ * \param[in]  src  Result to copy
+ * \param[out] dst  Where to copy \p src to
+ */
+void
+pcmk__copy_result(const pcmk__action_result_t *src, pcmk__action_result_t *dst)
+{
+    CRM_CHECK((src != NULL) && (dst != NULL), return);
+    dst->exit_status = src->exit_status;
+    dst->execution_status = src->execution_status;
+    pcmk__str_update(&dst->exit_reason, src->exit_reason);
+    pcmk__str_update(&dst->action_stdout, src->action_stdout);
+    pcmk__str_update(&dst->action_stderr, src->action_stderr);
+}
+
+// Deprecated functions kept only for backward API compatibility
+// LCOV_EXCL_START
+
+#include <crm/common/results_compat.h>
+
+crm_exit_t
+crm_errno2exit(int rc)
+{
+    return pcmk_rc2exitc(pcmk_legacy2rc(rc));
+}
+
+// LCOV_EXCL_STOP
+// End deprecated API

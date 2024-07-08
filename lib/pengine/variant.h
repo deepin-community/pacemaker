@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -10,36 +10,7 @@
 #ifndef PE_VARIANT__H
 #  define PE_VARIANT__H
 
-#  if VARIANT_CLONE
-
-typedef struct clone_variant_data_s {
-    int clone_max;
-    int clone_node_max;
-
-    int promoted_max;
-    int promoted_node_max;
-
-    int total_clones;
-
-    // @TODO make these a bitmask
-    gboolean ordered;
-    bool added_promotion_scores;
-    bool added_promoted_constraints;
-
-    notify_data_t *stop_notify;
-    notify_data_t *start_notify;
-    notify_data_t *demote_notify;
-    notify_data_t *promote_notify;
-
-    xmlNode *xml_obj_child;
-} clone_variant_data_t;
-
-#    define get_clone_variant_data(data, rsc)				\
-	CRM_ASSERT(rsc != NULL);					\
-	CRM_ASSERT(rsc->variant == pe_clone); \
-	data = (clone_variant_data_t *)rsc->variant_opaque;
-
-#  elif PE__VARIANT_BUNDLE
+#  if PE__VARIANT_BUNDLE
 
 typedef struct {
     int offset;
@@ -95,7 +66,7 @@ typedef struct pe__bundle_variant_data_s {
         char *container_network;
         char *ip_range_start;
         gboolean add_host;
-        char *container_host_options;
+        gchar *container_host_options;
         char *container_command;
         char *launcher_options;
         const char *attribute_target;
@@ -114,39 +85,6 @@ typedef struct pe__bundle_variant_data_s {
 	CRM_ASSERT(rsc->variant == pe_container);                       \
 	CRM_ASSERT(rsc->variant_opaque != NULL);			\
 	data = (pe__bundle_variant_data_t *)rsc->variant_opaque;		\
-
-#  elif VARIANT_GROUP
-
-typedef struct group_variant_data_s {
-    int num_children;
-    pe_resource_t *first_child;
-    pe_resource_t *last_child;
-
-    gboolean colocated;
-    gboolean ordered;
-
-    gboolean child_starting;
-    gboolean child_stopping;
-
-} group_variant_data_t;
-
-#    define get_group_variant_data(data, rsc)				\
-	CRM_ASSERT(rsc != NULL);					\
-	CRM_ASSERT(rsc->variant == pe_group);				\
-	CRM_ASSERT(rsc->variant_opaque != NULL);			\
-	data = (group_variant_data_t *)rsc->variant_opaque;		\
-
-#  elif VARIANT_NATIVE
-
-typedef struct native_variant_data_s {
-    int dummy;
-} native_variant_data_t;
-
-#    define get_native_variant_data(data, rsc)				\
-	CRM_ASSERT(rsc != NULL);					\
-	CRM_ASSERT(rsc->variant == pe_native);				\
-	CRM_ASSERT(rsc->variant_opaque != NULL);			\
-	data = (native_variant_data_t *)rsc->variant_opaque;
 
 #  endif
 

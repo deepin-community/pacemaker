@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2020 the Pacemaker project contributors
+ * Copyright 2004-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -20,11 +20,7 @@
 
 #include <pacemaker-controld.h>
 
-gboolean membership_flux_hack = FALSE;
 void post_cache_update(int instance);
-
-int last_peer_update = 0;
-guint highest_born_on = -1;
 
 extern gboolean check_join_state(enum crmd_fsa_state cur_state, const char *source);
 
@@ -37,26 +33,29 @@ reap_dead_nodes(gpointer key, gpointer value, gpointer user_data)
         crm_update_peer_join(__func__, node, crm_join_none);
 
         if(node && node->uname) {
-            if (pcmk__str_eq(fsa_our_uname, node->uname, pcmk__str_casei)) {
+            if (pcmk__str_eq(controld_globals.our_nodename, node->uname,
+                             pcmk__str_casei)) {
                 crm_err("We're not part of the cluster anymore");
                 register_fsa_input(C_FSA_INTERNAL, I_ERROR, NULL);
 
-            } else if (AM_I_DC == FALSE && pcmk__str_eq(node->uname, fsa_our_dc, pcmk__str_casei)) {
+            } else if (!AM_I_DC
+                       && pcmk__str_eq(node->uname, controld_globals.dc_name,
+                                       pcmk__str_casei)) {
                 crm_warn("Our DC node (%s) left the cluster", node->uname);
                 register_fsa_input(C_FSA_INTERNAL, I_ELECTION, NULL);
             }
         }
 
-        if (fsa_state == S_INTEGRATION || fsa_state == S_FINALIZE_JOIN) {
-            check_join_state(fsa_state, __func__);
+        if ((controld_globals.fsa_state == S_INTEGRATION)
+            || (controld_globals.fsa_state == S_FINALIZE_JOIN)) {
+            check_join_state(controld_globals.fsa_state, __func__);
         }
-        if(node && node->uuid) {
-            fail_incompletable_actions(transition_graph, node->uuid);
+        if ((node != NULL) && (node->uuid != NULL)) {
+            fail_incompletable_actions(controld_globals.transition_graph,
+                                       node->uuid);
         }
     }
 }
-
-gboolean ever_had_quorum = FALSE;
 
 void
 post_cache_update(int instance)
@@ -79,7 +78,7 @@ post_cache_update(int instance)
      * Safe to call outside of an election
      */
     controld_set_fsa_action_flags(A_ELECTION_CHECK);
-    trigger_fsa();
+    controld_trigger_fsa();
 
     /* Membership changed, remind everyone we're here.
      * This will aid detection of duplicate DCs
@@ -94,8 +93,6 @@ static void
 crmd_node_update_complete(xmlNode * msg, int call_id, int rc, xmlNode * output, void *user_data)
 {
     fsa_data_t *msg_data = NULL;
-
-    last_peer_update = 0;
 
     if (rc == pcmk_ok) {
         crm_trace("Node update %d complete", call_id);
@@ -138,12 +135,12 @@ create_node_state_update(crm_node_t *node, int flags, xmlNode *parent,
     node_state = create_xml_node(parent, XML_CIB_TAG_STATE);
 
     if (pcmk_is_set(node->flags, crm_remote_node)) {
-        crm_xml_add(node_state, XML_NODE_IS_REMOTE, XML_BOOLEAN_TRUE);
+        pcmk__xe_set_bool_attr(node_state, XML_NODE_IS_REMOTE, true);
     }
 
-    set_uuid(node_state, XML_ATTR_UUID, node);
+    set_uuid(node_state, XML_ATTR_ID, node);
 
-    if (crm_element_value(node_state, XML_ATTR_UUID) == NULL) {
+    if (crm_element_value(node_state, XML_ATTR_ID) == NULL) {
         crm_info("Node update for %s cancelled: no id", node->uname);
         free_xml(node_state);
         return NULL;
@@ -152,8 +149,8 @@ create_node_state_update(crm_node_t *node, int flags, xmlNode *parent,
     crm_xml_add(node_state, XML_ATTR_UNAME, node->uname);
 
     if ((flags & node_update_cluster) && node->state) {
-        crm_xml_add_boolean(node_state, XML_NODE_IN_CLUSTER,
-                            pcmk__str_eq(node->state, CRM_NODE_MEMBER, pcmk__str_casei));
+        pcmk__xe_set_bool_attr(node_state, XML_NODE_IN_CLUSTER,
+                               pcmk__str_eq(node->state, CRM_NODE_MEMBER, pcmk__str_casei));
     }
 
     if (!pcmk_is_set(node->flags, crm_remote_node)) {
@@ -251,24 +248,27 @@ search_conflicting_node_callback(xmlNode * msg, int call_id, int rc,
         }
 
         if (known == FALSE) {
+            cib_t *cib_conn = controld_globals.cib_conn;
             int delete_call_id = 0;
             xmlNode *node_state_xml = NULL;
 
             crm_notice("Deleting unknown node %s/%s which has conflicting uname with %s",
                        node_uuid, node_uname, new_node_uuid);
 
-            delete_call_id = fsa_cib_conn->cmds->remove(fsa_cib_conn, XML_CIB_TAG_NODES, node_xml,
-                                                        cib_scope_local | cib_quorum_override);
-            fsa_register_cib_callback(delete_call_id, FALSE, strdup(node_uuid),
+            delete_call_id = cib_conn->cmds->remove(cib_conn, XML_CIB_TAG_NODES,
+                                                    node_xml, cib_scope_local);
+            fsa_register_cib_callback(delete_call_id, strdup(node_uuid),
                                       remove_conflicting_node_callback);
 
             node_state_xml = create_xml_node(NULL, XML_CIB_TAG_STATE);
             crm_xml_add(node_state_xml, XML_ATTR_ID, node_uuid);
             crm_xml_add(node_state_xml, XML_ATTR_UNAME, node_uname);
 
-            delete_call_id = fsa_cib_conn->cmds->remove(fsa_cib_conn, XML_CIB_TAG_STATUS, node_state_xml,
-                                                        cib_scope_local | cib_quorum_override);
-            fsa_register_cib_callback(delete_call_id, FALSE, strdup(node_uuid),
+            delete_call_id = cib_conn->cmds->remove(cib_conn,
+                                                    XML_CIB_TAG_STATUS,
+                                                    node_state_xml,
+                                                    cib_scope_local);
+            fsa_register_cib_callback(delete_call_id, strdup(node_uuid),
                                       remove_conflicting_node_callback);
             free_xml(node_state_xml);
         }
@@ -292,14 +292,13 @@ node_list_update_callback(xmlNode * msg, int call_id, int rc, xmlNode * output, 
     }
 }
 
-#define NODE_PATH_MAX 512
-
 void
 populate_cib_nodes(enum node_update_flags flags, const char *source)
 {
+    cib_t *cib_conn = controld_globals.cib_conn;
+
     int call_id = 0;
     gboolean from_hashtable = TRUE;
-    int call_options = cib_scope_local | cib_quorum_override;
     xmlNode *node_list = create_xml_node(NULL, XML_CIB_TAG_NODES);
 
 #if SUPPORT_COROSYNC
@@ -311,14 +310,19 @@ populate_cib_nodes(enum node_update_flags flags, const char *source)
     if (from_hashtable) {
         GHashTableIter iter;
         crm_node_t *node = NULL;
+        GString *xpath = NULL;
 
         g_hash_table_iter_init(&iter, crm_peer_cache);
         while (g_hash_table_iter_next(&iter, NULL, (gpointer *) &node)) {
             xmlNode *new_node = NULL;
 
-            crm_trace("Creating node entry for %s/%s", node->uname, node->uuid);
-            if(node->uuid && node->uname) {
-                char xpath[NODE_PATH_MAX];
+            if ((node->uuid != NULL) && (node->uname != NULL)) {
+                crm_trace("Creating node entry for %s/%s", node->uname, node->uuid);
+                if (xpath == NULL) {
+                    xpath = g_string_sized_new(512);
+                } else {
+                    g_string_truncate(xpath, 0);
+                }
 
                 /* We need both to be valid */
                 new_node = create_xml_node(node_list, XML_CIB_TAG_NODE);
@@ -326,27 +330,31 @@ populate_cib_nodes(enum node_update_flags flags, const char *source)
                 crm_xml_add(new_node, XML_ATTR_UNAME, node->uname);
 
                 /* Search and remove unknown nodes with the conflicting uname from CIB */
-                snprintf(xpath, NODE_PATH_MAX,
-                         "/" XML_TAG_CIB "/" XML_CIB_TAG_CONFIGURATION "/" XML_CIB_TAG_NODES
-                         "/" XML_CIB_TAG_NODE "[@uname='%s'][@id!='%s']",
-                         node->uname, node->uuid);
+                pcmk__g_strcat(xpath,
+                               "/" XML_TAG_CIB "/" XML_CIB_TAG_CONFIGURATION
+                               "/" XML_CIB_TAG_NODES "/" XML_CIB_TAG_NODE
+                               "[@" XML_ATTR_UNAME "='", node->uname, "']"
+                               "[@" XML_ATTR_ID "!='", node->uuid, "']", NULL);
 
-                call_id = fsa_cib_conn->cmds->query(fsa_cib_conn, xpath, NULL,
-                                                    cib_scope_local | cib_xpath);
-                fsa_register_cib_callback(call_id, FALSE, strdup(node->uuid),
+                call_id = cib_conn->cmds->query(cib_conn,
+                                                (const char *) xpath->str,
+                                                NULL,
+                                                cib_scope_local|cib_xpath);
+                fsa_register_cib_callback(call_id, strdup(node->uuid),
                                           search_conflicting_node_callback);
             }
+        }
+
+        if (xpath != NULL) {
+            g_string_free(xpath, TRUE);
         }
     }
 
     crm_trace("Populating <nodes> section from %s", from_hashtable ? "hashtable" : "cluster");
 
-    fsa_cib_update(XML_CIB_TAG_NODES, node_list, call_options, call_id, NULL);
-    fsa_register_cib_callback(call_id, FALSE, NULL, node_list_update_callback);
-
-    free_xml(node_list);
-
-    if (call_id >= pcmk_ok && crm_peer_cache != NULL && AM_I_DC) {
+    if ((controld_update_cib(XML_CIB_TAG_NODES, node_list, cib_scope_local,
+                             node_list_update_callback) == pcmk_rc_ok)
+         && (crm_peer_cache != NULL) && AM_I_DC) {
         /*
          * There is no need to update the local CIB with our values if
          * we've not seen valid membership data
@@ -354,6 +362,7 @@ populate_cib_nodes(enum node_update_flags flags, const char *source)
         GHashTableIter iter;
         crm_node_t *node = NULL;
 
+        free_xml(node_list);
         node_list = create_xml_node(NULL, XML_CIB_TAG_STATUS);
 
         g_hash_table_iter_init(&iter, crm_peer_cache);
@@ -368,12 +377,10 @@ populate_cib_nodes(enum node_update_flags flags, const char *source)
             }
         }
 
-        fsa_cib_update(XML_CIB_TAG_STATUS, node_list, call_options, call_id, NULL);
-        fsa_register_cib_callback(call_id, FALSE, NULL, crmd_node_update_complete);
-        last_peer_update = call_id;
-
-        free_xml(node_list);
+        controld_update_cib(XML_CIB_TAG_STATUS, node_list, cib_scope_local,
+                            crmd_node_update_complete);
     }
+    free_xml(node_list);
 }
 
 static void
@@ -394,25 +401,29 @@ cib_quorum_update_complete(xmlNode * msg, int call_id, int rc, xmlNode * output,
 void
 crm_update_quorum(gboolean quorum, gboolean force_update)
 {
-    ever_had_quorum |= quorum;
+    bool has_quorum = pcmk_is_set(controld_globals.flags, controld_has_quorum);
 
-    if(ever_had_quorum && quorum == FALSE && no_quorum_suicide_escalation) {
+    if (quorum) {
+        controld_set_global_flags(controld_ever_had_quorum);
+
+    } else if (pcmk_all_flags_set(controld_globals.flags,
+                                  controld_ever_had_quorum
+                                  |controld_no_quorum_suicide)) {
         pcmk__panic(__func__);
     }
 
-    if (AM_I_DC && (force_update || fsa_has_quorum != quorum)) {
-        int call_id = 0;
+    if (AM_I_DC
+        && ((has_quorum && !quorum) || (!has_quorum && quorum)
+            || force_update)) {
         xmlNode *update = NULL;
-        int call_options = cib_scope_local | cib_quorum_override;
 
         update = create_xml_node(NULL, XML_TAG_CIB);
         crm_xml_add_int(update, XML_ATTR_HAVE_QUORUM, quorum);
-        crm_xml_add(update, XML_ATTR_DC_UUID, fsa_our_uuid);
+        crm_xml_add(update, XML_ATTR_DC_UUID, controld_globals.our_uuid);
 
-        fsa_cib_update(XML_TAG_CIB, update, call_options, call_id, NULL);
-        crm_debug("Updating quorum status to %s (call=%d)",
-                  pcmk__btoa(quorum), call_id);
-        fsa_register_cib_callback(call_id, FALSE, NULL, cib_quorum_update_complete);
+        crm_debug("Updating quorum status to %s", pcmk__btoa(quorum));
+        controld_update_cib(XML_TAG_CIB, update, cib_scope_local,
+                            cib_quorum_update_complete);
         free_xml(update);
 
         /* Quorum changes usually cause a new transition via other activity:
@@ -430,10 +441,17 @@ crm_update_quorum(gboolean quorum, gboolean force_update)
              * nodes are joining around the same time, so the one that brings us
              * to quorum doesn't cause all the remaining ones to be fenced.
              */
-            abort_after_delay(INFINITY, tg_restart, "Quorum gained", 5000);
+            abort_after_delay(INFINITY, pcmk__graph_restart, "Quorum gained",
+                              5000);
         } else {
-            abort_transition(INFINITY, tg_restart, "Quorum lost", NULL);
+            abort_transition(INFINITY, pcmk__graph_restart, "Quorum lost",
+                             NULL);
         }
     }
-    fsa_has_quorum = quorum;
+
+    if (quorum) {
+        controld_set_global_flags(controld_has_quorum);
+    } else {
+        controld_clear_global_flags(controld_has_quorum);
+    }
 }

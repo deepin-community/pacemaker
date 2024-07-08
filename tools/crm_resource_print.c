@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -9,52 +9,58 @@
 
 #include <crm_internal.h>
 
+#include <stdint.h>
+
 #include <crm_resource.h>
 #include <crm/common/lists_internal.h>
 #include <crm/common/output.h>
+#include <crm/common/results.h>
 
 #define cons_string(x) x?x:"NA"
-void
-cli_resource_print_cts_constraints(pe_working_set_t * data_set)
+static int
+print_constraint(xmlNode *xml_obj, void *userdata)
 {
+    pe_working_set_t *data_set = (pe_working_set_t *) userdata;
     pcmk__output_t *out = data_set->priv;
-    xmlNode *xml_obj = NULL;
     xmlNode *lifetime = NULL;
-    xmlNode *cib_constraints = get_object_root(XML_CIB_TAG_CONSTRAINTS, data_set->input);
+    const char *id = crm_element_value(xml_obj, XML_ATTR_ID);
 
-    for (xml_obj = pcmk__xe_first_child(cib_constraints); xml_obj != NULL;
-         xml_obj = pcmk__xe_next(xml_obj)) {
-        const char *id = crm_element_value(xml_obj, XML_ATTR_ID);
-
-        if (id == NULL) {
-            continue;
-        }
-
-        // @COMPAT lifetime is deprecated
-        lifetime = first_named_child(xml_obj, "lifetime");
-        if (pe_evaluate_rules(lifetime, NULL, data_set->now, NULL) == FALSE) {
-            continue;
-        }
-
-        if (!pcmk__str_eq(XML_CONS_TAG_RSC_DEPEND, crm_element_name(xml_obj), pcmk__str_casei)) {
-            continue;
-        }
-
-        out->info(out, "Constraint %s %s %s %s %s %s %s",
-                  crm_element_name(xml_obj),
-                  cons_string(crm_element_value(xml_obj, XML_ATTR_ID)),
-                  cons_string(crm_element_value(xml_obj, XML_COLOC_ATTR_SOURCE)),
-                  cons_string(crm_element_value(xml_obj, XML_COLOC_ATTR_TARGET)),
-                  cons_string(crm_element_value(xml_obj, XML_RULE_ATTR_SCORE)),
-                  cons_string(crm_element_value(xml_obj, XML_COLOC_ATTR_SOURCE_ROLE)),
-                  cons_string(crm_element_value(xml_obj, XML_COLOC_ATTR_TARGET_ROLE)));
+    if (id == NULL) {
+        return pcmk_rc_ok;
     }
+
+    // @COMPAT lifetime is deprecated
+    lifetime = first_named_child(xml_obj, "lifetime");
+    if (pe_evaluate_rules(lifetime, NULL, data_set->now, NULL) == FALSE) {
+        return pcmk_rc_ok;
+    }
+
+    if (!pcmk__str_eq(XML_CONS_TAG_RSC_DEPEND, crm_element_name(xml_obj), pcmk__str_casei)) {
+        return pcmk_rc_ok;
+    }
+
+    out->info(out, "Constraint %s %s %s %s %s %s %s",
+              crm_element_name(xml_obj),
+              cons_string(crm_element_value(xml_obj, XML_ATTR_ID)),
+              cons_string(crm_element_value(xml_obj, XML_COLOC_ATTR_SOURCE)),
+              cons_string(crm_element_value(xml_obj, XML_COLOC_ATTR_TARGET)),
+              cons_string(crm_element_value(xml_obj, XML_RULE_ATTR_SCORE)),
+              cons_string(crm_element_value(xml_obj, XML_COLOC_ATTR_SOURCE_ROLE)),
+              cons_string(crm_element_value(xml_obj, XML_COLOC_ATTR_TARGET_ROLE)));
+
+    return pcmk_rc_ok;
 }
 
 void
-cli_resource_print_cts(pcmk__output_t *out, pe_resource_t * rsc)
+cli_resource_print_cts_constraints(pe_working_set_t * data_set)
 {
-    GList *lpc = NULL;
+    pcmk__xe_foreach_child(pcmk_find_cib_element(data_set->input, XML_CIB_TAG_CONSTRAINTS),
+                           NULL, print_constraint, data_set);
+}
+
+void
+cli_resource_print_cts(pe_resource_t * rsc, pcmk__output_t *out)
+{
     const char *host = NULL;
     bool needs_quorum = TRUE;
     const char *rtype = crm_element_value(rsc->xml, XML_ATTR_TYPE);
@@ -72,17 +78,13 @@ cli_resource_print_cts(pcmk__output_t *out, pe_resource_t * rsc)
         host = node->details->uname;
     }
 
-    out->info(out, "Resource: %s %s %s %s %s %s %s %s %d %lld 0x%.16llx",
+    out->info(out, "Resource: %s %s %s %s %s %s %s %s %d %lld %#.16llx",
               crm_element_name(rsc->xml), rsc->id,
               rsc->clone_name ? rsc->clone_name : rsc->id, rsc->parent ? rsc->parent->id : "NA",
               rprov ? rprov : "NA", rclass, rtype, host ? host : "NA", needs_quorum, rsc->flags,
               rsc->flags);
 
-    for (lpc = rsc->children; lpc != NULL; lpc = lpc->next) {
-        pe_resource_t *child = (pe_resource_t *) lpc->data;
-
-        cli_resource_print_cts(out, child);
-    }
+    g_list_foreach(rsc->children, (GFunc) cli_resource_print_cts, out);
 }
 
 // \return Standard Pacemaker return code
@@ -115,7 +117,7 @@ int
 cli_resource_print(pe_resource_t *rsc, pe_working_set_t *data_set, bool expanded)
 {
     pcmk__output_t *out = data_set->priv;
-    unsigned int show_opts = pcmk_show_pending;
+    uint32_t show_opts = pcmk_show_pending;
     GList *all = NULL;
 
     all = g_list_prepend(all, (gpointer) "*");
@@ -129,31 +131,26 @@ cli_resource_print(pe_resource_t *rsc, pe_working_set_t *data_set, bool expanded
     return pcmk_rc_ok;
 }
 
-PCMK__OUTPUT_ARGS("attribute-list", "pe_resource_t *", "char *", "GHashTable *")
+PCMK__OUTPUT_ARGS("attribute-list", "pe_resource_t *", "const char *", "const char *")
 static int
 attribute_list_default(pcmk__output_t *out, va_list args) {
     pe_resource_t *rsc = va_arg(args, pe_resource_t *);
-    char *attr = va_arg(args, char *);
-    GHashTable *params = va_arg(args, GHashTable *);
+    const char *attr = va_arg(args, char *);
+    const char *value = va_arg(args, const char *);
 
-    const char *value = NULL;
-
-    if (params != NULL) {
-        value = g_hash_table_lookup(params, attr);
-    }
     if (value != NULL) {
         out->begin_list(out, NULL, NULL, "Attributes");
         out->list_item(out, attr, "%s", value);
         out->end_list(out);
+        return pcmk_rc_ok;
     } else {
         out->err(out, "Attribute '%s' not found for '%s'", attr, rsc->id);
     }
-
     return pcmk_rc_ok;
 }
 
 PCMK__OUTPUT_ARGS("agent-status", "int", "const char *", "const char *", "const char *",
-                  "const char *", "const char *", "int")
+                  "const char *", "const char *", "crm_exit_t", "const char *")
 static int
 agent_status_default(pcmk__output_t *out, va_list args) {
     int status = va_arg(args, int);
@@ -162,68 +159,86 @@ agent_status_default(pcmk__output_t *out, va_list args) {
     const char *class = va_arg(args, const char *);
     const char *provider = va_arg(args, const char *);
     const char *type = va_arg(args, const char *);
-    int rc = va_arg(args, int);
+    crm_exit_t rc = va_arg(args, crm_exit_t);
+    const char *exit_reason = va_arg(args, const char *);
 
-    if (status == PCMK_LRM_OP_DONE) {
-        out->info(out, "Operation %s%s%s (%s%s%s:%s) returned: '%s' (%d)",
-                  action, name ? " for " : "", name ? name : "",
-                  class, provider ? ":" : "", provider ? provider : "", type,
-                  services_ocf_exitcode_str(rc), rc);
+    if (status == PCMK_EXEC_DONE) {
+        /* Operation <action> [for <resource>] (<class>[:<provider>]:<agent>)
+         * returned <exit-code> (<exit-description>[: <exit-reason>])
+         */
+        out->info(out, "Operation %s%s%s (%s%s%s:%s) returned %d (%s%s%s)",
+                  action,
+                  ((name == NULL)? "" : " for "), ((name == NULL)? "" : name),
+                  class,
+                  ((provider == NULL)? "" : ":"),
+                  ((provider == NULL)? "" : provider),
+                  type, (int) rc, services_ocf_exitcode_str((int) rc),
+                  ((exit_reason == NULL)? "" : ": "),
+                  ((exit_reason == NULL)? "" : exit_reason));
     } else {
-        out->err(out, "Operation %s%s%s (%s%s%s:%s) failed: '%s' (%d)",
-                 action, name ? " for " : "", name ? name : "",
-                 class, provider ? ":" : "", provider ? provider : "", type,
-                 services_lrm_status_str(status), status);
+        /* Operation <action> [for <resource>] (<class>[:<provider>]:<agent>)
+         * could not be executed (<execution-status>[: <exit-reason>])
+         */
+        out->err(out,
+                 "Operation %s%s%s (%s%s%s:%s) could not be executed (%s%s%s)",
+                 action,
+                 ((name == NULL)? "" : " for "), ((name == NULL)? "" : name),
+                 class,
+                 ((provider == NULL)? "" : ":"),
+                 ((provider == NULL)? "" : provider),
+                 type, pcmk_exec_status_str(status),
+                 ((exit_reason == NULL)? "" : ": "),
+                 ((exit_reason == NULL)? "" : exit_reason));
     }
 
     return pcmk_rc_ok;
 }
 
 PCMK__OUTPUT_ARGS("agent-status", "int", "const char *", "const char *", "const char *",
-                  "const char *", "const char *", "int")
+                  "const char *", "const char *", "crm_exit_t", "const char *")
 static int
 agent_status_xml(pcmk__output_t *out, va_list args) {
-    int status G_GNUC_UNUSED = va_arg(args, int);
+    int status = va_arg(args, int);
     const char *action G_GNUC_UNUSED = va_arg(args, const char *);
     const char *name G_GNUC_UNUSED = va_arg(args, const char *);
     const char *class G_GNUC_UNUSED = va_arg(args, const char *);
     const char *provider G_GNUC_UNUSED = va_arg(args, const char *);
     const char *type G_GNUC_UNUSED = va_arg(args, const char *);
-    int rc = va_arg(args, int);
+    crm_exit_t rc = va_arg(args, crm_exit_t);
+    const char *exit_reason = va_arg(args, const char *);
 
-    char *status_str = pcmk__itoa(rc);
+    char *exit_str = pcmk__itoa(rc);
+    char *status_str = pcmk__itoa(status);
 
     pcmk__output_create_xml_node(out, "agent-status",
-                                 "code", status_str,
-                                 "message", services_ocf_exitcode_str(rc),
+                                 "code", exit_str,
+                                 "message", services_ocf_exitcode_str((int) rc),
+                                 "execution_code", status_str,
+                                 "execution_message", pcmk_exec_status_str(status),
+                                 "reason", exit_reason,
                                  NULL);
 
+    free(exit_str);
     free(status_str);
 
     return pcmk_rc_ok;
 }
 
-PCMK__OUTPUT_ARGS("attribute-list", "pe_resource_t *", "char *", "GHashTable *")
+PCMK__OUTPUT_ARGS("attribute-list", "pe_resource_t *", "const char *", "const char *")
 static int
 attribute_list_text(pcmk__output_t *out, va_list args) {
     pe_resource_t *rsc = va_arg(args, pe_resource_t *);
-    char *attr = va_arg(args, char *);
-    GHashTable *params = va_arg(args, GHashTable *);
+    const char *attr = va_arg(args, char *);
+    const char *value = va_arg(args, const char *);
 
-    const char *value = NULL;
-
-    if (params != NULL) {
-        value = g_hash_table_lookup(params, attr);
-    }
     if (value != NULL) {
         pcmk__formatted_printf(out, "%s\n", value);
+        return pcmk_rc_ok;
     } else {
         out->err(out, "Attribute '%s' not found for '%s'", attr, rsc->id);
     }
-
     return pcmk_rc_ok;
 }
-
 PCMK__OUTPUT_ARGS("override", "const char *", "const char *", "const char *")
 static int
 override_default(pcmk__output_t *out, va_list args) {
@@ -261,11 +276,11 @@ override_xml(pcmk__output_t *out, va_list args) {
     return pcmk_rc_ok;
 }
 
-PCMK__OUTPUT_ARGS("property-list", "pe_resource_t *", "char *")
+PCMK__OUTPUT_ARGS("property-list", "pe_resource_t *", "const char *")
 static int
 property_list_default(pcmk__output_t *out, va_list args) {
     pe_resource_t *rsc = va_arg(args, pe_resource_t *);
-    char *attr = va_arg(args, char *);
+    const char *attr = va_arg(args, char *);
 
     const char *value = crm_element_value(rsc->xml, attr);
 
@@ -278,11 +293,11 @@ property_list_default(pcmk__output_t *out, va_list args) {
     return pcmk_rc_ok;
 }
 
-PCMK__OUTPUT_ARGS("property-list", "pe_resource_t *", "char *")
+PCMK__OUTPUT_ARGS("property-list", "pe_resource_t *", "const char *")
 static int
 property_list_text(pcmk__output_t *out, va_list args) {
     pe_resource_t *rsc = va_arg(args, pe_resource_t *);
-    char *attr = va_arg(args, char *);
+    const char *attr = va_arg(args, const char *);
 
     const char *value = crm_element_value(rsc->xml, attr);
 
@@ -295,7 +310,7 @@ property_list_text(pcmk__output_t *out, va_list args) {
 
 PCMK__OUTPUT_ARGS("resource-agent-action", "int", "const char *", "const char *",
                   "const char *", "const char *", "const char *", "GHashTable *",
-                  "int", "int", "char *", "char *")
+                  "crm_exit_t", "int", "const char *", "const char *", "const char *")
 static int
 resource_agent_action_default(pcmk__output_t *out, va_list args) {
     int verbose = va_arg(args, int);
@@ -306,15 +321,16 @@ resource_agent_action_default(pcmk__output_t *out, va_list args) {
     const char *rsc_name = va_arg(args, const char *);
     const char *action = va_arg(args, const char *);
     GHashTable *overrides = va_arg(args, GHashTable *);
-    int rc = va_arg(args, int);
+    crm_exit_t rc = va_arg(args, crm_exit_t);
     int status = va_arg(args, int);
-    char *stdout_data = va_arg(args, char *);
-    char *stderr_data = va_arg(args, char *);
+    const char *exit_reason = va_arg(args, const char *);
+    const char *stdout_data = va_arg(args, const char *);
+    const char *stderr_data = va_arg(args, const char *);
 
     if (overrides) {
         GHashTableIter iter;
-        char *name = NULL;
-        char *value = NULL;
+        const char *name = NULL;
+        const char *value = NULL;
 
         out->begin_list(out, NULL, NULL, "overrides");
 
@@ -327,7 +343,7 @@ resource_agent_action_default(pcmk__output_t *out, va_list args) {
     }
 
     out->message(out, "agent-status", status, action, rsc_name, class, provider,
-                 type, rc);
+                 type, rc, exit_reason);
 
     /* hide output for validate-all if not in verbose */
     if (verbose == 0 && pcmk__str_eq(action, "validate-all", pcmk__str_casei)) {
@@ -335,8 +351,11 @@ resource_agent_action_default(pcmk__output_t *out, va_list args) {
     }
 
     if (stdout_data || stderr_data) {
-        xmlNodePtr doc = string2xml(stdout_data);
+        xmlNodePtr doc = NULL;
 
+        if (stdout_data != NULL) {
+            doc = string2xml(stdout_data);
+        }
         if (doc != NULL) {
             out->output_xml(out, "command", stdout_data);
             xmlFreeNode(doc);
@@ -350,7 +369,7 @@ resource_agent_action_default(pcmk__output_t *out, va_list args) {
 
 PCMK__OUTPUT_ARGS("resource-agent-action", "int", "const char *", "const char *",
                   "const char *", "const char *", "const char *", "GHashTable *",
-                  "int", "int", "char *", "char *")
+                  "crm_exit_t", "int", "const char *", "const char *", "const char *")
 static int
 resource_agent_action_xml(pcmk__output_t *out, va_list args) {
     int verbose G_GNUC_UNUSED = va_arg(args, int);
@@ -361,10 +380,11 @@ resource_agent_action_xml(pcmk__output_t *out, va_list args) {
     const char *rsc_name = va_arg(args, const char *);
     const char *action = va_arg(args, const char *);
     GHashTable *overrides = va_arg(args, GHashTable *);
-    int rc = va_arg(args, int);
+    crm_exit_t rc = va_arg(args, crm_exit_t);
     int status = va_arg(args, int);
-    char *stdout_data = va_arg(args, char *);
-    char *stderr_data = va_arg(args, char *);
+    const char *exit_reason = va_arg(args, const char *);
+    const char *stdout_data = va_arg(args, const char *);
+    const char *stderr_data = va_arg(args, const char *);
 
     xmlNodePtr node = pcmk__output_xml_create_parent(out, "resource-agent-action",
                                                      "action", action,
@@ -382,8 +402,8 @@ resource_agent_action_xml(pcmk__output_t *out, va_list args) {
 
     if (overrides) {
         GHashTableIter iter;
-        char *name = NULL;
-        char *value = NULL;
+        const char *name = NULL;
+        const char *value = NULL;
 
         out->begin_list(out, NULL, NULL, "overrides");
 
@@ -396,11 +416,14 @@ resource_agent_action_xml(pcmk__output_t *out, va_list args) {
     }
 
     out->message(out, "agent-status", status, action, rsc_name, class, provider,
-                 type, rc);
+                 type, rc, exit_reason);
 
     if (stdout_data || stderr_data) {
-        xmlNodePtr doc = string2xml(stdout_data);
+        xmlNodePtr doc = NULL;
 
+        if (stdout_data != NULL) {
+            doc = string2xml(stdout_data);
+        }
         if (doc != NULL) {
             out->output_xml(out, "command", stdout_data);
             xmlFreeNode(doc);
@@ -418,14 +441,13 @@ static int
 resource_check_list_default(pcmk__output_t *out, va_list args) {
     resource_checks_t *checks = va_arg(args, resource_checks_t *);
 
-    pe_resource_t *parent = uber_parent(checks->rsc);
-    int rc = pcmk_rc_no_output;
-    bool printed = false;
+    const pe_resource_t *parent = pe__const_top_resource(checks->rsc, false);
 
-    if (checks->flags != 0 || checks->lock_node != NULL) {
-        printed = true;
-        out->begin_list(out, NULL, NULL, "Resource Checks");
+    if (checks->flags == 0) {
+        return pcmk_rc_no_output;
     }
+
+    out->begin_list(out, NULL, NULL, "Resource Checks");
 
     if (pcmk_is_set(checks->flags, rsc_remain_stopped)) {
         out->list_item(out, "check", "Configuration specifies '%s' should remain stopped",
@@ -442,17 +464,22 @@ resource_check_list_default(pcmk__output_t *out, va_list args) {
                        parent->id);
     }
 
-    if (checks->lock_node) {
+    if (pcmk_is_set(checks->flags, rsc_locked)) {
         out->list_item(out, "check", "'%s' is locked to node %s due to shutdown",
                        parent->id, checks->lock_node);
     }
 
-    if (printed) {
-        out->end_list(out);
-        rc = pcmk_rc_ok;
+    if (pcmk_is_set(checks->flags, rsc_node_health)) {
+        out->list_item(out, "check",
+                       "'%s' cannot run on unhealthy nodes due to "
+                       PCMK__OPT_NODE_HEALTH_STRATEGY "='%s'",
+                       parent->id,
+                       pe_pref(checks->rsc->cluster->config_hash,
+                               PCMK__OPT_NODE_HEALTH_STRATEGY));
     }
 
-    return rc;
+    out->end_list(out);
+    return pcmk_rc_ok;
 }
 
 PCMK__OUTPUT_ARGS("resource-check-list", "resource_checks_t *")
@@ -460,37 +487,41 @@ static int
 resource_check_list_xml(pcmk__output_t *out, va_list args) {
     resource_checks_t *checks = va_arg(args, resource_checks_t *);
 
-    pe_resource_t *parent = uber_parent(checks->rsc);
+    const pe_resource_t *parent = pe__const_top_resource(checks->rsc, false);
 
     xmlNodePtr node = pcmk__output_create_xml_node(out, "check",
                                                    "id", parent->id,
                                                    NULL);
 
     if (pcmk_is_set(checks->flags, rsc_remain_stopped)) {
-        crm_xml_add(node, "remain_stopped", "true");
+        pcmk__xe_set_bool_attr(node, "remain_stopped", true);
     }
 
     if (pcmk_is_set(checks->flags, rsc_unpromotable)) {
-        crm_xml_add(node, "promotable", "false");
+        pcmk__xe_set_bool_attr(node, "promotable", false);
     }
 
     if (pcmk_is_set(checks->flags, rsc_unmanaged)) {
-        crm_xml_add(node, "unmanaged", "true");
+        pcmk__xe_set_bool_attr(node, "unmanaged", true);
     }
 
-    if (checks->lock_node) {
+    if (pcmk_is_set(checks->flags, rsc_locked)) {
         crm_xml_add(node, "locked-to", checks->lock_node);
+    }
+
+    if (pcmk_is_set(checks->flags, rsc_node_health)) {
+        pcmk__xe_set_bool_attr(node, "unhealthy", true);
     }
 
     return pcmk_rc_ok;
 }
 
-PCMK__OUTPUT_ARGS("resource-search-list", "GList *", "gchar *")
+PCMK__OUTPUT_ARGS("resource-search-list", "GList *", "const char *")
 static int
 resource_search_list_default(pcmk__output_t *out, va_list args)
 {
     GList *nodes = va_arg(args, GList *);
-    gchar *requested_name = va_arg(args, gchar *);
+    const char *requested_name = va_arg(args, const char *);
 
     bool printed = false;
     int rc = pcmk_rc_no_output;
@@ -533,12 +564,12 @@ resource_search_list_default(pcmk__output_t *out, va_list args)
     return rc;
 }
 
-PCMK__OUTPUT_ARGS("resource-search-list", "GList *", "gchar *")
+PCMK__OUTPUT_ARGS("resource-search-list", "GList *", "const char *")
 static int
 resource_search_list_xml(pcmk__output_t *out, va_list args)
 {
     GList *nodes = va_arg(args, GList *);
-    gchar *requested_name = va_arg(args, gchar *);
+    const char *requested_name = va_arg(args, const char *);
 
     pcmk__output_xml_create_parent(out, "nodes",
                                    "resource", requested_name,
@@ -556,12 +587,11 @@ resource_search_list_xml(pcmk__output_t *out, va_list args)
     return pcmk_rc_ok;
 }
 
-PCMK__OUTPUT_ARGS("resource-reasons-list", "cib_t *", "GList *", "pe_resource_t *",
+PCMK__OUTPUT_ARGS("resource-reasons-list", "GList *", "pe_resource_t *",
                   "pe_node_t *")
 static int
 resource_reasons_list_default(pcmk__output_t *out, va_list args)
 {
-    cib_t *cib_conn = va_arg(args, cib_t *);
     GList *resources = va_arg(args, GList *);
     pe_resource_t *rsc = va_arg(args, pe_resource_t *);
     pe_node_t *node = va_arg(args, pe_node_t *);
@@ -584,7 +614,7 @@ resource_reasons_list_default(pcmk__output_t *out, va_list args)
                 out->list_item(out, "reason", "Resource %s is running", rsc->id);
             }
 
-            cli_resource_check(out, cib_conn, rsc);
+            cli_resource_check(out, rsc, NULL);
             g_list_free(hosts);
             hosts = NULL;
         }
@@ -598,7 +628,7 @@ resource_reasons_list_default(pcmk__output_t *out, va_list args)
                            rsc->id, host_uname);
         }
 
-        cli_resource_check(out, cib_conn, rsc);
+        cli_resource_check(out, rsc, node);
 
     } else if ((rsc == NULL) && (host_uname != NULL)) {
         const char* host_uname =  node->details->uname;
@@ -611,14 +641,14 @@ resource_reasons_list_default(pcmk__output_t *out, va_list args)
             pe_resource_t *rsc = (pe_resource_t *) lpc->data;
             out->list_item(out, "reason", "Resource %s is running on host %s",
                            rsc->id, host_uname);
-            cli_resource_check(out, cib_conn, rsc);
+            cli_resource_check(out, rsc, node);
         }
 
         for(lpc = unactiveResources; lpc != NULL; lpc = lpc->next) {
             pe_resource_t *rsc = (pe_resource_t *) lpc->data;
             out->list_item(out, "reason", "Resource %s is assigned to host %s but not running",
                            rsc->id, host_uname);
-            cli_resource_check(out, cib_conn, rsc);
+            cli_resource_check(out, rsc, node);
         }
 
         g_list_free(allResources);
@@ -631,7 +661,7 @@ resource_reasons_list_default(pcmk__output_t *out, va_list args)
         rsc->fns->location(rsc, &hosts, TRUE);
         out->list_item(out, "reason", "Resource %s is %srunning",
                        rsc->id, (hosts? "" : "not "));
-        cli_resource_check(out, cib_conn, rsc);
+        cli_resource_check(out, rsc, NULL);
         g_list_free(hosts);
     }
 
@@ -639,12 +669,11 @@ resource_reasons_list_default(pcmk__output_t *out, va_list args)
     return pcmk_rc_ok;
 }
 
-PCMK__OUTPUT_ARGS("resource-reasons-list", "cib_t *", "GList *", "pe_resource_t *",
+PCMK__OUTPUT_ARGS("resource-reasons-list", "GList *", "pe_resource_t *",
                   "pe_node_t *")
 static int
 resource_reasons_list_xml(pcmk__output_t *out, va_list args)
 {
-    cib_t *cib_conn = va_arg(args, cib_t *);
     GList *resources = va_arg(args, GList *);
     pe_resource_t *rsc = va_arg(args, pe_resource_t *);
     pe_node_t *node = va_arg(args, pe_node_t *);
@@ -669,7 +698,7 @@ resource_reasons_list_xml(pcmk__output_t *out, va_list args)
                                            "running", pcmk__btoa(hosts != NULL),
                                            NULL);
 
-            cli_resource_check(out, cib_conn, rsc);
+            cli_resource_check(out, rsc, NULL);
             pcmk__output_xml_pop_parent(out);
             g_list_free(hosts);
             hosts = NULL;
@@ -682,7 +711,7 @@ resource_reasons_list_xml(pcmk__output_t *out, va_list args)
             crm_xml_add(xml_node, "running_on", host_uname);
         }
 
-        cli_resource_check(out, cib_conn, rsc);
+        cli_resource_check(out, rsc, node);
 
     } else if ((rsc == NULL) && (host_uname != NULL)) {
         const char* host_uname =  node->details->uname;
@@ -702,7 +731,7 @@ resource_reasons_list_xml(pcmk__output_t *out, va_list args)
                                            "host", host_uname,
                                            NULL);
 
-            cli_resource_check(out, cib_conn, rsc);
+            cli_resource_check(out, rsc, node);
             pcmk__output_xml_pop_parent(out);
         }
 
@@ -715,7 +744,7 @@ resource_reasons_list_xml(pcmk__output_t *out, va_list args)
                                            "host", host_uname,
                                            NULL);
 
-            cli_resource_check(out, cib_conn, rsc);
+            cli_resource_check(out, rsc, node);
             pcmk__output_xml_pop_parent(out);
         }
 
@@ -729,7 +758,7 @@ resource_reasons_list_xml(pcmk__output_t *out, va_list args)
 
         rsc->fns->location(rsc, &hosts, TRUE);
         crm_xml_add(xml_node, "running", pcmk__btoa(hosts != NULL));
-        cli_resource_check(out, cib_conn, rsc);
+        cli_resource_check(out, rsc, NULL);
         g_list_free(hosts);
     }
 
@@ -737,14 +766,11 @@ resource_reasons_list_xml(pcmk__output_t *out, va_list args)
 }
 
 static void
-add_resource_name(pcmk__output_t *out, pe_resource_t *rsc) {
+add_resource_name(pe_resource_t *rsc, pcmk__output_t *out) {
     if (rsc->children == NULL) {
         out->list_item(out, "resource", "%s", rsc->id);
     } else {
-        for (GList *lpc = rsc->children; lpc != NULL; lpc = lpc->next) {
-            pe_resource_t *child = (pe_resource_t *) lpc->data;
-            add_resource_name(out, child);
-        }
+        g_list_foreach(rsc->children, (GFunc) add_resource_name, out);
     }
 }
 
@@ -759,12 +785,7 @@ resource_names(pcmk__output_t *out, va_list args) {
     }
 
     out->begin_list(out, NULL, NULL, "Resource Names");
-
-    for (GList *lpc = resources; lpc != NULL; lpc = lpc->next) {
-        pe_resource_t *rsc = (pe_resource_t *) lpc->data;
-        add_resource_name(out, rsc);
-    }
-
+    g_list_foreach(resources, (GFunc) add_resource_name, out);
     out->end_list(out);
     return pcmk_rc_ok;
 }

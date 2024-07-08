@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -20,25 +20,29 @@
 #include <pacemaker-internal.h>
 #include <pacemaker-controld.h>
 
-char *te_uuid = NULL;
-GHashTable *te_targets = NULL;
-void send_rsc_command(crm_action_t * action);
-static void te_update_job_count(crm_action_t * action, int offset);
+static GHashTable *te_targets = NULL;
+void send_rsc_command(pcmk__graph_action_t *action);
+static void te_update_job_count(pcmk__graph_action_t *action, int offset);
 
 static void
-te_start_action_timer(crm_graph_t * graph, crm_action_t * action)
+te_start_action_timer(const pcmk__graph_t *graph, pcmk__graph_action_t *action)
 {
-    action->timer = calloc(1, sizeof(crm_action_timer_t));
-    action->timer->timeout = action->timeout;
-    action->timer->action = action;
-    action->timer->source_id = g_timeout_add(action->timer->timeout + graph->network_delay,
-                                             action_timer_callback, (void *)action->timer);
-
-    CRM_ASSERT(action->timer->source_id != 0);
+    action->timer = g_timeout_add(action->timeout + graph->network_delay,
+                                  action_timer_callback, (void *) action);
+    CRM_ASSERT(action->timer != 0);
 }
 
-static gboolean
-te_pseudo_action(crm_graph_t * graph, crm_action_t * pseudo)
+/*!
+ * \internal
+ * \brief Execute a graph pseudo-action
+ *
+ * \param[in,out] graph   Transition graph being executed
+ * \param[in,out] pseudo  Pseudo-action to execute
+ *
+ * \return Standard Pacemaker return code
+ */
+static int
+execute_pseudo_action(pcmk__graph_t *graph, pcmk__graph_action_t *pseudo)
 {
     const char *task = crm_element_value(pseudo->xml, XML_LRM_ATTR_TASK);
 
@@ -51,7 +55,8 @@ te_pseudo_action(crm_graph_t * graph, crm_action_t * pseudo)
         while (g_hash_table_iter_next(&iter, NULL, (gpointer *) &node)) {
             xmlNode *cmd = NULL;
 
-            if (pcmk__str_eq(fsa_our_uname, node->uname, pcmk__str_casei)) {
+            if (pcmk__str_eq(controld_globals.our_nodename, node->uname,
+                             pcmk__str_casei)) {
                 continue;
             }
 
@@ -70,11 +75,11 @@ te_pseudo_action(crm_graph_t * graph, crm_action_t * pseudo)
     crm_debug("Pseudo-action %d (%s) fired and confirmed", pseudo->id,
               crm_element_value(pseudo->xml, XML_LRM_ATTR_TASK_KEY));
     te_action_confirmed(pseudo, graph);
-    return TRUE;
+    return pcmk_rc_ok;
 }
 
 static int
-get_target_rc(crm_action_t * action)
+get_target_rc(pcmk__graph_action_t *action)
 {
     int exit_status;
 
@@ -83,8 +88,17 @@ get_target_rc(crm_action_t * action)
     return exit_status;
 }
 
-static gboolean
-te_crm_command(crm_graph_t * graph, crm_action_t * action)
+/*!
+ * \internal
+ * \brief Execute a cluster action from a transition graph
+ *
+ * \param[in,out] graph   Transition graph being executed
+ * \param[in,out] action  Cluster action to execute
+ *
+ * \return Standard Pacemaker return code
+ */
+static int
+execute_cluster_action(pcmk__graph_t *graph, pcmk__graph_action_t *action)
 {
     char *counter = NULL;
     xmlNode *cmd = NULL;
@@ -100,26 +114,28 @@ te_crm_command(crm_graph_t * graph, crm_action_t * action)
     gboolean no_wait = FALSE;
 
     id = ID(action->xml);
-    task = crm_element_value(action->xml, XML_LRM_ATTR_TASK);
-    on_node = crm_element_value(action->xml, XML_LRM_ATTR_TARGET);
-    router_node = crm_element_value(action->xml, XML_LRM_ATTR_ROUTER_NODE);
+    CRM_CHECK(!pcmk__str_empty(id), return EPROTO);
 
-    if (!router_node) {
+    task = crm_element_value(action->xml, XML_LRM_ATTR_TASK);
+    CRM_CHECK(!pcmk__str_empty(task), return EPROTO);
+
+    on_node = crm_element_value(action->xml, XML_LRM_ATTR_TARGET);
+    CRM_CHECK(!pcmk__str_empty(on_node), return pcmk_rc_node_unknown);
+
+    router_node = crm_element_value(action->xml, XML_LRM_ATTR_ROUTER_NODE);
+    if (router_node == NULL) {
         router_node = on_node;
-        if (pcmk__str_eq(task, CRM_OP_LRM_DELETE, pcmk__str_casei)) {
+        if (pcmk__str_eq(task, CRM_OP_LRM_DELETE, pcmk__str_none)) {
             const char *mode = crm_element_value(action->xml, PCMK__XA_MODE);
 
-            if (pcmk__str_eq(mode, XML_TAG_CIB, pcmk__str_casei)) {
-                router_node = fsa_our_uname;
+            if (pcmk__str_eq(mode, XML_TAG_CIB, pcmk__str_none)) {
+                router_node = controld_globals.our_nodename;
             }
         }
     }
 
-    CRM_CHECK(on_node != NULL && strlen(on_node) != 0,
-              crm_err("Corrupted command (id=%s) %s: no node", crm_str(id), crm_str(task));
-              return FALSE);
-
-    if (pcmk__str_eq(router_node, fsa_our_uname, pcmk__str_casei)) {
+    if (pcmk__str_eq(router_node, controld_globals.our_nodename,
+                     pcmk__str_casei)) {
         is_local = TRUE;
     }
 
@@ -128,19 +144,19 @@ te_crm_command(crm_graph_t * graph, crm_action_t * action)
         no_wait = TRUE;
     }
 
-    crm_info("Executing crm-event (%s)%s%s: %s on %s",
-             crm_str(id), (is_local? " locally" : ""),
-             (no_wait? " without waiting" : ""), crm_str(task), on_node);
+    crm_info("Handling controller request '%s' (%s on %s)%s%s",
+             id, task, on_node, (is_local? " locally" : ""),
+             (no_wait? " without waiting" : ""));
 
-    if (is_local && pcmk__str_eq(task, CRM_OP_SHUTDOWN, pcmk__str_casei)) {
+    if (is_local && pcmk__str_eq(task, CRM_OP_SHUTDOWN, pcmk__str_none)) {
         /* defer until everything else completes */
-        crm_info("crm-event (%s) is a local shutdown", crm_str(id));
-        graph->completion_action = tg_shutdown;
+        crm_info("Controller request '%s' is a local shutdown", id);
+        graph->completion_action = pcmk__graph_shutdown;
         graph->abort_reason = "local shutdown";
         te_action_confirmed(action, graph);
-        return TRUE;
+        return pcmk_rc_ok;
 
-    } else if (pcmk__str_eq(task, CRM_OP_SHUTDOWN, pcmk__str_casei)) {
+    } else if (pcmk__str_eq(task, CRM_OP_SHUTDOWN, pcmk__str_none)) {
         crm_node_t *peer = crm_get_peer(0, router_node);
 
         pcmk__update_peer_expected(__func__, peer, CRMD_JOINSTATE_DOWN);
@@ -148,8 +164,9 @@ te_crm_command(crm_graph_t * graph, crm_action_t * action)
 
     cmd = create_request(task, action->xml, router_node, CRM_SYSTEM_CRMD, CRM_SYSTEM_TENGINE, NULL);
 
-    counter = pcmk__transition_key(transition_graph->id, action->id,
-                                   get_target_rc(action), te_uuid);
+    counter = pcmk__transition_key(controld_globals.transition_graph->id,
+                                   action->id, get_target_rc(action),
+                                   controld_globals.te_uuid);
     crm_xml_add(cmd, XML_ATTR_TRANSITION_KEY, counter);
 
     rc = send_cluster_message(crm_get_peer(0, router_node), crm_msg_crmd, cmd, TRUE);
@@ -158,7 +175,7 @@ te_crm_command(crm_graph_t * graph, crm_action_t * action)
 
     if (rc == FALSE) {
         crm_err("Action %d failed: send", action->id);
-        return FALSE;
+        return ECOMM;
 
     } else if (no_wait) {
         te_action_confirmed(action, graph);
@@ -172,16 +189,65 @@ te_crm_command(crm_graph_t * graph, crm_action_t * action)
         te_start_action_timer(graph, action);
     }
 
-    return TRUE;
+    return pcmk_rc_ok;
 }
 
-void
-controld_record_action_timeout(crm_action_t *action)
+/*!
+ * \internal
+ * \brief Synthesize an executor event for a resource action timeout
+ *
+ * \param[in] action     Resource action that timed out
+ * \param[in] target_rc  Expected result of action that timed out
+ *
+ * Synthesize an executor event for a resource action timeout. (If the executor
+ * gets a timeout while waiting for a resource action to complete, that will be
+ * reported via the usual callback. This timeout means we didn't hear from the
+ * executor itself or the controller that relayed the action to the executor.)
+ *
+ * \return Newly created executor event for result of \p action
+ * \note The caller is responsible for freeing the return value using
+ *       lrmd_free_event().
+ */
+static lrmd_event_data_t *
+synthesize_timeout_event(const pcmk__graph_action_t *action, int target_rc)
 {
     lrmd_event_data_t *op = NULL;
+    const char *target = crm_element_value(action->xml, XML_LRM_ATTR_TARGET);
+    const char *reason = NULL;
+    char *dynamic_reason = NULL;
+
+    if (pcmk__str_eq(target, get_local_node_name(), pcmk__str_casei)) {
+        reason = "Local executor did not return result in time";
+    } else {
+        const char *router_node = NULL;
+
+        router_node = crm_element_value(action->xml, XML_LRM_ATTR_ROUTER_NODE);
+        if (router_node == NULL) {
+            router_node = target;
+        }
+        dynamic_reason = crm_strdup_printf("Controller on %s did not return "
+                                           "result in time", router_node);
+        reason = dynamic_reason;
+    }
+
+    op = pcmk__event_from_graph_action(NULL, action, PCMK_EXEC_TIMEOUT,
+                                       PCMK_OCF_UNKNOWN_ERROR, reason);
+    op->call_id = -1;
+    op->user_data = pcmk__transition_key(controld_globals.transition_graph->id,
+                                         action->id, target_rc,
+                                         controld_globals.te_uuid);
+    free(dynamic_reason);
+    return op;
+}
+
+static void
+controld_record_action_event(pcmk__graph_action_t *action,
+                             lrmd_event_data_t *op)
+{
+    cib_t *cib_conn = controld_globals.cib_conn;
+
     xmlNode *state = NULL;
     xmlNode *rsc = NULL;
-    xmlNode *xml_op = NULL;
     xmlNode *action_rsc = NULL;
 
     int rc = pcmk_ok;
@@ -191,11 +257,7 @@ controld_record_action_timeout(crm_action_t *action)
     const char *task_uuid = crm_element_value(action->xml, XML_LRM_ATTR_TASK_KEY);
     const char *target_uuid = crm_element_value(action->xml, XML_LRM_ATTR_TARGET_UUID);
 
-    int call_options = cib_quorum_override | cib_scope_local;
     int target_rc = get_target_rc(action);
-
-    crm_warn("%s %d: %s on %s timed out",
-             crm_element_name(action->xml), action->id, task_uuid, target);
 
     action_rsc = find_xml_node(action->xml, XML_CIB_TAG_RESOURCE, TRUE);
     if (action_rsc == NULL) {
@@ -217,7 +279,7 @@ controld_record_action_timeout(crm_action_t *action)
 
     state = create_xml_node(NULL, XML_CIB_TAG_STATE);
 
-    crm_xml_add(state, XML_ATTR_UUID, target_uuid);
+    crm_xml_add(state, XML_ATTR_ID, target_uuid);
     crm_xml_add(state, XML_ATTR_UNAME, target);
 
     rsc = create_xml_node(state, XML_CIB_TAG_LRM);
@@ -232,38 +294,48 @@ controld_record_action_timeout(crm_action_t *action)
     crm_copy_xml_element(action_rsc, rsc, XML_AGENT_ATTR_CLASS);
     crm_copy_xml_element(action_rsc, rsc, XML_AGENT_ATTR_PROVIDER);
 
-    /* If the executor gets a timeout while waiting for the action to complete,
-     * that will be reported via the usual callback. This timeout means that we
-     * didn't hear from the executor or the controller that relayed the action
-     * to the executor.
-     *
-     * @TODO Using PCMK_OCF_UNKNOWN_ERROR instead of PCMK_OCF_TIMEOUT is one way
-     * to distinguish those situations, but perhaps PCMK_OCF_TIMEOUT would be
-     * preferable anyway.
-     */
-    op = convert_graph_action(NULL, action, PCMK_LRM_OP_TIMEOUT,
-                              PCMK_OCF_UNKNOWN_ERROR);
-    op->call_id = -1;
-    op->user_data = pcmk__transition_key(transition_graph->id, action->id,
-                                         target_rc, te_uuid);
+    pcmk__create_history_xml(rsc, op, CRM_FEATURE_SET, target_rc, target,
+                             __func__);
 
-    xml_op = pcmk__create_history_xml(rsc, op, CRM_FEATURE_SET, target_rc,
-                                      target, __func__, LOG_INFO);
-    lrmd_free_event(op);
-
-    crm_log_xml_trace(xml_op, "Action timeout");
-
-    rc = fsa_cib_conn->cmds->update(fsa_cib_conn, XML_CIB_TAG_STATUS, state, call_options);
-    fsa_register_cib_callback(rc, FALSE, NULL, cib_action_updated);
+    rc = cib_conn->cmds->modify(cib_conn, XML_CIB_TAG_STATUS, state,
+                                cib_scope_local);
+    fsa_register_cib_callback(rc, NULL, cib_action_updated);
     free_xml(state);
 
-    crm_trace("Sent CIB update (call ID %d) for timeout of action %d (%s on %s)",
+    crm_trace("Sent CIB update (call ID %d) for synthesized event of action %d (%s on %s)",
               rc, action->id, task_uuid, target);
-    action->sent_update = TRUE;
+    pcmk__set_graph_action_flags(action, pcmk__graph_action_sent_update);
 }
 
-static gboolean
-te_rsc_command(crm_graph_t * graph, crm_action_t * action)
+void
+controld_record_action_timeout(pcmk__graph_action_t *action)
+{
+    lrmd_event_data_t *op = NULL;
+
+    const char *target = crm_element_value(action->xml, XML_LRM_ATTR_TARGET);
+    const char *task_uuid = crm_element_value(action->xml, XML_LRM_ATTR_TASK_KEY);
+
+    int target_rc = get_target_rc(action);
+
+    crm_warn("%s %d: %s on %s timed out",
+             crm_element_name(action->xml), action->id, task_uuid, target);
+
+    op = synthesize_timeout_event(action, target_rc);
+    controld_record_action_event(action, op);
+    lrmd_free_event(op);
+}
+
+/*!
+ * \internal
+ * \brief Execute a resource action from a transition graph
+ *
+ * \param[in,out] graph   Transition graph being executed
+ * \param[in,out] action  Resource action to execute
+ *
+ * \return Standard Pacemaker return code
+ */
+static int
+execute_rsc_action(pcmk__graph_t *graph, pcmk__graph_action_t *action)
 {
     /* never overwrite stop actions in the CIB with
      *   anything other than completed results
@@ -288,12 +360,13 @@ te_rsc_command(crm_graph_t * graph, crm_action_t * action)
     CRM_ASSERT(action != NULL);
     CRM_ASSERT(action->xml != NULL);
 
-    action->executed = FALSE;
+    pcmk__clear_graph_action_flags(action, pcmk__graph_action_executed);
     on_node = crm_element_value(action->xml, XML_LRM_ATTR_TARGET);
 
-    CRM_CHECK(on_node != NULL && strlen(on_node) != 0,
-              crm_err("Corrupted command(id=%s) %s: no node", ID(action->xml), crm_str(task));
-              return FALSE);
+    CRM_CHECK(!pcmk__str_empty(on_node),
+              crm_err("Corrupted command(id=%s) %s: no node",
+                      ID(action->xml), pcmk__s(task, "without task"));
+              return pcmk_rc_node_unknown);
 
     rsc_op = action->xml;
     task = crm_element_value(rsc_op, XML_LRM_ATTR_TASK);
@@ -304,11 +377,13 @@ te_rsc_command(crm_graph_t * graph, crm_action_t * action)
         router_node = on_node;
     }
 
-    counter = pcmk__transition_key(transition_graph->id, action->id,
-                                   get_target_rc(action), te_uuid);
+    counter = pcmk__transition_key(controld_globals.transition_graph->id,
+                                   action->id, get_target_rc(action),
+                                   controld_globals.te_uuid);
     crm_xml_add(rsc_op, XML_ATTR_TRANSITION_KEY, counter);
 
-    if (pcmk__str_eq(router_node, fsa_our_uname, pcmk__str_casei)) {
+    if (pcmk__str_eq(router_node, controld_globals.our_nodename,
+                     pcmk__str_casei)) {
         is_local = TRUE;
     }
 
@@ -341,7 +416,8 @@ te_rsc_command(crm_graph_t * graph, crm_action_t * action)
             .origin = __func__,
         };
 
-        do_lrm_invoke(A_LRM_INVOKE, C_FSA_INTERNAL, fsa_state, I_NULL, &msg);
+        do_lrm_invoke(A_LRM_INVOKE, C_FSA_INTERNAL, controld_globals.fsa_state,
+                      I_NULL, &msg);
 
     } else {
         rc = send_cluster_message(crm_get_peer(0, router_node), crm_msg_lrmd, cmd, TRUE);
@@ -350,21 +426,22 @@ te_rsc_command(crm_graph_t * graph, crm_action_t * action)
     free(counter);
     free_xml(cmd);
 
-    action->executed = TRUE;
+    pcmk__set_graph_action_flags(action, pcmk__graph_action_executed);
 
     if (rc == FALSE) {
         crm_err("Action %d failed: send", action->id);
-        return FALSE;
+        return ECOMM;
 
     } else if (no_wait) {
+        /* Just mark confirmed. Don't bump the job count only to immediately
+         * decrement it.
+         */
         crm_info("Action %d confirmed - no wait", action->id);
-        action->confirmed = TRUE; /* Just mark confirmed.
-                                   * Don't bump the job count only to immediately decrement it
-                                   */
-        update_graph(transition_graph, action);
+        pcmk__set_graph_action_flags(action, pcmk__graph_action_confirmed);
+        pcmk__update_graph(controld_globals.transition_graph, action);
         trigger_graph();
 
-    } else if (action->confirmed == TRUE) {
+    } else if (pcmk_is_set(action->flags, pcmk__graph_action_confirmed)) {
         crm_debug("Action %d: %s %s on %s(timeout %dms) was already confirmed.",
                   action->id, task, task_uuid, on_node, action->timeout);
     } else {
@@ -377,7 +454,7 @@ te_rsc_command(crm_graph_t * graph, crm_action_t * action)
         te_start_action_timer(graph, action);
     }
 
-    return TRUE;
+    return pcmk_rc_ok;
 }
 
 struct te_peer_s
@@ -435,12 +512,12 @@ te_update_job_count_on(const char *target, int offset, bool migrate)
 }
 
 static void
-te_update_job_count(crm_action_t * action, int offset)
+te_update_job_count(pcmk__graph_action_t *action, int offset)
 {
     const char *task = crm_element_value(action->xml, XML_LRM_ATTR_TASK);
     const char *target = crm_element_value(action->xml, XML_LRM_ATTR_TARGET);
 
-    if (action->type != action_type_rsc || target == NULL) {
+    if ((action->type != pcmk__rsc_graph_action) || (target == NULL)) {
         /* No limit on these */
         return;
     }
@@ -467,8 +544,19 @@ te_update_job_count(crm_action_t * action, int offset)
     te_update_job_count_on(target, offset, FALSE);
 }
 
-static gboolean
-te_should_perform_action_on(crm_graph_t * graph, crm_action_t * action, const char *target)
+/*!
+ * \internal
+ * \brief Check whether a graph action is allowed to be executed on a node
+ *
+ * \param[in] graph   Transition graph being executed
+ * \param[in] action  Graph action being executed
+ * \param[in] target  Name of node where action should be executed
+ *
+ * \return true if action is allowed, otherwise false
+ */
+static bool
+allowed_on_node(const pcmk__graph_t *graph, const pcmk__graph_action_t *action,
+                const char *target)
 {
     int limit = 0;
     struct te_peer_s *r = NULL;
@@ -477,10 +565,10 @@ te_should_perform_action_on(crm_graph_t * graph, crm_action_t * action, const ch
 
     if(target == NULL) {
         /* No limit on these */
-        return TRUE;
+        return true;
 
     } else if(te_targets == NULL) {
-        return FALSE;
+        return false;
     }
 
     r = g_hash_table_lookup(te_targets, target);
@@ -495,30 +583,39 @@ te_should_perform_action_on(crm_graph_t * graph, crm_action_t * action, const ch
     if(limit <= r->jobs) {
         crm_trace("Peer %s is over their job limit of %d (%d): deferring %s",
                   target, limit, r->jobs, id);
-        return FALSE;
+        return false;
 
     } else if(graph->migration_limit > 0 && r->migrate_jobs >= graph->migration_limit) {
         if (pcmk__strcase_any_of(task, CRMD_ACTION_MIGRATE, CRMD_ACTION_MIGRATED, NULL)) {
             crm_trace("Peer %s is over their migration job limit of %d (%d): deferring %s",
                       target, graph->migration_limit, r->migrate_jobs, id);
-            return FALSE;
+            return false;
         }
     }
 
     crm_trace("Peer %s has not hit their limit yet. current jobs = %d limit= %d limit", target, r->jobs, limit);
 
-    return TRUE;
+    return true;
 }
 
-static gboolean
-te_should_perform_action(crm_graph_t * graph, crm_action_t * action)
+/*!
+ * \internal
+ * \brief Check whether a graph action is allowed to be executed
+ *
+ * \param[in] graph   Transition graph being executed
+ * \param[in] action  Graph action being executed
+ *
+ * \return true if action is allowed, otherwise false
+ */
+static bool
+graph_action_allowed(pcmk__graph_t *graph, pcmk__graph_action_t *action)
 {
     const char *target = NULL;
     const char *task = crm_element_value(action->xml, XML_LRM_ATTR_TASK);
 
-    if (action->type != action_type_rsc) {
+    if (action->type != pcmk__rsc_graph_action) {
         /* No limit on these */
-        return TRUE;
+        return true;
     }
 
     /* if we have a router node, this means the action is performing
@@ -530,8 +627,8 @@ te_should_perform_action(crm_graph_t * graph, crm_action_t * action)
     if ((target == NULL) && pcmk__strcase_any_of(task, CRMD_ACTION_MIGRATE,
                                                  CRMD_ACTION_MIGRATED, NULL)) {
         target = crm_meta_value(action->params, XML_LRM_ATTR_MIGRATE_SOURCE);
-        if(te_should_perform_action_on(graph, action, target) == FALSE) {
-            return FALSE;
+        if (!allowed_on_node(graph, action, target)) {
+            return false;
         }
 
         target = crm_meta_value(action->params, XML_LRM_ATTR_MIGRATE_TARGET);
@@ -540,86 +637,93 @@ te_should_perform_action(crm_graph_t * graph, crm_action_t * action)
         target = crm_element_value(action->xml, XML_LRM_ATTR_TARGET);
     }
 
-    return te_should_perform_action_on(graph, action, target);
+    return allowed_on_node(graph, action, target);
 }
 
 /*!
  * \brief Confirm a graph action (and optionally update graph)
  *
- * \param[in] action  Action to confirm
- * \param[in] graph   Update and trigger this graph (if non-NULL)
+ * \param[in,out] action  Action to confirm
+ * \param[in,out] graph   Update and trigger this graph (if non-NULL)
  */
 void
-te_action_confirmed(crm_action_t *action, crm_graph_t *graph)
+te_action_confirmed(pcmk__graph_action_t *action, pcmk__graph_t *graph)
 {
-    if (action->confirmed == FALSE) {
-        if ((action->type == action_type_rsc)
+    if (!pcmk_is_set(action->flags, pcmk__graph_action_confirmed)) {
+        if ((action->type == pcmk__rsc_graph_action)
             && (crm_element_value(action->xml, XML_LRM_ATTR_TARGET) != NULL)) {
             te_update_job_count(action, -1);
         }
-        action->confirmed = TRUE;
+        pcmk__set_graph_action_flags(action, pcmk__graph_action_confirmed);
     }
     if (graph) {
-        update_graph(graph, action);
+        pcmk__update_graph(graph, action);
         trigger_graph();
     }
 }
 
-
-crm_graph_functions_t te_graph_fns = {
-    te_pseudo_action,
-    te_rsc_command,
-    te_crm_command,
-    te_fence_node,
-    te_should_perform_action,
+static pcmk__graph_functions_t te_graph_fns = {
+    execute_pseudo_action,
+    execute_rsc_action,
+    execute_cluster_action,
+    controld_execute_fence_action,
+    graph_action_allowed,
 };
 
+/*
+ * \internal
+ * \brief Register the transitioner's graph functions with \p libpacemaker
+ */
 void
-notify_crmd(crm_graph_t * graph)
+controld_register_graph_functions(void)
+{
+    pcmk__set_graph_functions(&te_graph_fns);
+}
+
+void
+notify_crmd(pcmk__graph_t *graph)
 {
     const char *type = "unknown";
     enum crmd_fsa_input event = I_NULL;
 
-    crm_debug("Processing transition completion in state %s", fsa_state2string(fsa_state));
+    crm_debug("Processing transition completion in state %s",
+              fsa_state2string(controld_globals.fsa_state));
 
-    if (graph->complete == FALSE) {
-        CRM_CHECK(graph->complete,);
-        graph->complete = TRUE;
-    }
+    CRM_CHECK(graph->complete, graph->complete = true);
 
     switch (graph->completion_action) {
-        case tg_stop:
+        case pcmk__graph_wait:
             type = "stop";
-            if (fsa_state == S_TRANSITION_ENGINE) {
+            if (controld_globals.fsa_state == S_TRANSITION_ENGINE) {
                 event = I_TE_SUCCESS;
             }
             break;
-        case tg_done:
+        case pcmk__graph_done:
             type = "done";
-            if (fsa_state == S_TRANSITION_ENGINE) {
+            if (controld_globals.fsa_state == S_TRANSITION_ENGINE) {
                 event = I_TE_SUCCESS;
             }
             break;
 
-        case tg_restart:
+        case pcmk__graph_restart:
             type = "restart";
-            if (fsa_state == S_TRANSITION_ENGINE) {
-                if (transition_timer->period_ms > 0) {
-                    controld_stop_timer(transition_timer);
-                    controld_start_timer(transition_timer);
+            if (controld_globals.fsa_state == S_TRANSITION_ENGINE) {
+                if (controld_get_period_transition_timer() > 0) {
+                    controld_stop_transition_timer();
+                    controld_start_transition_timer();
                 } else {
                     event = I_PE_CALC;
                 }
 
-            } else if (fsa_state == S_POLICY_ENGINE) {
+            } else if (controld_globals.fsa_state == S_POLICY_ENGINE) {
                 controld_set_fsa_action_flags(A_PE_INVOKE);
-                trigger_fsa();
+                controld_trigger_fsa();
             }
             break;
 
-        case tg_shutdown:
+        case pcmk__graph_shutdown:
             type = "shutdown";
-            if (pcmk_is_set(fsa_input_register, R_SHUTDOWN)) {
+            if (pcmk_is_set(controld_globals.fsa_input_register, R_SHUTDOWN)) {
                 event = I_STOP;
 
             } else {
@@ -628,16 +732,15 @@ notify_crmd(crm_graph_t * graph)
             }
     }
 
-    crm_debug("Transition %d status: %s - %s", graph->id, type, crm_str(graph->abort_reason));
+    crm_debug("Transition %d status: %s - %s", graph->id, type,
+              pcmk__s(graph->abort_reason, "unspecified reason"));
 
     graph->abort_reason = NULL;
-    graph->completion_action = tg_done;
-    controld_clear_fsa_input_flags(R_IN_TRANSITION);
+    graph->completion_action = pcmk__graph_done;
 
     if (event != I_NULL) {
         register_fsa_input(C_FSA_INTERNAL, event, NULL);
-
-    } else if (fsa_source) {
-        mainloop_set_trigger(fsa_source);
+    } else {
+        controld_trigger_fsa();
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2021 the Pacemaker project contributors
+ * Copyright 2019-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -8,6 +8,7 @@
  */
 
 #include <crm_internal.h>
+#include <crm/common/cmdline_internal.h>
 
 #include <ctype.h>
 #include <stdarg.h>
@@ -21,7 +22,7 @@ GOptionEntry pcmk__log_output_entries[] = {
 typedef struct private_data_s {
     /* gathered in log_begin_list */
     GQueue/*<char*>*/ *prefixes;
-    int log_level;
+    uint8_t log_level;
 } private_data_t;
 
 static void
@@ -32,11 +33,13 @@ log_subprocess_output(pcmk__output_t *out, int exit_status,
 
 static void
 log_free_priv(pcmk__output_t *out) {
-    private_data_t *priv = out->priv;
+    private_data_t *priv = NULL;
 
-    if (priv == NULL) {
+    if (out == NULL || out->priv == NULL) {
         return;
     }
+
+    priv = out->priv;
 
     g_queue_free(priv->prefixes);
     free(priv);
@@ -46,6 +49,8 @@ log_free_priv(pcmk__output_t *out) {
 static bool
 log_init(pcmk__output_t *out) {
     private_data_t *priv = NULL;
+
+    CRM_ASSERT(out != NULL);
 
     /* If log_init was previously called on this output struct, just return. */
     if (out->priv != NULL) {
@@ -93,7 +98,8 @@ log_version(pcmk__output_t *out, bool extended) {
                    PACEMAKER_VERSION, BUILD_VERSION, CRM_FEATURES);
     } else {
         do_crm_log(priv->log_level, "Pacemaker %s", PACEMAKER_VERSION);
-        do_crm_log(priv->log_level, "Written by Andrew Beekhof");
+        do_crm_log(priv->log_level, "Written by Andrew Beekhof and"
+                                    "the Pacemaker project contributors");
     }
 }
 
@@ -242,6 +248,29 @@ log_info(pcmk__output_t *out, const char *format, ...) {
     return pcmk_rc_ok;
 }
 
+G_GNUC_PRINTF(2, 3)
+static int
+log_transient(pcmk__output_t *out, const char *format, ...)
+{
+    private_data_t *priv = NULL;
+    int len = 0;
+    va_list ap;
+    char *buffer = NULL;
+
+    CRM_ASSERT(out != NULL && out->priv != NULL);
+    priv = out->priv;
+
+    va_start(ap, format);
+    len = vasprintf(&buffer, format, ap);
+    CRM_ASSERT(len >= 0);
+    va_end(ap);
+
+    do_crm_log(QB_MAX(priv->log_level, LOG_DEBUG), "%s", buffer);
+
+    free(buffer);
+    return pcmk_rc_ok;
+}
+
 static bool
 log_is_quiet(pcmk__output_t *out) {
     return false;
@@ -271,7 +300,7 @@ pcmk__mk_log_output(char **argv) {
     }
 
     retval->fmt_name = "log";
-    retval->request = argv == NULL ? NULL : g_strjoinv(" ", argv);
+    retval->request = pcmk__quote_cmdline(argv);
 
     retval->init = log_init;
     retval->free_priv = log_free_priv;
@@ -284,6 +313,7 @@ pcmk__mk_log_output(char **argv) {
     retval->subprocess_output = log_subprocess_output;
     retval->version = log_version;
     retval->info = log_info;
+    retval->transient = log_transient;
     retval->err = log_err;
     retval->output_xml = log_output_xml;
 
@@ -299,15 +329,24 @@ pcmk__mk_log_output(char **argv) {
     return retval;
 }
 
+uint8_t
+pcmk__output_get_log_level(const pcmk__output_t *out)
+{
+    private_data_t *priv = NULL;
+
+    CRM_ASSERT((out != NULL) && (out->priv != NULL));
+    CRM_CHECK(pcmk__str_eq(out->fmt_name, "log", pcmk__str_none), return 0);
+
+    priv = out->priv;
+    return priv->log_level;
+}
+
 void
-pcmk__output_set_log_level(pcmk__output_t *out, int log_level) {
+pcmk__output_set_log_level(pcmk__output_t *out, uint8_t log_level) {
     private_data_t *priv = NULL;
 
     CRM_ASSERT(out != NULL && out->priv != NULL);
-
-    if (!pcmk__str_eq(out->fmt_name, "log", pcmk__str_none)) {
-        return;
-    }
+    CRM_CHECK(pcmk__str_eq(out->fmt_name, "log", pcmk__str_none), return);
 
     priv = out->priv;
     priv->log_level = log_level;

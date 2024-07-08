@@ -3,11 +3,10 @@
 # see FEATURE AREAS in dpkg-buildflags(1)
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
-# We can't ensure that we link against all needed libraries (cf. Policy 10.2),
-# because libpe_status uses get_object_root from libcib and libcib uses
-# symbols from libpe_rules, which is built in the same subdir.
-# Not upstreamed, see https://github.com/ClusterLabs/pacemaker/pull/800
-#export DEB_LDFLAGS_MAINT_APPEND=-Wl,-z,defs
+# Link against all needed libraries (cf. Policy 10.2)
+export DEB_LDFLAGS_MAINT_APPEND=-Wl,-z,defs
+
+export deb_systemdsystemunitdir = $(shell pkg-config --variable=systemdsystemunitdir systemd | sed s,^/,,)
 
 # Ubuntu/i386 shrank into a compatibility layer not carrying the
 # dependencies of some of our binary packages (#948379):
@@ -20,7 +19,7 @@ ifeq ($(shell dpkg-vendor --query vendor)/$(DEB_HOST_ARCH), Ubuntu/i386)
 endif
 
 %:
-	dh $@ --with python3,sphinxdoc $(UBUNTU_EXCLUDES)
+	dh $@ $(UBUNTU_EXCLUDES)
 
 override_dh_autoreconf:
 	dh_autoreconf ./autogen.sh
@@ -38,35 +37,21 @@ override_dh_auto_configure:
 override_dh_auto_build-indep:
 	dh_auto_build
 	$(MAKE) -C doc doxygen
-	# the Doxygen output isn't installed, we can cleanup immediately:
-	rm doc/api/html/*.md5
-
-# make check does not check the compiled software, but rebuilds everything
-# with clang.  This takes a lot of time and does not help us at all.  Skip.
-override_dh_auto_test:
-
-override_dh_install:
-	rm -r	debian/tmp/usr/lib/*/lib*.la \
-		debian/tmp/usr/share/doc/pacemaker/COPYING \
-		debian/tmp/usr/share/doc/pacemaker/README.markdown \
-		debian/tmp/usr/share/doc/pacemaker/licenses
-	dh_install
 
 override_dh_installdocs:
 	dh_installdocs -A README.markdown
 
+# Move test package documentation to its canonical place:
+execute_after_dh_installdocs-indep:
+	mv --no-clobber \
+	   debian/pacemaker-cts/usr/share/pacemaker/tests/README.md \
+	   debian/pacemaker-cts/usr/share/doc/pacemaker-cts
+
 override_dh_installinit:
-# Upstream ships the pacemaker and pacemaker-remote init files,
-# so we have to force the maintainer script modifications
+# Upstream provides pacemaker and pacemaker-remote init files,
+# we dh_install them and force the maintainer script modifications here:
 	dh_installinit --onlyscripts --no-restart-after-upgrade -p pacemaker
 	dh_installinit --onlyscripts --no-restart-after-upgrade -p pacemaker-remote --name=pacemaker_remote
 
 override_dh_installsystemd:
 	dh_installsystemd --no-restart-after-upgrade
-
-override_dh_missing:
-	dh_missing --fail-missing
-
-override_dh_auto_clean:
-	dh_auto_clean
-	rm -rf doc/api

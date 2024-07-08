@@ -1,6 +1,6 @@
 /*
  * Original copyright 2004 International Business Machines
- * Later changes copyright 2008-2021 the Pacemaker project contributors
+ * Later changes copyright 2008-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -20,41 +20,9 @@
 #include <crm/crm.h>
 #include <crm/cib/internal.h>
 #include <crm/msg_xml.h>
-#include <crm/common/iso8601_internal.h>
 #include <crm/common/xml.h>
 #include <crm/common/xml_internal.h>
 #include <crm/pengine/rules.h>
-
-struct config_root_s {
-    const char *name;
-    const char *parent;
-    const char *path;
-};
-
- /*
-  * "//crm_config" will also work in place of "/cib/configuration/crm_config"
-  * The / prefix means find starting from the root, whereas the // prefix means
-  * find anywhere and risks multiple matches
-  */
-/* *INDENT-OFF* */
-static struct config_root_s known_paths[] = {
-    { NULL,                         NULL,                 "//cib" },
-    { XML_TAG_CIB,                  NULL,                 "//cib" },
-    { XML_CIB_TAG_STATUS,           "/cib",               "//cib/status" },
-    { XML_CIB_TAG_CONFIGURATION,    "/cib",               "//cib/configuration" },
-    { XML_CIB_TAG_CRMCONFIG,        "/cib/configuration", "//cib/configuration/crm_config" },
-    { XML_CIB_TAG_NODES,            "/cib/configuration", "//cib/configuration/nodes" },
-    { XML_CIB_TAG_RESOURCES,        "/cib/configuration", "//cib/configuration/resources" },
-    { XML_CIB_TAG_CONSTRAINTS,      "/cib/configuration", "//cib/configuration/constraints" },
-    { XML_CIB_TAG_OPCONFIG,         "/cib/configuration", "//cib/configuration/op_defaults" },
-    { XML_CIB_TAG_RSCCONFIG,        "/cib/configuration", "//cib/configuration/rsc_defaults" },
-    { XML_CIB_TAG_ACLS,             "/cib/configuration", "//cib/configuration/acls" },
-    { XML_TAG_FENCING_TOPOLOGY,     "/cib/configuration", "//cib/configuration/fencing-topology" },
-    { XML_CIB_TAG_TAGS,             "/cib/configuration", "//cib/configuration/tags" },
-    { XML_CIB_TAG_ALERTS,           "/cib/configuration", "//cib/configuration/alerts" },
-    { XML_CIB_TAG_SECTION_ALL,      NULL,                 "//cib" },
-};
-/* *INDENT-ON* */
 
 xmlNode *
 cib_get_generation(cib_t * cib)
@@ -107,51 +75,6 @@ cib_diff_version_details(xmlNode * diff, int *admin_epoch, int *epoch, int *upda
     *_updates = del[2];
 
     return TRUE;
-}
-
-/*
- * The caller should never free the return value
- */
-
-const char *
-get_object_path(const char *object_type)
-{
-    int lpc = 0;
-    int max = PCMK__NELEM(known_paths);
-
-    for (; lpc < max; lpc++) {
-        if ((object_type == NULL && known_paths[lpc].name == NULL)
-            || pcmk__str_eq(object_type, known_paths[lpc].name, pcmk__str_casei)) {
-            return known_paths[lpc].path;
-        }
-    }
-    return NULL;
-}
-
-const char *
-get_object_parent(const char *object_type)
-{
-    int lpc = 0;
-    int max = PCMK__NELEM(known_paths);
-
-    for (; lpc < max; lpc++) {
-        if (pcmk__str_eq(object_type, known_paths[lpc].name, pcmk__str_casei)) {
-            return known_paths[lpc].parent;
-        }
-    }
-    return NULL;
-}
-
-xmlNode *
-get_object_root(const char *object_type, xmlNode * the_root)
-{
-    const char *xpath = get_object_path(object_type);
-
-    if (xpath == NULL) {
-        return the_root;        /* or return NULL? */
-    }
-
-    return get_xpath_object(xpath, the_root, LOG_TRACE);
 }
 
 /*!
@@ -231,9 +154,11 @@ cib_perform_op(const char *op, int call_options, cib_op_t * fn, gboolean is_quer
     xmlNode *local_diff = NULL;
 
     const char *new_version = NULL;
-    static struct qb_log_callsite *diff_cs = NULL;
     const char *user = crm_element_value(req, F_CIB_USER);
     bool with_digest = FALSE;
+
+    pcmk__output_t *out = NULL;
+    int out_rc = pcmk_rc_no_output;
 
     crm_trace("Begin %s%s%s op",
               (pcmk_is_set(call_options, cib_dryrun)? "dry run of " : ""),
@@ -354,7 +279,7 @@ cib_perform_op(const char *op, int call_options, cib_op_t * fn, gboolean is_quer
         crm_element_value_int(current_cib, XML_ATTR_GENERATION_ADMIN, &old);
 
         if (old > new) {
-            crm_err("%s went backwards: %d -> %d (Opts: 0x%x)",
+            crm_err("%s went backwards: %d -> %d (Opts: %#x)",
                     XML_ATTR_GENERATION_ADMIN, old, new, call_options);
             crm_log_xml_warn(req, "Bad Op");
             crm_log_xml_warn(input, "Bad Data");
@@ -364,7 +289,7 @@ cib_perform_op(const char *op, int call_options, cib_op_t * fn, gboolean is_quer
             crm_element_value_int(scratch, XML_ATTR_GENERATION, &new);
             crm_element_value_int(current_cib, XML_ATTR_GENERATION, &old);
             if (old > new) {
-                crm_err("%s went backwards: %d -> %d (Opts: 0x%x)",
+                crm_err("%s went backwards: %d -> %d (Opts: %#x)",
                         XML_ATTR_GENERATION, old, new, call_options);
                 crm_log_xml_warn(req, "Bad Op");
                 crm_log_xml_warn(input, "Bad Data");
@@ -397,39 +322,68 @@ cib_perform_op(const char *op, int call_options, cib_op_t * fn, gboolean is_quer
         local_diff = xml_create_patchset(0, current_cib, scratch, (bool*)config_changed, manage_counters);
     }
 
-    xml_log_changes(LOG_TRACE, __func__, scratch);
+    // Create a log output object only if we're going to use it
+    pcmk__if_tracing(
+        {
+            rc = pcmk_rc2legacy(pcmk__log_output_new(&out));
+            CRM_CHECK(rc == pcmk_ok, goto done);
+
+            pcmk__output_set_log_level(out, LOG_TRACE);
+            out_rc = pcmk__xml_show_changes(out, scratch);
+        },
+        {}
+    );
     xml_accept_changes(scratch);
 
-    if (diff_cs == NULL) {
-        diff_cs = qb_log_callsite_get(__PRETTY_FUNCTION__, __FILE__, "diff-validation", LOG_DEBUG, __LINE__, crm_trace_nonlog);
-    }
-
     if(local_diff) {
+        int temp_rc = pcmk_rc_no_output;
+
         patchset_process_digest(local_diff, current_cib, scratch, with_digest);
 
-        xml_log_patchset(LOG_INFO, __func__, local_diff);
+        if (out == NULL) {
+            rc = pcmk_rc2legacy(pcmk__log_output_new(&out));
+            CRM_CHECK(rc == pcmk_ok, goto done);
+        }
+        pcmk__output_set_log_level(out, LOG_INFO);
+        temp_rc = out->message(out, "xml-patchset", local_diff);
+        out_rc = pcmk__output_select_rc(rc, temp_rc);
+
         crm_log_xml_trace(local_diff, "raw patch");
     }
 
-    if (!pcmk_is_set(call_options, cib_zero_copy) // Original to compare against doesn't exist
-        && local_diff
-        && crm_is_callsite_active(diff_cs, LOG_TRACE, 0)) {
+    if (out != NULL) {
+        out->finish(out, pcmk_rc2exitc(out_rc), true, NULL);
+        pcmk__output_free(out);
+        out = NULL;
+    }
 
-        /* Validate the calculated patch set */
-        int test_rc, format = 1;
-        xmlNode * c = copy_xml(current_cib);
+    if (!pcmk_is_set(call_options, cib_zero_copy) && (local_diff != NULL)) {
+        // Original to compare against doesn't exist
+        pcmk__if_tracing(
+            {
+                // Validate the calculated patch set
+                int test_rc = pcmk_ok;
+                int format = 1;
+                xmlNode *cib_copy = copy_xml(current_cib);
 
-        crm_element_value_int(local_diff, "format", &format);
-        test_rc = xml_apply_patchset(c, local_diff, manage_counters);
+                crm_element_value_int(local_diff, "format", &format);
+                test_rc = xml_apply_patchset(cib_copy, local_diff,
+                                             manage_counters);
 
-        if(test_rc != pcmk_ok) {
-            save_xml_to_file(c,           "PatchApply:calculated", NULL);
-            save_xml_to_file(current_cib, "PatchApply:input", NULL);
-            save_xml_to_file(scratch,     "PatchApply:actual", NULL);
-            save_xml_to_file(local_diff,  "PatchApply:diff", NULL);
-            crm_err("v%d patchset error, patch failed to apply: %s (%d)", format, pcmk_strerror(test_rc), test_rc);
-        }
-        free_xml(c);
+                if (test_rc != pcmk_ok) {
+                    save_xml_to_file(cib_copy, "PatchApply:calculated", NULL);
+                    save_xml_to_file(current_cib, "PatchApply:input", NULL);
+                    save_xml_to_file(scratch, "PatchApply:actual", NULL);
+                    save_xml_to_file(local_diff, "PatchApply:diff", NULL);
+                    crm_err("v%d patchset error, patch failed to apply: %s "
+                            "(%d)",
+                            format, pcmk_rc_str(pcmk_legacy2rc(test_rc)),
+                            test_rc);
+                }
+                free_xml(cib_copy);
+            },
+            {}
+        );
     }
 
     if (pcmk__str_eq(section, XML_CIB_TAG_STATUS, pcmk__str_casei)) {
@@ -483,7 +437,7 @@ cib_perform_op(const char *op, int call_options, cib_op_t * fn, gboolean is_quer
                                                        XML_ATTR_VALIDATION);
 
         crm_warn("Updated CIB does not validate against %s schema",
-                 crm_str(current_schema));
+                 pcmk__s(current_schema, "unspecified"));
         rc = -pcmk_err_schema_validation;
     }
 
@@ -511,18 +465,17 @@ cib_perform_op(const char *op, int call_options, cib_op_t * fn, gboolean is_quer
 }
 
 xmlNode *
-cib_create_op(int call_id, const char *token, const char *op, const char *host, const char *section,
-              xmlNode * data, int call_options, const char *user_name)
+cib_create_op(int call_id, const char *op, const char *host,
+              const char *section, xmlNode *data, int call_options,
+              const char *user_name)
 {
     xmlNode *op_msg = create_xml_node(NULL, "cib_command");
 
     CRM_CHECK(op_msg != NULL, return NULL);
-    CRM_CHECK(token != NULL, return NULL);
 
     crm_xml_add(op_msg, F_XML_TAGNAME, "cib_command");
 
     crm_xml_add(op_msg, F_TYPE, T_CIB);
-    crm_xml_add(op_msg, F_CIB_CALLBACK_TOKEN, token);
     crm_xml_add(op_msg, F_CIB_OPERATION, op);
     crm_xml_add(op_msg, F_CIB_HOST, host);
     crm_xml_add(op_msg, F_CIB_SECTION, section);
@@ -555,7 +508,8 @@ cib_native_callback(cib_t * cib, xmlNode * msg, int call_id, int rc)
         output = get_message_xml(msg, F_CIB_CALLDATA);
     }
 
-    blob = pcmk__intkey_table_lookup(cib_op_callback_table, call_id);
+    blob = cib__lookup_id(call_id);
+
     if (blob == NULL) {
         crm_trace("No callback found for call %d", call_id);
     }
@@ -570,7 +524,8 @@ cib_native_callback(cib_t * cib, xmlNode * msg, int call_id, int rc)
     }
 
     if (blob && blob->callback && (rc == pcmk_ok || blob->only_success == FALSE)) {
-        crm_trace("Invoking callback %s for call %d", crm_str(blob->id), call_id);
+        crm_trace("Invoking callback %s for call %d",
+                  pcmk__s(blob->id, "without ID"), call_id);
         blob->callback(msg, call_id, rc, output, blob->user_data);
 
     } else if (cib && cib->op_callback == NULL && rc != pcmk_ok) {
@@ -631,31 +586,35 @@ static pcmk__cluster_option_t cib_opts[] = {
     {
         "enable-acl", NULL, "boolean", NULL,
         "false", pcmk__valid_boolean,
-        "Enable Access Control Lists (ACLs) for the CIB",
+        N_("Enable Access Control Lists (ACLs) for the CIB"),
         NULL
     },
     {
         "cluster-ipc-limit", NULL, "integer", NULL,
         "500", pcmk__valid_positive_number,
-        "Maximum IPC message backlog before disconnecting a cluster daemon",
-        "Raise this if log has \"Evicting client\" messages for cluster daemon"
+        N_("Maximum IPC message backlog before disconnecting a cluster daemon"),
+        N_("Raise this if log has \"Evicting client\" messages for cluster daemon"
             " PIDs (a good value is the number of resources in the cluster"
-            " multiplied by the number of nodes)."
+            " multiplied by the number of nodes).")
     },
 };
 
 void
 cib_metadata(void)
 {
-    pcmk__print_option_metadata("pacemaker-based", "1.0",
-                                "Cluster Information Base manager options",
-                                "Cluster options used by Pacemaker's "
-                                    "Cluster Information Base manager",
-                                cib_opts, PCMK__NELEM(cib_opts));
+    const char *desc_short = "Cluster Information Base manager options";
+    const char *desc_long = "Cluster options used by Pacemaker's Cluster "
+                            "Information Base manager";
+
+    gchar *s = pcmk__format_option_metadata("pacemaker-based", desc_short,
+                                            desc_long, cib_opts,
+                                            PCMK__NELEM(cib_opts));
+    printf("%s", s);
+    g_free(s);
 }
 
-void
-verify_cib_options(GHashTable * options)
+static void
+verify_cib_options(GHashTable *options)
 {
     pcmk__validate_cluster_options(options, cib_opts, PCMK__NELEM(cib_opts));
 }
@@ -681,7 +640,7 @@ cib_read_config(GHashTable * options, xmlNode * current_cib)
 
     g_hash_table_remove_all(options);
 
-    config = get_object_root(XML_CIB_TAG_CRMCONFIG, current_cib);
+    config = pcmk_find_cib_element(current_cib, XML_CIB_TAG_CRMCONFIG);
     if (config) {
         pe_unpack_nvpairs(current_cib, config, XML_CIB_TAG_PROPSET, NULL,
                           options, CIB_OPTIONS_FIRST, TRUE, now, NULL);
@@ -692,27 +651,6 @@ cib_read_config(GHashTable * options, xmlNode * current_cib)
     crm_time_free(now);
 
     return TRUE;
-}
-
-/* v2 and v2 patch formats */
-#define XPATH_CONFIG_CHANGE \
-    "//" XML_CIB_TAG_CRMCONFIG " | " \
-    "//" XML_DIFF_CHANGE "[contains(@" XML_DIFF_PATH ",'/" XML_CIB_TAG_CRMCONFIG "/')]"
-
-gboolean
-cib_internal_config_changed(xmlNode *diff)
-{
-    gboolean changed = FALSE;
-
-    if (diff) {
-        xmlXPathObject *xpathObj = xpath_search(diff, XPATH_CONFIG_CHANGE);
-
-        if (numXpathResults(xpathObj) > 0) {
-            changed = TRUE;
-        }
-        freeXpathObject(xpathObj);
-    }
-    return changed;
 }
 
 int
@@ -763,7 +701,16 @@ cib_apply_patch_event(xmlNode *event, xmlNode *input, xmlNode **output,
     }
 
     if (level > LOG_CRIT) {
-        xml_log_patchset(level, "Config update", diff);
+        pcmk__output_t *out = NULL;
+
+        rc = pcmk_rc2legacy(pcmk__log_output_new(&out));
+        CRM_CHECK(rc == pcmk_ok, return rc);
+
+        pcmk__output_set_log_level(out, level);
+        rc = out->message(out, "xml-patchset", diff);
+        out->finish(out, pcmk_rc2exitc(rc), true, NULL);
+        pcmk__output_free(out);
+        rc = pcmk_ok;
     }
 
     if (input != NULL) {
@@ -785,3 +732,106 @@ cib_apply_patch_event(xmlNode *event, xmlNode *input, xmlNode **output,
     }
     return rc;
 }
+
+#define log_signon_query_err(out, fmt, args...) do {    \
+        if (out != NULL) {                              \
+            out->err(out, fmt, ##args);                 \
+        } else {                                        \
+            crm_err(fmt, ##args);                       \
+        }                                               \
+    } while (0)
+
+int
+cib__signon_query(pcmk__output_t *out, cib_t **cib, xmlNode **cib_object)
+{
+    int rc = pcmk_rc_ok;
+    cib_t *cib_conn = NULL;
+
+    CRM_ASSERT(cib_object != NULL);
+
+    if (cib == NULL) {
+        cib_conn = cib_new();
+    } else {
+        if (*cib == NULL) {
+            *cib = cib_new();
+        }
+        cib_conn = *cib;
+    }
+
+    if (cib_conn == NULL) {
+        return ENOMEM;
+    }
+
+    if (cib_conn->state == cib_disconnected) {
+        rc = cib_conn->cmds->signon(cib_conn, crm_system_name, cib_command);
+        rc = pcmk_legacy2rc(rc);
+    }
+
+    if (rc != pcmk_rc_ok) {
+        log_signon_query_err(out, "Could not connect to the CIB: %s",
+                             pcmk_rc_str(rc));
+        goto done;
+    }
+
+    if (out != NULL) {
+        out->transient(out, "Querying CIB...");
+    }
+    rc = cib_conn->cmds->query(cib_conn, NULL, cib_object,
+                               cib_scope_local|cib_sync_call);
+    rc = pcmk_legacy2rc(rc);
+
+    if (rc != pcmk_rc_ok) {
+        log_signon_query_err(out, "CIB query failed: %s", pcmk_rc_str(rc));
+    }
+
+done:
+    if (cib == NULL) {
+        cib__clean_up_connection(&cib_conn);
+    }
+
+    if ((rc == pcmk_rc_ok) && (*cib_object == NULL)) {
+        return pcmk_rc_no_input;
+    }
+    return rc;
+}
+
+int
+cib__clean_up_connection(cib_t **cib)
+{
+    int rc;
+
+    if (*cib == NULL) {
+        return pcmk_rc_ok;
+    }
+
+    rc = (*cib)->cmds->signoff(*cib);
+    cib_delete(*cib);
+    *cib = NULL;
+    return pcmk_legacy2rc(rc);
+}
+
+// Deprecated functions kept only for backward API compatibility
+// LCOV_EXCL_START
+
+#include <crm/cib/util_compat.h>
+
+const char *
+get_object_path(const char *object_type)
+{
+    return pcmk_cib_xpath_for(object_type);
+}
+
+const char *
+get_object_parent(const char *object_type)
+{
+    return pcmk_cib_parent_name_for(object_type);
+}
+
+xmlNode *
+get_object_root(const char *object_type, xmlNode *the_root)
+{
+    return pcmk_find_cib_element(the_root, object_type);
+}
+
+// LCOV_EXCL_STOP
+// End deprecated API

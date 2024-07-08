@@ -53,6 +53,8 @@ libcrmcluster.so.29 libcrmcluster29 #MINVER#
  pcmk__search_node_caches@Base 2.1.1
  pcmk__update_peer_expected@Base 2.1.1
  pcmk__update_peer_state@Base 2.1.1
+ pcmk_cluster_free@Base 2.1.6
+ pcmk_cluster_new@Base 2.1.6
  pcmk_cpg_membership@Base 1.1.10
  pcmk_message_common_cs@Base 1.1.10
  reap_crm_member@Base 1.1.10

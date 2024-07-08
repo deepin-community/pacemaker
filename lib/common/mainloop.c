@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -97,14 +97,14 @@ crm_trigger_check(GSource * source)
  * \internal
  * \brief GSource dispatch function for crm_trigger_t
  *
- * \param[in] source    crm_trigger_t being dispatched
- * \param[in] callback  Callback passed at source creation
- * \param[in] userdata  User data passed at source creation
+ * \param[in] source        crm_trigger_t being dispatched
+ * \param[in] callback      Callback passed at source creation
+ * \param[in,out] userdata  User data passed at source creation
  *
  * \return G_SOURCE_REMOVE to remove source, G_SOURCE_CONTINUE to keep it
  */
 static gboolean
-crm_trigger_dispatch(GSource * source, GSourceFunc callback, gpointer userdata)
+crm_trigger_dispatch(GSource *source, GSourceFunc callback, gpointer userdata)
 {
     gboolean rc = G_SOURCE_CONTINUE;
     crm_trigger_t *trig = (crm_trigger_t *) source;
@@ -179,11 +179,13 @@ mainloop_trigger_complete(crm_trigger_t * trig)
  *                      trigger from the mainloop, -1 if the trigger should be
  *                      kept but the job is still running and not complete, and
  *                      1 if the trigger should be kept and the job is complete)
+ * \param[in] userdata  Pointer to pass to \p dispatch
  *
  * \return Newly allocated mainloop source for trigger
  */
 crm_trigger_t *
-mainloop_add_trigger(int priority, int (*dispatch) (gpointer user_data), gpointer userdata)
+mainloop_add_trigger(int priority, int (*dispatch) (gpointer user_data),
+                     gpointer userdata)
 {
     GSource *source = NULL;
 
@@ -249,7 +251,7 @@ static crm_signal_t *crm_signals[NSIG];
  * \param[in] userdata  (ignored)
  */
 static gboolean
-crm_signal_dispatch(GSource * source, GSourceFunc callback, gpointer userdata)
+crm_signal_dispatch(GSource *source, GSourceFunc callback, gpointer userdata)
 {
     crm_signal_t *sig = (crm_signal_t *) source;
 
@@ -312,7 +314,7 @@ crm_signal_handler(int sig, sighandler_t dispatch)
 
     if (sigemptyset(&mask) < 0) {
         crm_err("Could not set handler for signal %d: %s",
-                sig, pcmk_strerror(errno));
+                sig, pcmk_rc_str(errno));
         return SIG_ERR;
     }
 
@@ -323,7 +325,7 @@ crm_signal_handler(int sig, sighandler_t dispatch)
 
     if (sigaction(sig, &sa, &old) < 0) {
         crm_err("Could not set handler for signal %d: %s",
-                sig, pcmk_strerror(errno));
+                sig, pcmk_rc_str(errno));
         return SIG_ERR;
     }
     return old.sa_handler;
@@ -489,22 +491,11 @@ gio_poll_destroy(gpointer data)
 static gint
 conv_prio_libqb2glib(enum qb_loop_priority prio)
 {
-    gint ret = G_PRIORITY_DEFAULT;
     switch (prio) {
-        case QB_LOOP_LOW:
-            ret = G_PRIORITY_LOW;
-            break;
-        case QB_LOOP_HIGH:
-            ret = G_PRIORITY_HIGH;
-            break;
-        default:
-            crm_trace("Invalid libqb's loop priority %d, assuming QB_LOOP_MED",
-                      prio);
-            /* fall-through */
-        case QB_LOOP_MED:
-            break;
+        case QB_LOOP_LOW:   return G_PRIORITY_LOW;
+        case QB_LOOP_HIGH:  return G_PRIORITY_HIGH;
+        default:            return G_PRIORITY_DEFAULT; // QB_LOOP_MED
     }
-    return ret;
 }
 
 /*!
@@ -514,27 +505,16 @@ conv_prio_libqb2glib(enum qb_loop_priority prio)
  * \param[in] prio  libqb's poll priority (#QB_LOOP_MED assumed as fallback)
  *
  * \return  best matching rate limiting spec
+ * \note This is the inverse of libqb's qb_ipcs_request_rate_limit().
  */
 static enum qb_ipcs_rate_limit
 conv_libqb_prio2ratelimit(enum qb_loop_priority prio)
 {
-    /* this is an inversion of what libqb's qb_ipcs_request_rate_limit does */
-    enum qb_ipcs_rate_limit ret = QB_IPCS_RATE_NORMAL;
     switch (prio) {
-        case QB_LOOP_LOW:
-            ret = QB_IPCS_RATE_SLOW;
-            break;
-        case QB_LOOP_HIGH:
-            ret = QB_IPCS_RATE_FAST;
-            break;
-        default:
-            crm_trace("Invalid libqb's loop priority %d, assuming QB_LOOP_MED",
-                      prio);
-            /* fall-through */
-        case QB_LOOP_MED:
-            break;
+        case QB_LOOP_LOW:   return QB_IPCS_RATE_SLOW;
+        case QB_LOOP_HIGH:  return QB_IPCS_RATE_FAST;
+        default:            return QB_IPCS_RATE_NORMAL; // QB_LOOP_MED
     }
-    return ret;
 }
 
 static int32_t
@@ -703,7 +683,7 @@ mainloop_add_ipc_server_with_prio(const char *name, enum qb_ipc_type type,
     rc = qb_ipcs_run(server);
     if (rc < 0) {
         crm_err("Could not start %s IPC server: %s (%d)", name, pcmk_strerror(rc), rc);
-        return NULL;
+        return NULL; // qb_ipcs_run() destroys server on failure
     }
 
     return server;
@@ -743,7 +723,7 @@ struct mainloop_io_s {
  * \return G_SOURCE_REMOVE to remove source, G_SOURCE_CONTINUE to keep it
  */
 static gboolean
-mainloop_gio_callback(GIOChannel * gio, GIOCondition condition, gpointer data)
+mainloop_gio_callback(GIOChannel *gio, GIOCondition condition, gpointer data)
 {
     gboolean rc = G_SOURCE_CONTINUE;
     mainloop_io_t *client = data;
@@ -787,7 +767,7 @@ mainloop_gio_callback(GIOChannel * gio, GIOCondition condition, gpointer data)
         }
     }
 
-    if (client->ipc && crm_ipc_connected(client->ipc) == FALSE) {
+    if (client->ipc && !crm_ipc_connected(client->ipc)) {
         crm_err("Connection to %s closed " CRM_XS "client=%p condition=%d",
                 client->name, client, condition);
         rc = G_SOURCE_REMOVE;
@@ -874,11 +854,11 @@ mainloop_gio_destroy(gpointer c)
 /*!
  * \brief Connect to IPC and add it as a main loop source
  *
- * \param[in]  ipc        IPC connection to add
- * \param[in]  priority   Event source priority to use for connection
- * \param[in]  userdata   Data to register with callbacks
- * \param[in]  callbacks  Dispatch and destroy callbacks for connection
- * \param[out] source     Newly allocated event source
+ * \param[in,out] ipc        IPC connection to add
+ * \param[in]     priority   Event source priority to use for connection
+ * \param[in]     userdata   Data to register with callbacks
+ * \param[in]     callbacks  Dispatch and destroy callbacks for connection
+ * \param[out]    source     Newly allocated event source
  *
  * \return Standard Pacemaker return code
  *
@@ -891,7 +871,7 @@ mainloop_gio_destroy(gpointer c)
  */
 int
 pcmk__add_mainloop_ipc(crm_ipc_t *ipc, int priority, void *userdata,
-                       struct ipc_client_callbacks *callbacks,
+                       const struct ipc_client_callbacks *callbacks,
                        mainloop_io_t **source)
 {
     CRM_CHECK((ipc != NULL) && (callbacks != NULL), return EINVAL);
@@ -923,7 +903,7 @@ pcmk__add_mainloop_ipc(crm_ipc_t *ipc, int priority, void *userdata,
  * \return Period in ms
  */
 guint
-pcmk__mainloop_timer_get_period(mainloop_timer_t *timer)
+pcmk__mainloop_timer_get_period(const mainloop_timer_t *timer)
 {
     if (timer) {
         return timer->period_ms;
@@ -1104,7 +1084,7 @@ child_timeout_callback(gpointer p)
 
     child->timerid = 0;
     if (child->timeout) {
-        crm_crit("%s process (PID %d) will not die!", child->desc, (int)child->pid);
+        crm_warn("%s process (PID %d) will not die!", child->desc, (int)child->pid);
         return FALSE;
     }
 
@@ -1115,7 +1095,7 @@ child_timeout_callback(gpointer p)
     }
 
     child->timeout = TRUE;
-    crm_warn("%s process (PID %d) timed out", child->desc, (int)child->pid);
+    crm_debug("%s process (PID %d) timed out", child->desc, (int)child->pid);
 
     child->timerid = g_timeout_add(5000, child_timeout_callback, child);
     return FALSE;
@@ -1150,7 +1130,7 @@ child_waitpid(mainloop_child_t *child, int flags)
         signo = SIGCHLD;
         exitcode = 1;
         crm_notice("Wait for child process %d (%s) interrupted: %s",
-                   child->pid, child->desc, pcmk_strerror(errno));
+                   child->pid, child->desc, pcmk_rc_str(errno));
 
     } else if (WIFEXITED(status)) {
         exitcode = WEXITSTATUS(status);
@@ -1272,7 +1252,7 @@ mainloop_child_add_with_flags(pid_t pid, int timeout, const char *desc, void *pr
                    void (*callback) (mainloop_child_t * p, pid_t pid, int core, int signo, int exitcode))
 {
     static bool need_init = TRUE;
-    mainloop_child_t *child = g_new(mainloop_child_t, 1);
+    mainloop_child_t *child = calloc(1, sizeof(mainloop_child_t));
 
     child->pid = pid;
     child->timerid = 0;
@@ -1280,10 +1260,7 @@ mainloop_child_add_with_flags(pid_t pid, int timeout, const char *desc, void *pr
     child->privatedata = privatedata;
     child->callback = callback;
     child->flags = flags;
-
-    if(desc) {
-        child->desc = strdup(desc);
-    }
+    pcmk__str_update(&child->desc, desc);
 
     if (timeout) {
         child->timerid = g_timeout_add(timeout, child_timeout_callback, child);
@@ -1432,8 +1409,8 @@ drain_timeout_cb(gpointer user_data)
 /*!
  * \brief Drain some remaining main loop events then quit it
  *
- * \param[in] mloop  Main loop to drain and quit
- * \param[in] n      Drain up to this many pending events
+ * \param[in,out] mloop  Main loop to drain and quit
+ * \param[in]     n      Drain up to this many pending events
  */
 void
 pcmk_quit_main_loop(GMainLoop *mloop, unsigned int n)
@@ -1454,9 +1431,10 @@ pcmk_quit_main_loop(GMainLoop *mloop, unsigned int n)
 /*!
  * \brief Process main loop events while a certain condition is met
  *
- * \param[in] mloop     Main loop to process
- * \param[in] timer_ms  Don't process longer than this amount of time
- * \param[in] check     Function that returns TRUE if events should be processed
+ * \param[in,out] mloop     Main loop to process
+ * \param[in]     timer_ms  Don't process longer than this amount of time
+ * \param[in]     check     Function that returns true if events should be
+ *                          processed
  *
  * \note This function is intended to be called at shutdown if certain important
  *       events should not be missed. The caller would likely quit the main loop
@@ -1488,6 +1466,7 @@ pcmk_drain_main_loop(GMainLoop *mloop, guint timer_ms, bool (*check)(guint))
 }
 
 // Deprecated functions kept only for backward API compatibility
+// LCOV_EXCL_START
 
 #include <crm/common/mainloop_compat.h>
 
@@ -1497,4 +1476,5 @@ crm_signal(int sig, void (*dispatch) (int sig))
     return crm_signal_handler(sig, dispatch) != SIG_ERR;
 }
 
+// LCOV_EXCL_STOP
 // End deprecated API

@@ -1,5 +1,5 @@
 #
-# Copyright 2004-2021 the Pacemaker project contributors
+# Copyright 2004-2023 the Pacemaker project contributors
 #
 # The version control history for this file may have further details.
 #
@@ -7,6 +7,7 @@
 # or later (GPLv2+) WITHOUT ANY WARRANTY.
 #
 include $(top_srcdir)/mk/common.mk
+include $(top_srcdir)/mk/man.mk
 
 if BUILD_SYSTEMD
 systemdsystemunit_DATA	= crm_mon.service
@@ -21,19 +22,27 @@ sbin_SCRIPTS		= crm_report crm_standby crm_master crm_failcount
 if BUILD_CIBSECRETS
 sbin_SCRIPTS		+= cibsecret
 endif
-noinst_SCRIPTS		= pcmk_simtimes
+noinst_SCRIPTS		= cluster-clean		\
+			  cluster-init		\
+			  cluster-helper	\
+			  pcmk_simtimes
 
-EXTRA_DIST		= crm_attribute.8.inc \
+EXTRA_DIST		= attrd_updater.8.inc \
+			  cibadmin.8.inc \
+				  crm_attribute.8.inc \
 				  crm_diff.8.inc \
 				  crm_error.8.inc \
 			  crm_mon.8.inc			\
 			  crm_node.8.inc \
 			  crm_resource.8.inc \
 			  crm_rule.8.inc \
+			  crm_shadow.8.inc \
 			  crm_simulate.8.inc \
+			  crm_ticket.8.inc \
 			  crm_verify.8.inc \
 			  crmadmin.8.inc \
 			  fix-manpages \
+			  iso8601.8.inc \
 			  stonith_admin.8.inc
 
 sbin_PROGRAMS		= attrd_updater \
@@ -53,13 +62,6 @@ sbin_PROGRAMS		= attrd_updater \
 			  iso8601 \
 			  stonith_admin
 
-if BUILD_SERVICELOG
-sbin_PROGRAMS		+= notifyServicelogEvent
-endif
-if BUILD_OPENIPMI_SERVICELOG
-sbin_PROGRAMS		+= ipmiservicelogd
-endif
-
 ## SOURCES
 
 # A few tools are just thin wrappers around crm_attribute.
@@ -74,11 +76,13 @@ crmadmin_LDADD		= $(top_builddir)/lib/pengine/libpe_status.la	\
 			  $(top_builddir)/lib/pacemaker/libpacemaker.la
 
 crm_error_SOURCES	= crm_error.c
-crm_error_LDADD		= $(top_builddir)/lib/common/libcrmcommon.la
+crm_error_LDADD		= $(top_builddir)/lib/pacemaker/libpacemaker.la	\
+			  $(top_builddir)/lib/common/libcrmcommon.la
 
 cibadmin_SOURCES	= cibadmin.c
-cibadmin_LDADD		= $(top_builddir)/lib/cib/libcib.la		\
-			  $(top_builddir)/lib/common/libcrmcommon.la
+cibadmin_LDADD		= $(top_builddir)/lib/pacemaker/libpacemaker.la		\
+			  	$(top_builddir)/lib/cib/libcib.la		\
+				$(top_builddir)/lib/common/libcrmcommon.la
 
 crm_shadow_SOURCES	= crm_shadow.c
 crm_shadow_LDADD	= $(top_builddir)/lib/cib/libcib.la		\
@@ -113,7 +117,7 @@ crm_verify_LDADD	= $(top_builddir)/lib/pengine/libpe_status.la 	\
 			  $(top_builddir)/lib/common/libcrmcommon.la
 
 crm_attribute_SOURCES	= crm_attribute.c
-crm_attribute_LDADD	= $(top_builddir)/lib/cluster/libcrmcluster.la	\
+crm_attribute_LDADD	= $(top_builddir)/lib/pacemaker/libpacemaker.la	\
 			  $(top_builddir)/lib/cib/libcib.la		\
 			  $(top_builddir)/lib/common/libcrmcommon.la
 
@@ -131,7 +135,8 @@ crm_resource_LDADD	= $(top_builddir)/lib/pengine/libpe_rules.la  	\
 			  $(top_builddir)/lib/common/libcrmcommon.la
 
 crm_rule_SOURCES 	= crm_rule.c
-crm_rule_LDADD		= $(top_builddir)/lib/cib/libcib.la		\
+crm_rule_LDADD		= $(top_builddir)/lib/pacemaker/libpacemaker.la \
+			  $(top_builddir)/lib/cib/libcib.la		\
 			  $(top_builddir)/lib/pengine/libpe_rules.la   \
 			  $(top_builddir)/lib/pengine/libpe_status.la   \
 			  $(top_builddir)/lib/common/libcrmcommon.la
@@ -140,7 +145,8 @@ iso8601_SOURCES		= iso8601.c
 iso8601_LDADD		= $(top_builddir)/lib/common/libcrmcommon.la
 
 attrd_updater_SOURCES	= attrd_updater.c
-attrd_updater_LDADD	= $(top_builddir)/lib/common/libcrmcommon.la
+attrd_updater_LDADD	= $(top_builddir)/lib/pacemaker/libpacemaker.la	\
+			  $(top_builddir)/lib/common/libcrmcommon.la
 
 crm_ticket_SOURCES	= crm_ticket.c
 crm_ticket_LDADD	= $(top_builddir)/lib/pengine/libpe_rules.la	\
@@ -155,17 +161,5 @@ stonith_admin_LDADD	= $(top_builddir)/lib/pacemaker/libpacemaker.la	\
 			  $(top_builddir)/lib/pengine/libpe_status.la	\
 			  $(top_builddir)/lib/fencing/libstonithd.la \
 			  $(top_builddir)/lib/common/libcrmcommon.la
-
-if BUILD_SERVICELOG
-notifyServicelogEvent_SOURCES	= notifyServicelogEvent.c
-notifyServicelogEvent_CFLAGS	= $(SERVICELOG_CFLAGS)
-notifyServicelogEvent_LDADD	= $(top_builddir)/lib/common/libcrmcommon.la $(SERVICELOG_LIBS)
-endif
-
-if BUILD_OPENIPMI_SERVICELOG
-ipmiservicelogd_SOURCES	= ipmiservicelogd.c
-ipmiservicelogd_CFLAGS	= $(OPENIPMI_SERVICELOG_CFLAGS) $(SERVICELOG_CFLAGS)
-ipmiservicelogd_LDFLAGS	= $(top_builddir)/lib/common/libcrmcommon.la $(OPENIPMI_SERVICELOG_LIBS) $(SERVICELOG_LIBS)
-endif
 
 CLEANFILES = $(man8_MANS)

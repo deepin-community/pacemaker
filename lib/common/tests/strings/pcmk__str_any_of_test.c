@@ -3,54 +3,46 @@
  *
  * The version control history for this file may have further details.
  *
- * This source code is licensed under the GNU Lesser General Public License
- * version 2.1 or later (LGPLv2.1+) WITHOUT ANY WARRANTY.
+ * This source code is licensed under the GNU General Public License version 2
+ * or later (GPLv2+) WITHOUT ANY WARRANTY.
  */
 
 #include <crm_internal.h>
 
-#include <stdio.h>
-#include <stdbool.h>
-#include <glib.h>
+#include <crm/common/unittest_internal.h>
 
 static void
-empty_input_list(void) {
-    g_assert_false(pcmk__strcase_any_of("xxx", NULL));
-    g_assert_false(pcmk__str_any_of("xxx", NULL));
-    g_assert_false(pcmk__strcase_any_of("", NULL));
-    g_assert_false(pcmk__str_any_of("", NULL));
+empty_input_list(void **state) {
+    assert_false(pcmk__strcase_any_of("xxx", NULL));
+    assert_false(pcmk__str_any_of("xxx", NULL));
+    assert_false(pcmk__strcase_any_of("", NULL));
+    assert_false(pcmk__str_any_of("", NULL));
 }
 
 static void
-empty_string(void) {
-    g_assert_false(pcmk__strcase_any_of("", "xxx", "yyy", NULL));
-    g_assert_false(pcmk__str_any_of("", "xxx", "yyy", NULL));
-    g_assert_false(pcmk__strcase_any_of(NULL, "xxx", "yyy", NULL));
-    g_assert_false(pcmk__str_any_of(NULL, "xxx", "yyy", NULL));
+empty_string(void **state) {
+    assert_false(pcmk__strcase_any_of("", "xxx", "yyy", NULL));
+    assert_false(pcmk__str_any_of("", "xxx", "yyy", NULL));
+    assert_false(pcmk__strcase_any_of(NULL, "xxx", "yyy", NULL));
+    assert_false(pcmk__str_any_of(NULL, "xxx", "yyy", NULL));
 }
 
 static void
-in_list(void) {
-    g_assert_true(pcmk__strcase_any_of("xxx", "aaa", "bbb", "xxx", NULL));
-    g_assert_true(pcmk__str_any_of("xxx", "aaa", "bbb", "xxx", NULL));
-    g_assert_true(pcmk__strcase_any_of("XXX", "aaa", "bbb", "xxx", NULL));
+in_list(void **state) {
+    assert_true(pcmk__strcase_any_of("xxx", "aaa", "bbb", "xxx", NULL));
+    assert_true(pcmk__str_any_of("xxx", "aaa", "bbb", "xxx", NULL));
+    assert_true(pcmk__strcase_any_of("XXX", "aaa", "bbb", "xxx", NULL));
 }
 
 static void
-not_in_list(void) {
-    g_assert_false(pcmk__strcase_any_of("xxx", "aaa", "bbb", NULL));
-    g_assert_false(pcmk__str_any_of("xxx", "aaa", "bbb", NULL));
-    g_assert_false(pcmk__str_any_of("AAA", "aaa", "bbb", NULL));
+not_in_list(void **state) {
+    assert_false(pcmk__strcase_any_of("xxx", "aaa", "bbb", NULL));
+    assert_false(pcmk__str_any_of("xxx", "aaa", "bbb", NULL));
+    assert_false(pcmk__str_any_of("AAA", "aaa", "bbb", NULL));
 }
 
-int main(int argc, char **argv)
-{
-    g_test_init(&argc, &argv, NULL);
-
-    g_test_add_func("/common/strings/any_of/empty_list", empty_input_list);
-    g_test_add_func("/common/strings/any_of/empty_string", empty_string);
-    g_test_add_func("/common/strings/any_of/in", in_list);
-    g_test_add_func("/common/strings/any_of/not_in", not_in_list);
-
-    return g_test_run();
-}
+PCMK__UNIT_TEST(NULL, NULL,
+                cmocka_unit_test(empty_input_list),
+                cmocka_unit_test(empty_string),
+                cmocka_unit_test(in_list),
+                cmocka_unit_test(not_in_list))

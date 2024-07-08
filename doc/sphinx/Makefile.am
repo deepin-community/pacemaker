@@ -1,5 +1,5 @@
 #
-# Copyright 2003-2021 the Pacemaker project contributors
+# Copyright 2003-2023 the Pacemaker project contributors
 #
 # The version control history for this file may have further details.
 #
@@ -8,6 +8,9 @@
 #
 include $(top_srcdir)/mk/common.mk
 
+# Define release-related variables
+include $(top_srcdir)/mk/release.mk
+
 # Things you might want to override on the command line
 
 # Books to generate
@@ -15,6 +18,7 @@ BOOKS		?= Clusters_from_Scratch	\
 		   Pacemaker_Administration	\
 		   Pacemaker_Development	\
 		   Pacemaker_Explained		\
+		   Pacemaker_Python_API 	\
 		   Pacemaker_Remote
 
 # Output formats to generate. Possible values:
@@ -71,6 +75,7 @@ EXTRA_DIST	= $(wildcard */*.rst) $(DOTS) $(SVGS)		\
 		  $(PNGS_Clusters_from_Scratch)			\
 		  $(PNGS_Pacemaker_Explained)			\
 		  $(PNGS_Pacemaker_Remote)			\
+		  $(wildcard Pacemaker_Python_API/_templates/*rst) \
 		  $(STATIC_FILES)				\
 		  conf.py.in
 
@@ -80,10 +85,6 @@ RSYNC_OPTS      = -rlptvzxS --progress
 
 BOOK_RSYNC_DEST	= $(RSYNC_DEST)/$(PACKAGE)/doc/$(PACKAGE_SERIES)
 
-TAG	?= $(shell [ -n "`git tag --points-at HEAD | head -1`" ]		\
-	           && ( git tag --points-at HEAD | head -1 )			\
-		   || git log --pretty=format:Pacemaker-$(VERSION)-%h -n 1 HEAD)
-
 BOOK		= none
 
 DEPS_intro			= shared/pacemaker-intro.rst $(PNGS_GENERATED)
@@ -92,6 +93,7 @@ DEPS_Clusters_from_Scratch	= $(DEPS_intro) $(PNGS_Clusters_from_Scratch)
 DEPS_Pacemaker_Administration	= $(DEPS_intro)
 DEPS_Pacemaker_Development	=
 DEPS_Pacemaker_Explained	= $(DEPS_intro) $(PNGS_Pacemaker_Explained)
+DEPS_Pacemaker_Python_API 	= ../../python
 DEPS_Pacemaker_Remote		= $(PNGS_Pacemaker_Remote)
 
 if BUILD_SPHINX_DOCS
@@ -117,6 +119,7 @@ $(BOOKS:%=%/conf.py): conf.py.in
 		-e 's/%BOOK_ID%/$(@:%/conf.py=%)/g'			\
 		-e 's/%BOOK_TITLE%/$(subst _, ,$(@:%/conf.py=%))/g'	\
 		-e 's#%SRC_DIR%#$(abs_srcdir)#g'			\
+		-e 's#%ABS_TOP_SRCDIR%#$(abs_top_srcdir)#g'			\
 		$(<) > "$@"
 
 $(BOOK)/_build: $(STATIC_FILES) $(BOOK)/conf.py $(DEPS_$(BOOK)) $(wildcard $(srcdir)/$(BOOK)/*.rst)
@@ -156,7 +159,7 @@ if BUILD_SPHINX_DOCS
 			"$(BOOK_RSYNC_DEST)/$$book/";			\
 	done
 	@rsync $(RSYNC_OPTS) "$(builddir)/build-$(PACKAGE_SERIES).txt"	\
-		"$(RSYNC_DEST)"
+		"$(RSYNC_DEST)/$(PACKAGE)/doc"
 
 all-local:
 	@for book in $(BOOKS); do					\
@@ -166,7 +169,7 @@ all-local:
 	done
 
 install-data-local: all-local
-	$(AM_V_AT)for book in $(BOOKS); do				\
+	$(AM_V_at)for book in $(BOOKS); do				\
 		for format in $(BOOK_FORMATS); do			\
 			formatdir="$$book/_build/$$format";		\
 			for f in `find "$$formatdir" -print`; do	\
@@ -182,7 +185,7 @@ install-data-local: all-local
 	done
 
 uninstall-local:
-	$(AM_V_AT)for book in $(BOOKS); do		\
+	$(AM_V_at)for book in $(BOOKS); do		\
 		rm -rf "$(DESTDIR)/$(docdir)/$$book";	\
 	done
 endif
@@ -191,4 +194,5 @@ clean-local:
 	$(AM_V_at)-rm -rf				\
 		$(BOOKS:%="$(builddir)/%/_build")	\
 		$(BOOKS:%="$(builddir)/%/conf.py")	\
+		$(BOOKS:%="$(builddir)/%/generated")	\
 		$(PNGS_GENERATED)

@@ -1,11 +1,19 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
  * This source code is licensed under the GNU General Public License version 2
  * or later (GPLv2+) WITHOUT ANY WARRANTY.
  */
+
+#ifndef PCMK__CRM_COMMON_LOGGING__H
+#  define PCMK__CRM_COMMON_LOGGING__H
+
+#  include <stdio.h>
+#  include <glib.h>
+#  include <qb/qblog.h>
+#  include <libxml/tree.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -17,13 +25,6 @@ extern "C" {
  * \ingroup core
  */
 
-#ifndef CRM_LOGGING__H
-#  define CRM_LOGGING__H
-
-#  include <stdio.h>
-#  include <glib.h>
-#  include <qb/qblog.h>
-#  include <libxml/tree.h>
 
 /* Define custom log priorities.
  *
@@ -81,31 +82,22 @@ extern gboolean crm_config_error;
  */
 extern gboolean crm_config_warning;
 
-enum xml_log_options
-{
-    xml_log_option_filtered   = 0x0001,
-    xml_log_option_formatted  = 0x0002,
-    xml_log_option_text       = 0x0004, /* add this option to dump text into xml */
-    xml_log_option_full_fledged = 0x0008, // Use libxml when converting XML to text
-    xml_log_option_diff_plus  = 0x0010,
-    xml_log_option_diff_minus = 0x0020,
-    xml_log_option_diff_short = 0x0040,
-    xml_log_option_diff_all   = 0x0100,
-    xml_log_option_dirty_add  = 0x1000,
-    xml_log_option_open       = 0x2000,
-    xml_log_option_children   = 0x4000,
-    xml_log_option_close      = 0x8000,
-};
-
 void crm_enable_blackbox(int nsig);
 void crm_disable_blackbox(int nsig);
-void crm_write_blackbox(int nsig, struct qb_log_callsite *callsite);
+void crm_write_blackbox(int nsig, const struct qb_log_callsite *callsite);
 
 void crm_update_callsites(void);
 
 void crm_log_deinit(void);
 
-void crm_log_preinit(const char *entity, int argc, char **argv);
+/*!
+ * \brief Initializes the logging system and defaults to the least verbose output level
+ *
+ * \param[in] entity  If not NULL, will be used as the identity for logging purposes
+ * \param[in] argc    The number of command line parameters
+ * \param[in] argv    The command line parameter values
+ */
+void crm_log_preinit(const char *entity, int argc, char *const *argv);
 gboolean crm_log_init(const char *entity, uint8_t level, gboolean daemon,
                       gboolean to_stderr, int argc, char **argv, gboolean quiet);
 
@@ -123,13 +115,12 @@ void crm_enable_stderr(int enable);
 
 gboolean crm_is_callsite_active(struct qb_log_callsite *cs, uint8_t level, uint32_t tags);
 
-void log_data_element(int log_level, const char *file, const char *function, int line,
-                      const char *prefix, xmlNode * data, int depth, gboolean formatted);
-
 /* returns the old value */
 unsigned int set_crm_log_level(unsigned int level);
 
 unsigned int get_crm_log_level(void);
+
+void pcmk_log_xml_impl(uint8_t level, const char *text, const xmlNode *xml);
 
 /*
  * Throughout the macros below, note the leading, pre-comma, space in the
@@ -143,6 +134,30 @@ unsigned int get_crm_log_level(void);
 #    define CRM_TRACE_INIT_DATA(name) QB_LOG_INIT_DATA(name)
 #endif
 
+/*!
+ * \internal
+ * \brief Clip log_level to \p uint8_t range
+ *
+ * \param[in] level  Log level to clip
+ *
+ * \return 0 if \p level is less than 0, \p UINT8_MAX if \p level is greater
+ *         than \p UINT8_MAX, or \p level otherwise
+ */
+/* @COMPAT: Make this function internal at a compatibility break. It's used in
+ * public macros for now.
+ */
+static inline uint8_t
+pcmk__clip_log_level(int level)
+{
+    if (level <= 0) {
+        return 0;
+    }
+    if (level >= UINT8_MAX) {
+        return UINT8_MAX;
+    }
+    return level;
+}
+
 /* Using "switch" instead of "if" in these macro definitions keeps
  * static analysis from complaining about constant evaluations
  */
@@ -153,11 +168,11 @@ unsigned int get_crm_log_level(void);
  * \param[in] level  Priority at which to log the message
  * \param[in] fmt    printf-style format string literal for message
  * \param[in] args   Any arguments needed by format string
- *
- * \note This is a macro, and \p level may be evaluated more than once.
  */
 #  define do_crm_log(level, fmt, args...) do {                              \
-        switch (level) {                                                    \
+        uint8_t _level = pcmk__clip_log_level(level);                       \
+                                                                            \
+        switch (_level) {                                                   \
             case LOG_STDOUT:                                                \
                 printf(fmt "\n" , ##args);                                  \
                 break;                                                      \
@@ -165,7 +180,7 @@ unsigned int get_crm_log_level(void);
                 break;                                                      \
             default:                                                        \
                 qb_log_from_external_source(__func__, __FILE__, fmt,        \
-                    (level),   __LINE__, 0 , ##args);                       \
+                                            _level, __LINE__, 0 , ##args);  \
                 break;                                                      \
         }                                                                   \
     } while (0)
@@ -177,22 +192,24 @@ unsigned int get_crm_log_level(void);
  * \param[in] fmt    printf-style format string for message
  * \param[in] args   Any arguments needed by format string
  *
- * \note This is a macro, and \p level may be evaluated more than once.
- *       This does nothing when level is LOG_STDOUT.
+ * \note This does nothing when level is \p LOG_STDOUT.
  */
 #  define do_crm_log_unlikely(level, fmt, args...) do {                     \
-        switch (level) {                                                    \
+        uint8_t _level = pcmk__clip_log_level(level);                       \
+                                                                            \
+        switch (_level) {                                                   \
             case LOG_STDOUT: case LOG_NEVER:                                \
                 break;                                                      \
             default: {                                                      \
                 static struct qb_log_callsite *trace_cs = NULL;             \
                 if (trace_cs == NULL) {                                     \
                     trace_cs = qb_log_callsite_get(__func__, __FILE__, fmt, \
-                                                   (level), __LINE__, 0);   \
+                                                   _level, __LINE__, 0);    \
                 }                                                           \
-                if (crm_is_callsite_active(trace_cs, (level), 0)) {         \
+                if (crm_is_callsite_active(trace_cs, _level, 0)) {          \
                     qb_log_from_external_source(__func__, __FILE__, fmt,    \
-                        (level), __LINE__, 0 , ##args);                     \
+                                                _level, __LINE__, 0 ,       \
+                                                ##args);                    \
                 }                                                           \
             }                                                               \
             break;                                                          \
@@ -236,26 +253,27 @@ unsigned int get_crm_log_level(void);
  * \param[in] text   Prefix for each line
  * \param[in] xml    XML to log
  *
- * \note This is a macro, and \p level may be evaluated more than once.
- *       This does nothing when level is LOG_STDOUT.
+ * \note This does nothing when \p level is \p LOG_STDOUT.
  */
-#  define do_crm_log_xml(level, text, xml) do {                             \
-        switch (level) {                                                    \
-            case LOG_STDOUT: case LOG_NEVER:                                \
-                break;                                                      \
-            default: {                                                      \
-                static struct qb_log_callsite *xml_cs = NULL;               \
-                if (xml_cs == NULL) {                                       \
-                    xml_cs = qb_log_callsite_get(__func__, __FILE__,        \
-                                        "xml-blob", (level), __LINE__, 0);  \
-                }                                                           \
-                if (crm_is_callsite_active(xml_cs, (level), 0)) {           \
-                    log_data_element((level), __FILE__, __func__,           \
-                         __LINE__, text, xml, 1, xml_log_option_formatted); \
-                }                                                           \
-            }                                                               \
-            break;                                                          \
-        }                                                                   \
+#  define do_crm_log_xml(level, text, xml) do {                         \
+        uint8_t _level = pcmk__clip_log_level(level);                   \
+        static struct qb_log_callsite *xml_cs = NULL;                   \
+                                                                        \
+        switch (_level) {                                               \
+            case LOG_STDOUT:                                            \
+            case LOG_NEVER:                                             \
+                break;                                                  \
+            default:                                                    \
+                if (xml_cs == NULL) {                                   \
+                    xml_cs = qb_log_callsite_get(__func__, __FILE__,    \
+                                                 "xml-blob", _level,    \
+                                                 __LINE__, 0);          \
+                }                                                       \
+                if (crm_is_callsite_active(xml_cs, _level, 0)) {        \
+                    pcmk_log_xml_impl(_level, text, xml);               \
+                }                                                       \
+                break;                                                  \
+        }                                                               \
     } while(0)
 
 /*!
@@ -267,18 +285,18 @@ unsigned int get_crm_log_level(void);
  * \param[in] line      Source line number to use instead of __line__
  * \param[in] fmt       printf-style format string literal for message
  * \param[in] args      Any arguments needed by format string
- *
- * \note This is a macro, and \p level may be evaluated more than once.
  */
 #  define do_crm_log_alias(level, file, function, line, fmt, args...) do {  \
-        switch (level) {                                                    \
+        uint8_t _level = pcmk__clip_log_level(level);                       \
+                                                                            \
+        switch (_level) {                                                   \
             case LOG_STDOUT:                                                \
                 printf(fmt "\n" , ##args);                                  \
                 break;                                                      \
             case LOG_NEVER:                                                 \
                 break;                                                      \
             default:                                                        \
-                qb_log_from_external_source(function, file, fmt, (level),   \
+                qb_log_from_external_source(function, file, fmt, _level,    \
                                             line, 0 , ##args);              \
                 break;                                                      \
         }                                                                   \
@@ -299,15 +317,20 @@ unsigned int get_crm_log_level(void);
  *       if CRM_XS is used inside fmt and will not show up in syslog.
  */
 #  define crm_perror(level, fmt, args...) do {                              \
-        switch (level) {                                                    \
+        uint8_t _level = pcmk__clip_log_level(level);                       \
+                                                                            \
+        switch (_level) {                                                   \
             case LOG_NEVER:                                                 \
                 break;                                                      \
             default: {                                                      \
                 const char *err = strerror(errno);                          \
-                /* cast to int makes coverity happy when level == 0 */      \
-                if ((level) <= (int) crm_log_level) {                       \
-                    fprintf(stderr, fmt ": %s (%d)\n" , ##args, err, errno);\
+                if (_level <= crm_log_level) {                              \
+                    fprintf(stderr, fmt ": %s (%d)\n" , ##args, err,        \
+                            errno);                                         \
                 }                                                           \
+                /* Pass original level arg since do_crm_log() also declares \
+                 * _level                                                   \
+                 */                                                         \
                 do_crm_log((level), fmt ": %s (%d)" , ##args, err, errno);  \
             }                                                               \
             break;                                                          \
@@ -322,11 +345,12 @@ unsigned int get_crm_log_level(void);
  * \param[in] fmt    printf-style format string for message
  * \param[in] args   Any arguments needed by format string
  *
- * \note This is a macro, and \p level may be evaluated more than once.
- *       This does nothing when level is LOG_STDOUT.
+ * \note This does nothing when level is LOG_STDOUT.
  */
 #  define crm_log_tag(level, tag, fmt, args...)    do {                     \
-        switch (level) {                                                    \
+        uint8_t _level = pcmk__clip_log_level(level);                       \
+                                                                            \
+        switch (_level) {                                                   \
             case LOG_STDOUT: case LOG_NEVER:                                \
                 break;                                                      \
             default: {                                                      \
@@ -334,12 +358,15 @@ unsigned int get_crm_log_level(void);
                 int converted_tag = g_quark_try_string(tag);                \
                 if (trace_tag_cs == NULL) {                                 \
                     trace_tag_cs = qb_log_callsite_get(__func__, __FILE__,  \
-                                    fmt, (level), __LINE__, converted_tag); \
+                                                       fmt, _level,         \
+                                                       __LINE__,            \
+                                                       converted_tag);      \
                 }                                                           \
-                if (crm_is_callsite_active(trace_tag_cs, (level),           \
+                if (crm_is_callsite_active(trace_tag_cs, _level,            \
                                            converted_tag)) {                \
                     qb_log_from_external_source(__func__, __FILE__, fmt,    \
-                                (level), __LINE__, converted_tag , ##args); \
+                                                _level, __LINE__,           \
+                                                converted_tag , ##args);    \
                 }                                                           \
             }                                                               \
         }                                                                   \
@@ -372,8 +399,6 @@ unsigned int get_crm_log_level(void);
             do_crm_log_xml(LOG_TRACE,   text, xml);             \
         }                                                       \
     } while(0)
-
-#  define crm_str(x)    (const char*)(x?x:"<null>")
 
 #if !defined(PCMK_ALLOW_DEPRECATED) || (PCMK_ALLOW_DEPRECATED == 1)
 #include <crm/common/logging_compat.h>

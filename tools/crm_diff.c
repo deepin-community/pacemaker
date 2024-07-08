@@ -1,5 +1,5 @@
 /*
- * Copyright 2005-2021 the Pacemaker project contributors
+ * Copyright 2005-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -85,36 +85,21 @@ static GOptionEntry addl_entries[] = {
 gboolean
 new_string_cb(const gchar *option_name, const gchar *optarg, gpointer data, GError **error) {
     options.raw_2 = TRUE;
-
-    if (options.xml_file_2 != NULL) {
-        free(options.xml_file_2);
-    }
-
-    options.xml_file_2 = strdup(optarg);
+    pcmk__str_update(&options.xml_file_2, optarg);
     return TRUE;
 }
 
 gboolean
 original_string_cb(const gchar *option_name, const gchar *optarg, gpointer data, GError **error) {
     options.raw_1 = TRUE;
-
-    if (options.xml_file_1 != NULL) {
-        free(options.xml_file_1);
-    }
-
-    options.xml_file_1 = strdup(optarg);
+    pcmk__str_update(&options.xml_file_1, optarg);
     return TRUE;
 }
 
 gboolean
 patch_cb(const gchar *option_name, const gchar *optarg, gpointer data, GError **error) {
     options.apply = TRUE;
-
-    if (options.xml_file_2 != NULL) {
-        free(options.xml_file_2);
-    }
-
-    options.xml_file_2 = strdup(optarg);
+    pcmk__str_update(&options.xml_file_2, optarg);
     return TRUE;
 }
 
@@ -123,20 +108,21 @@ print_patch(xmlNode *patch)
 {
     char *buffer = dump_xml_formatted(patch);
 
-    printf("%s\n", crm_str(buffer));
+    printf("%s", pcmk__s(buffer, "<null>\n"));
     free(buffer);
     fflush(stdout);
 }
 
+// \return Standard Pacemaker return code
 static int
 apply_patch(xmlNode *input, xmlNode *patch, gboolean as_cib)
 {
-    int rc;
     xmlNode *output = copy_xml(input);
+    int rc = xml_apply_patchset(output, patch, as_cib);
 
-    rc = xml_apply_patchset(output, patch, as_cib);
-    if (rc != pcmk_ok) {
-        fprintf(stderr, "Could not apply patch: %s\n", pcmk_strerror(rc));
+    rc = pcmk_legacy2rc(rc);
+    if (rc != pcmk_rc_ok) {
+        fprintf(stderr, "Could not apply patch: %s\n", pcmk_rc_str(rc));
         free_xml(output);
         return rc;
     }
@@ -149,11 +135,11 @@ apply_patch(xmlNode *input, xmlNode *patch, gboolean as_cib)
 
         version = crm_element_value(output, XML_ATTR_CRM_VERSION);
         buffer = calculate_xml_versioned_digest(output, FALSE, TRUE, version);
-        crm_trace("Digest: %s\n", crm_str(buffer));
+        crm_trace("Digest: %s", pcmk__s(buffer, "<null>\n"));
         free(buffer);
         free_xml(output);
     }
-    return pcmk_ok;
+    return pcmk_rc_ok;
 }
 
 static void
@@ -217,17 +203,26 @@ strip_patch_cib_version(xmlNode *patch, const char **vfields, size_t nvfields)
     }
 }
 
+// \return Standard Pacemaker return code
 static int
 generate_patch(xmlNode *object_1, xmlNode *object_2, const char *xml_file_2,
                gboolean as_cib, gboolean no_version)
 {
     xmlNode *output = NULL;
+    int rc = pcmk_rc_ok;
+
+    pcmk__output_t *logger_out = NULL;
+    int out_rc = pcmk_rc_no_output;
+    int temp_rc = pcmk_rc_no_output;
 
     const char *vfields[] = {
         XML_ATTR_GENERATION_ADMIN,
         XML_ATTR_GENERATION,
         XML_ATTR_NUMUPDATES,
     };
+
+    rc = pcmk__log_output_new(&logger_out);
+    CRM_CHECK(rc == pcmk_rc_ok, return rc);
 
     /* If we're ignoring the version, make the version information
      * identical, so it isn't detected as a change. */
@@ -249,12 +244,20 @@ generate_patch(xmlNode *object_1, xmlNode *object_2, const char *xml_file_2,
 
     output = xml_create_patchset(0, object_1, object_2, NULL, FALSE);
 
-    xml_log_changes(LOG_INFO, __func__, object_2);
+    pcmk__output_set_log_level(logger_out, LOG_INFO);
+    out_rc = pcmk__xml_show_changes(logger_out, object_2);
+
     xml_accept_changes(object_2);
 
     if (output == NULL) {
-        return pcmk_ok;
+        goto done;  // rc == pcmk_rc_ok
     }
+
+    /* pcmk_rc_error means there's non-empty diff.
+     * @COMPAT: Choose a more descriptive return code, like one that maps to
+     * CRM_EX_DIGEST?
+     */
+    rc = pcmk_rc_error;
 
     patchset_process_digest(output, object_1, object_2, as_cib);
 
@@ -265,10 +268,18 @@ generate_patch(xmlNode *object_1, xmlNode *object_2, const char *xml_file_2,
         strip_patch_cib_version(output, vfields, PCMK__NELEM(vfields));
     }
 
-    xml_log_patchset(LOG_NOTICE, __func__, output);
+    pcmk__output_set_log_level(logger_out, LOG_NOTICE);
+    temp_rc = logger_out->message(logger_out, "xml-patchset", output);
+    out_rc = pcmk__output_select_rc(out_rc, temp_rc);
+
     print_patch(output);
     free_xml(output);
-    return -pcmk_err_generic;
+
+done:
+    logger_out->finish(logger_out, pcmk_rc2exitc(out_rc), true, NULL);
+    pcmk__output_free(logger_out);
+
+    return rc;
 }
 
 static GOptionContext *
@@ -311,6 +322,8 @@ main(int argc, char **argv)
     gchar **processed_args = pcmk__cmdline_preproc(argv, "nopNO");
     GOptionContext *context = build_arg_context(args);
 
+    int rc = pcmk_rc_ok;
+
     if (!g_option_context_parse_strv(context, &processed_args, &error)) {
         exit_code = CRM_EX_USAGE;
         goto done;
@@ -322,7 +335,7 @@ main(int argc, char **argv)
         g_strfreev(processed_args);
         pcmk__free_arg_context(context);
         /* FIXME:  When crm_diff is converted to use formatted output, this can go. */
-        pcmk__cli_help('v', CRM_EX_OK);
+        pcmk__cli_help('v');
     }
 
     if (options.apply && options.no_version) {
@@ -367,12 +380,11 @@ main(int argc, char **argv)
     }
 
     if (options.apply) {
-        int ret = apply_patch(object_1, object_2, options.as_cib);
-        exit_code = crm_errno2exit(ret);
+        rc = apply_patch(object_1, object_2, options.as_cib);
     } else {
-        int ret = generate_patch(object_1, object_2, options.xml_file_2, options.as_cib, options.no_version);
-        exit_code = crm_errno2exit(ret);
+        rc = generate_patch(object_1, object_2, options.xml_file_2, options.as_cib, options.no_version);
     }
+    exit_code = pcmk_rc2exitc(rc);
 
 done:
     g_strfreev(processed_args);
@@ -382,6 +394,6 @@ done:
     free_xml(object_1);
     free_xml(object_2);
 
-    pcmk__output_and_clear_error(error, NULL);
+    pcmk__output_and_clear_error(&error, NULL);
     crm_exit(exit_code);
 }

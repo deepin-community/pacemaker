@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2021 the Pacemaker project contributors
+ * Copyright 2013-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -27,9 +27,17 @@ extern "C" {
 #include <libxml/tree.h>            // xmlNode
 #include <qb/qbipcs.h>              // qb_ipcs_connection_t, ...
 
-#include <crm_config.h>             // US_AUTH_GETPEEREID
+#include <crm_config.h>             // HAVE_GETPEEREID
 #include <crm/common/ipc.h>
+#include <crm/common/ipc_controld.h>    // pcmk_controld_api_reply
+#include <crm/common/ipc_pacemakerd.h>  // pcmk_pacemakerd_{api_reply,state}
 #include <crm/common/mainloop.h>    // mainloop_io_t
+
+/*
+ * XML attribute names used only by internal code
+ */
+
+#define PCMK__XA_IPC_PROTO_VERSION  "ipc-protocol-version"
 
 /* denotes "non yieldable PID" on FreeBSD, or actual PID1 in scenarios that
    require a delicate handling anyway (socket-based activation with systemd);
@@ -43,7 +51,7 @@ extern "C" {
 // Timeout (in seconds) to use for IPC client sends, reply waits, etc.
 #define PCMK__IPC_TIMEOUT 120
 
-#if defined(US_AUTH_GETPEEREID)
+#if defined(HAVE_GETPEEREID)
 /* on FreeBSD, we don't want to expose "non-yieldable PID" (leading to
    "IPC liveness check only") as its nominal representation, which could
    cause confusion -- this is unambiguous as long as there's no
@@ -103,15 +111,14 @@ struct pcmk__remote_s {
     int auth_timeout;
     int tcp_socket;
     mainloop_io_t *source;
+    time_t uptime;
 
     /* CIB-only */
-    bool authenticated;
     char *token;
 
     /* TLS only */
 #  ifdef HAVE_GNUTLS_GNUTLS_H
     gnutls_session_t *tls_session;
-    bool tls_handshake_complete;
 #  endif
 };
 
@@ -119,16 +126,40 @@ enum pcmk__client_flags {
     // Lower 32 bits are reserved for server (not library) use
 
     // Next 8 bits are reserved for client type (sort of a cheap enum)
-    pcmk__client_ipc        = (UINT64_C(1) << 32), // Client uses plain IPC
-    pcmk__client_tcp        = (UINT64_C(1) << 33), // Client uses TCP connection
+
+    //! Client uses plain IPC
+    pcmk__client_ipc                    = (UINT64_C(1) << 32),
+
+    //! Client uses TCP connection
+    pcmk__client_tcp                    = (UINT64_C(1) << 33),
+
 #  ifdef HAVE_GNUTLS_GNUTLS_H
-    pcmk__client_tls        = (UINT64_C(1) << 34), // Client uses TCP with TLS
+    //! Client uses TCP with TLS
+    pcmk__client_tls                    = (UINT64_C(1) << 34),
 #  endif
 
     // The rest are client attributes
-    pcmk__client_proxied    = (UINT64_C(1) << 40), // Client IPC is proxied
-    pcmk__client_privileged = (UINT64_C(1) << 41), // root or cluster user
-    pcmk__client_to_proxy   = (UINT64_C(1) << 42), // Local client to be proxied
+
+    //! Client IPC is proxied
+    pcmk__client_proxied                = (UINT64_C(1) << 40),
+
+    //! Client is run by root or cluster user
+    pcmk__client_privileged             = (UINT64_C(1) << 41),
+
+    //! Local client to be proxied
+    pcmk__client_to_proxy               = (UINT64_C(1) << 42),
+
+    /*!
+     * \brief Client IPC connection accepted
+     *
+     * Used only for remote CIB connections via \c remote-tls-port.
+     */
+    pcmk__client_authenticated          = (UINT64_C(1) << 43),
+
+#  ifdef HAVE_GNUTLS_GNUTLS_H
+    //! Client TLS handshake is complete
+    pcmk__client_tls_handshake_complete = (UINT64_C(1) << 44),
+#  endif
 };
 
 #define PCMK__CLIENT_TYPE(client) ((client)->flags & UINT64_C(0xff00000000))
@@ -192,9 +223,9 @@ void pcmk__foreach_ipc_client(GHFunc func, gpointer user_data);
 
 void pcmk__client_cleanup(void);
 
-pcmk__client_t *pcmk__find_client(qb_ipcs_connection_t *c);
+pcmk__client_t *pcmk__find_client(const qb_ipcs_connection_t *c);
 pcmk__client_t *pcmk__find_client_by_id(const char *id);
-const char *pcmk__client_name(pcmk__client_t *c);
+const char *pcmk__client_name(const pcmk__client_t *c);
 const char *pcmk__client_type_str(uint64_t client_type);
 
 pcmk__client_t *pcmk__new_unauth_client(void *key);
@@ -203,11 +234,16 @@ void pcmk__free_client(pcmk__client_t *c);
 void pcmk__drop_all_clients(qb_ipcs_service_t *s);
 bool pcmk__set_client_queue_max(pcmk__client_t *client, const char *qmax);
 
+xmlNode *pcmk__ipc_create_ack_as(const char *function, int line, uint32_t flags,
+                                 const char *tag, const char *ver, crm_exit_t status);
+#define pcmk__ipc_create_ack(flags, tag, ver, st) \
+    pcmk__ipc_create_ack_as(__func__, __LINE__, (flags), (tag), (ver), (st))
+
 int pcmk__ipc_send_ack_as(const char *function, int line, pcmk__client_t *c,
                           uint32_t request, uint32_t flags, const char *tag,
-                          crm_exit_t status);
-#define pcmk__ipc_send_ack(c, req, flags, tag, st) \
-    pcmk__ipc_send_ack_as(__func__, __LINE__, (c), (req), (flags), (tag), (st))
+                          const char *ver, crm_exit_t status);
+#define pcmk__ipc_send_ack(c, req, flags, tag, ver, st) \
+    pcmk__ipc_send_ack_as(__func__, __LINE__, (c), (req), (flags), (tag), (ver), (st))
 
 int pcmk__ipc_prepare_iov(uint32_t request, xmlNode *message,
                           uint32_t max_send_size,
@@ -226,6 +262,7 @@ void pcmk__serve_fenced_ipc(qb_ipcs_service_t **ipcs,
                             struct qb_ipcs_service_handlers *cb);
 void pcmk__serve_pacemakerd_ipc(qb_ipcs_service_t **ipcs,
                                 struct qb_ipcs_service_handlers *cb);
+qb_ipcs_service_t *pcmk__serve_schedulerd_ipc(struct qb_ipcs_service_handlers *cb);
 qb_ipcs_service_t *pcmk__serve_controld_ipc(struct qb_ipcs_service_handlers *cb);
 
 void pcmk__serve_based_ipc(qb_ipcs_service_t **ipcs_ro,
@@ -237,6 +274,17 @@ void pcmk__serve_based_ipc(qb_ipcs_service_t **ipcs_ro,
 void pcmk__stop_based_ipc(qb_ipcs_service_t *ipcs_ro,
         qb_ipcs_service_t *ipcs_rw,
         qb_ipcs_service_t *ipcs_shm);
+
+static inline const char *
+pcmk__ipc_sys_name(const char *ipc_name, const char *fallback)
+{
+    return ipc_name ? ipc_name : ((crm_system_name ? crm_system_name : fallback));
+}
+
+const char *pcmk__pcmkd_state_enum2friendly(enum pcmk_pacemakerd_state state);
+
+const char *pcmk__controld_api_reply2str(enum pcmk_controld_api_reply reply);
+const char *pcmk__pcmkd_api_reply2str(enum pcmk_pacemakerd_api_reply reply);
 
 #ifdef __cplusplus
 }

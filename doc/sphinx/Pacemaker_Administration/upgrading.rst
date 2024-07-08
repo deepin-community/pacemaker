@@ -352,7 +352,7 @@ A more cautious approach would proceed like this:
    #. Locate the ``upgrade*.xsl`` conversion scripts provided with the source
       code. These will often be installed in a location such as
       ``/usr/share/pacemaker``, or may be obtained from the
-      `source repository <https://github.com/ClusterLabs/pacemaker/tree/master/xml>`_.
+      `source repository <https://github.com/ClusterLabs/pacemaker/tree/main/xml>`_.
           
    #. Run the conversion scripts that apply to your older version, for example:
 
@@ -531,5 +531,4 @@ _______
        ``validate-with`` property.
 
 .. [#] As of Pacemaker 2.0.0, only schema versions pacemaker-1.0 and higher
-       are supported (excluding pacemaker-1.1, which was an experimental schema
-       now known as pacemaker-next).
+       are supported (excluding pacemaker-1.1, which was a special case).

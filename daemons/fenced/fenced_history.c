@@ -1,5 +1,5 @@
 /*
- * Copyright 2009-2021 the Pacemaker project contributors
+ * Copyright 2009-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -100,7 +100,7 @@ stonith_fence_history_cleanup(const char *target,
         g_hash_table_foreach_remove(stonith_remote_op_list,
                              stonith_remove_history_entry,
                              (gpointer) target);
-        do_stonith_notify(0, T_STONITH_NOTIFY_HISTORY, 0, NULL);
+        fenced_send_notification(T_STONITH_NOTIFY_HISTORY, NULL, NULL);
     }
 }
 
@@ -149,7 +149,11 @@ op_time_sort(const void *a_voidp, const void *b_voidp)
     } else if (b_pending) {
         return 1;
     } else if ((*b)->completed == (*a)->completed) {
-        return 0;
+        if ((*b)->completed_nsec > (*a)->completed_nsec) {
+            return 1;
+        } else if ((*b)->completed_nsec == (*a)->completed_nsec) {
+            return 0;
+        }
     } else if ((*b)->completed > (*a)->completed) {
         return 1;
     }
@@ -215,7 +219,7 @@ stonith_fence_history_trim(void)
  * \return Fence-history as hash-table
  */
 static GHashTable *
-stonith_xml_history_to_list(xmlNode *history)
+stonith_xml_history_to_list(const xmlNode *history)
 {
     xmlNode *xml_op = NULL;
     GHashTable *rv = NULL;
@@ -229,7 +233,10 @@ stonith_xml_history_to_list(xmlNode *history)
         remote_fencing_op_t *op = NULL;
         char *id = crm_element_value_copy(xml_op, F_STONITH_REMOTE_OP_ID);
         int state;
+        int exit_status = CRM_EX_OK;
+        int execution_status = PCMK_EXEC_DONE;
         long long completed;
+        long long completed_nsec = 0L;
 
         if (!id) {
             crm_warn("Malformed fencing history received from peer");
@@ -248,8 +255,27 @@ stonith_xml_history_to_list(xmlNode *history)
         op->client_name = crm_element_value_copy(xml_op, F_STONITH_CLIENTNAME);
         crm_element_value_ll(xml_op, F_STONITH_DATE, &completed);
         op->completed = (time_t) completed;
+        crm_element_value_ll(xml_op, F_STONITH_DATE_NSEC, &completed_nsec);
+        op->completed_nsec = completed_nsec;
         crm_element_value_int(xml_op, F_STONITH_STATE, &state);
         op->state = (enum op_state) state;
+
+        /* @COMPAT We can't use stonith__xe_get_result() here because
+         * fencers <2.1.3 didn't include results, leading it to assume an error
+         * status. Instead, set an unknown status in that case.
+         */
+        if ((crm_element_value_int(xml_op, XML_LRM_ATTR_RC, &exit_status) < 0)
+            || (crm_element_value_int(xml_op, XML_LRM_ATTR_OPSTATUS,
+                                      &execution_status) < 0)) {
+            exit_status = CRM_EX_INDETERMINATE;
+            execution_status = PCMK_EXEC_UNKNOWN;
+        }
+        pcmk__set_result(&op->result, exit_status, execution_status,
+                         crm_element_value(xml_op, XML_LRM_ATTR_EXIT_REASON));
+        pcmk__set_result_output(&op->result,
+                                crm_element_value_copy(xml_op, F_STONITH_OUTPUT),
+                                NULL);
+
 
         g_hash_table_replace(rv, id, op);
         CRM_LOG_ASSERT(g_hash_table_lookup(rv, id) != NULL);
@@ -263,17 +289,16 @@ stonith_xml_history_to_list(xmlNode *history)
  * \brief Craft xml difference between local fence-history and a history
  *        coming from remote, and merge the remote history into the local
  *
- * \param[in] remote_history    Fence-history as hash-table (may be NULL)
- * \param[in] add_id            If crafting the answer for an API
- *                              history-request there is no need for the id
- * \param[in] target            Optionally limit to certain fence-target
+ * \param[in,out] remote_history  Fence-history as hash-table (may be NULL)
+ * \param[in]     add_id          If crafting the answer for an API
+ *                                history-request there is no need for the id
+ * \param[in]     target          Optionally limit to certain fence-target
  *
  * \return The fence-history as xml
  */
 static xmlNode *
 stonith_local_history_diff_and_merge(GHashTable *remote_history,
-                           gboolean add_id,
-                           const char *target)
+                                     gboolean add_id, const char *target)
 {
     xmlNode *history = NULL;
     GHashTableIter iter;
@@ -346,7 +371,9 @@ stonith_local_history_diff_and_merge(GHashTable *remote_history,
                 crm_xml_add(entry, F_STONITH_DELEGATE, op->delegate);
                 crm_xml_add(entry, F_STONITH_CLIENTNAME, op->client_name);
                 crm_xml_add_ll(entry, F_STONITH_DATE, op->completed);
+                crm_xml_add_ll(entry, F_STONITH_DATE_NSEC, op->completed_nsec);
                 crm_xml_add_int(entry, F_STONITH_STATE, op->state);
+                stonith__xe_set_result(entry, &op->result);
             }
     }
 
@@ -357,18 +384,21 @@ stonith_local_history_diff_and_merge(GHashTable *remote_history,
 
         g_hash_table_iter_init(&iter, remote_history);
         while (g_hash_table_iter_next(&iter, NULL, (void **)&op)) {
-
             if (stonith__op_state_pending(op->state) &&
                 pcmk__str_eq(op->originator, stonith_our_uname, pcmk__str_casei)) {
+
                 crm_warn("Failing pending operation %.8s originated by us but "
                          "known only from peer history", op->id);
                 op->state = st_failed;
-                op->completed = time(NULL);
-                /* use -EHOSTUNREACH to not introduce a new return-code that might
-                   trigger unexpected results at other places and to prevent
-                   remote_op_done from setting the delegate if not present
-                */
-                stonith_bcast_result_to_peers(op, -EHOSTUNREACH, FALSE);
+                set_fencing_completed(op);
+
+                /* CRM_EX_EXPIRED + PCMK_EXEC_INVALID prevents finalize_op()
+                 * from setting a delegate
+                 */
+                pcmk__set_result(&op->result, CRM_EX_EXPIRED, PCMK_EXEC_INVALID,
+                                 "Initiated by earlier fencer "
+                                 "process and presumed failed");
+                fenced_broadcast_op_result(op, false);
             }
 
             g_hash_table_iter_steal(&iter);
@@ -388,7 +418,7 @@ stonith_local_history_diff_and_merge(GHashTable *remote_history,
 
     if (updated) {
         stonith_fence_history_trim();
-        do_stonith_notify(0, T_STONITH_NOTIFY_HISTORY, 0, NULL);
+        fenced_send_notification(T_STONITH_NOTIFY_HISTORY, NULL, NULL);
     }
 
     if (cnt == 0) {
@@ -417,22 +447,17 @@ stonith_local_history(gboolean add_id, const char *target)
 
 /*!
  * \internal
- * \brief Handle fence-history messages (either from API or coming in as
- *        broadcasts
+ * \brief Handle fence-history messages (from API or coming in as broadcasts)
  *
- * \param[in] msg       Request message
- * \param[in] output    In case of a request from the API used to craft
- *                      a reply from
- * \param[in] remote_peer
- * \param[in] options   call-options from the request
- *
- * \return always success as there is actully nothing that can go really wrong
+ * \param[in,out] msg          Request XML
+ * \param[out]    output       Where to set local history, if requested
+ * \param[in]     remote_peer  If broadcast, peer that sent it
+ * \param[in]     options      Call options from the request
  */
-int
+void
 stonith_fence_history(xmlNode *msg, xmlNode **output,
                       const char *remote_peer, int options)
 {
-    int rc = 0;
     const char *target = NULL;
     xmlNode *dev = get_xpath_object("//@" F_STONITH_TARGET, msg, LOG_NEVER);
     xmlNode *out_history = NULL;
@@ -462,7 +487,7 @@ stonith_fence_history(xmlNode *msg, xmlNode **output,
            is done so send a notification for anything
            that smells like history-sync
          */
-        do_stonith_notify(0, T_STONITH_NOTIFY_HISTORY_SYNCED, 0, NULL);
+        fenced_send_notification(T_STONITH_NOTIFY_HISTORY_SYNCED, NULL, NULL);
         if (crm_element_value(msg, F_STONITH_CALLID)) {
             /* this is coming from the stonith-API
             *
@@ -479,8 +504,6 @@ stonith_fence_history(xmlNode *msg, xmlNode **output,
                    !pcmk__str_eq(remote_peer, stonith_our_uname, pcmk__str_casei)) {
             xmlNode *history = get_xpath_object("//" F_STONITH_HISTORY_LIST,
                                                 msg, LOG_NEVER);
-            GHashTable *received_history =
-                history?stonith_xml_history_to_list(history):NULL;
 
             /* either a broadcast created directly upon stonith-API request
             * or a diff as response to such a thing
@@ -491,15 +514,17 @@ stonith_fence_history(xmlNode *msg, xmlNode **output,
             * otherwise broadcast what we have on top
             * marking as differential and merge in afterwards
             */
-            if (!history ||
-                !crm_is_true(crm_element_value(history,
-                                               F_STONITH_DIFFERENTIAL))) {
+            if (!history || !pcmk__xe_attr_is_true(history, F_STONITH_DIFFERENTIAL)) {
+                GHashTable *received_history = NULL;
+
+                if (history != NULL) {
+                    received_history = stonith_xml_history_to_list(history);
+                }
                 out_history =
                     stonith_local_history_diff_and_merge(received_history, TRUE, NULL);
                 if (out_history) {
                     crm_trace("Broadcasting history-diff to peers");
-                    crm_xml_add(out_history, F_STONITH_DIFFERENTIAL,
-                                XML_BOOLEAN_TRUE);
+                    pcmk__xe_set_bool_attr(out_history, F_STONITH_DIFFERENTIAL, true);
                     stonith_send_broadcast_history(out_history,
                         st_opt_broadcast | st_opt_discard_reply,
                         NULL);
@@ -520,5 +545,4 @@ stonith_fence_history(xmlNode *msg, xmlNode **output,
         *output = stonith_local_history(FALSE, target);
     }
     free_xml(out_history);
-    return rc;
 }

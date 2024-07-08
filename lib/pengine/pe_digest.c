@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -25,7 +25,7 @@ extern bool pcmk__is_daemon;
  * \internal
  * \brief Free an operation digest cache entry
  *
- * \param[in] ptr  Pointer to cache entry to free
+ * \param[in,out] ptr  Pointer to cache entry to free
  *
  * \note The argument is a gpointer so this can be used as a hash table
  *       free function.
@@ -48,9 +48,9 @@ pe__free_digests(gpointer ptr)
     }
 }
 
-// Return true if XML attribute name is substring of a given string
+// Return true if XML attribute name is not substring of a given string
 static bool
-attr_in_string(xmlAttrPtr a, void *user_data)
+attr_not_in_string(xmlAttrPtr a, void *user_data)
 {
     bool filter = false;
     char *name = crm_strdup_printf(" %s ", (const char *) a->name);
@@ -64,9 +64,9 @@ attr_in_string(xmlAttrPtr a, void *user_data)
     return filter;
 }
 
-// Return true if XML attribute name is not substring of a given string
+// Return true if XML attribute name is substring of a given string
 static bool
-attr_not_in_string(xmlAttrPtr a, void *user_data)
+attr_in_string(xmlAttrPtr a, void *user_data)
 {
     bool filter = false;
     char *name = crm_strdup_printf(" %s ", (const char *) a->name);
@@ -80,65 +80,26 @@ attr_not_in_string(xmlAttrPtr a, void *user_data)
     return filter;
 }
 
-#if ENABLE_VERSIONED_ATTRS
-static void
-append_versioned_params(xmlNode *versioned_params, const char *ra_version, xmlNode *params)
-{
-    GHashTable *hash = pe_unpack_versioned_parameters(versioned_params, ra_version);
-    char *key = NULL;
-    char *value = NULL;
-    GHashTableIter iter;
-
-    g_hash_table_iter_init(&iter, hash);
-    while (g_hash_table_iter_next(&iter, (gpointer *) &key, (gpointer *) &value)) {
-        crm_xml_add(params, key, value);
-    }
-    g_hash_table_destroy(hash);
-}
-
-static void
-append_all_versioned_params(pe_resource_t *rsc, pe_node_t *node,
-                            pe_action_t *action, xmlNode *xml_op,
-                            pe_working_set_t *data_set)
-{
-    const char *ra_version = NULL;
-    xmlNode *local_versioned_params = NULL;
-    pe_rsc_action_details_t *details = pe_rsc_action_details(action);
-
-    local_versioned_params = create_xml_node(NULL, XML_TAG_RSC_VER_ATTRS);
-    pe_get_versioned_attributes(local_versioned_params, rsc, node, data_set);
-    if (xml_op != NULL) {
-        ra_version = crm_element_value(xml_op, XML_ATTR_RA_VERSION);
-    }
-    append_versioned_params(local_versioned_params, ra_version,
-                            data->params_all);
-    append_versioned_params(rsc->versioned_parameters, ra_version,
-                            data->params_all);
-    append_versioned_params(details->versioned_parameters, ra_version,
-                            data->params_all);
-}
-#endif
-
 /*!
  * \internal
  * \brief Add digest of all parameters to a digest cache entry
  *
  * \param[out]    data         Digest cache entry to modify
- * \param[in]     rsc          Resource that action was for
+ * \param[in,out] rsc          Resource that action was for
  * \param[in]     node         Node action was performed on
  * \param[in]     params       Resource parameters evaluated for node
  * \param[in]     task         Name of action performed
  * \param[in,out] interval_ms  Action's interval (will be reset if in overrides)
- * \param[in]     xml_op       XML of operation in CIB status (if available)
+ * \param[in]     xml_op       Unused
  * \param[in]     op_version   CRM feature set to use for digest calculation
  * \param[in]     overrides    Key/value table to override resource parameters
- * \param[in]     data_set     Cluster working set
+ * \param[in,out] data_set     Cluster working set
  */
 static void
 calculate_main_digest(op_digest_cache_t *data, pe_resource_t *rsc,
-                      pe_node_t *node, GHashTable *params,
+                      const pe_node_t *node, GHashTable *params,
                       const char *task, guint *interval_ms,
-                      xmlNode *xml_op, const char *op_version,
+                      const xmlNode *xml_op, const char *op_version,
                       GHashTable *overrides, pe_working_set_t *data_set)
 {
     pe_action_t *action = NULL;
@@ -148,11 +109,8 @@ calculate_main_digest(op_digest_cache_t *data, pe_resource_t *rsc,
     /* REMOTE_CONTAINER_HACK: Allow Pacemaker Remote nodes to run containers
      * that themselves are Pacemaker Remote nodes
      */
-    if (pe__add_bundle_remote_name(rsc, data_set, data->params_all,
-                                   XML_RSC_ATTR_REMOTE_RA_ADDR)) {
-        crm_trace("Set address for bundle connection %s (on %s)",
-                  rsc->id, node->details->uname);
-    }
+    (void) pe__add_bundle_remote_name(rsc, data_set, data->params_all,
+                                      XML_RSC_ATTR_REMOTE_RA_ADDR);
 
     // If interval was overridden, reset it
     if (overrides != NULL) {
@@ -178,11 +136,21 @@ calculate_main_digest(op_digest_cache_t *data, pe_resource_t *rsc,
     g_hash_table_foreach(action->extra, hash2field, data->params_all);
     g_hash_table_foreach(action->meta, hash2metafield, data->params_all);
 
-#if ENABLE_VERSIONED_ATTRS
-    append_all_versioned_params(rsc, node, action, xml_op, data_set);
-#endif
-
     pcmk__filter_op_for_digest(data->params_all);
+
+    /* Given a non-recurring operation with extra parameters configured,
+     * in case that the main digest doesn't match, even if the restart
+     * digest matches, enforce a restart rather than a reload-agent anyway.
+     * So that it ensures any changes of the extra parameters get applied
+     * for this specific operation, and the digests calculated for the
+     * resulting lrm_rsc_op will be correct.
+     * Mark the implied rc RSC_DIGEST_RESTART for the case that the main
+     * digest doesn't match.
+     */
+    if (*interval_ms == 0
+        && g_hash_table_size(action->extra) > 0) {
+        data->rc = RSC_DIGEST_RESTART;
+    }
 
     pe_free_action(action);
 
@@ -209,12 +177,13 @@ is_fence_param(xmlAttrPtr attr, void *user_data)
  * \param[in]  overrides   Key/value hash table to override resource parameters
  */
 static void
-calculate_secure_digest(op_digest_cache_t *data, pe_resource_t *rsc,
-                        GHashTable *params, xmlNode *xml_op,
+calculate_secure_digest(op_digest_cache_t *data, const pe_resource_t *rsc,
+                        GHashTable *params, const xmlNode *xml_op,
                         const char *op_version, GHashTable *overrides)
 {
     const char *class = crm_element_value(rsc->xml, XML_AGENT_ATTR_CLASS);
     const char *secure_list = NULL;
+    bool old_version = (compare_version(op_version, "3.16.0") < 0);
 
     if (xml_op == NULL) {
         secure_list = " passwd password user ";
@@ -222,22 +191,30 @@ calculate_secure_digest(op_digest_cache_t *data, pe_resource_t *rsc,
         secure_list = crm_element_value(xml_op, XML_LRM_ATTR_OP_SECURE);
     }
 
-    data->params_secure = create_xml_node(NULL, XML_TAG_PARAMS);
-    if (overrides != NULL) {
-        g_hash_table_foreach(overrides, hash2field, data->params_secure);
+    if (old_version) {
+        data->params_secure = create_xml_node(NULL, XML_TAG_PARAMS);
+        if (overrides != NULL) {
+            g_hash_table_foreach(overrides, hash2field, data->params_secure);
+        }
+
+        g_hash_table_foreach(params, hash2field, data->params_secure);
+
+    } else {
+        // Start with a copy of all parameters
+        data->params_secure = copy_xml(data->params_all);
     }
 
-    g_hash_table_foreach(params, hash2field, data->params_secure);
     if (secure_list != NULL) {
-        pcmk__xe_remove_matching_attrs(data->params_secure, attr_not_in_string,
+        pcmk__xe_remove_matching_attrs(data->params_secure, attr_in_string,
                                        (void *) secure_list);
     }
-    if (pcmk_is_set(pcmk_get_ra_caps(class),
-                    pcmk_ra_cap_fence_params)) {
+    if (old_version
+        && pcmk_is_set(pcmk_get_ra_caps(class),
+                       pcmk_ra_cap_fence_params)) {
         /* For stonith resources, Pacemaker adds special parameters,
-         * but these are not listed in fence agent meta-data, so the
-         * controller will not hash them. That means we have to filter
-         * them out before calculating our hash for comparison.
+         * but these are not listed in fence agent meta-data, so with older
+         * versions of DC, the controller will not hash them. That means we have
+         * to filter them out before calculating our hash for comparison.
          */
         pcmk__xe_remove_matching_attrs(data->params_secure, is_fence_param,
                                        NULL);
@@ -245,14 +222,14 @@ calculate_secure_digest(op_digest_cache_t *data, pe_resource_t *rsc,
     pcmk__filter_op_for_digest(data->params_secure);
 
     /* CRM_meta_timeout *should* be part of a digest for recurring operations.
-     * However, currently the controller does not add timeout to secure digests,
-     * because it only includes parameters declared by the resource agent.
+     * However, with older versions of DC, the controller does not add timeout
+     * to secure digests, because it only includes parameters declared by the
+     * resource agent.
      * Remove any timeout that made it this far, to match.
-     *
-     * @TODO Update the controller to add the timeout (which will require
-     * bumping the feature set and checking that here).
      */
-    xml_remove_prop(data->params_secure, CRM_META "_" XML_ATTR_TIMEOUT);
+    if (old_version) {
+        xml_remove_prop(data->params_secure, CRM_META "_" XML_ATTR_TIMEOUT);
+    }
 
     data->digest_secure_calc = calculate_operation_digest(data->params_secure,
                                                           op_version);
@@ -270,7 +247,7 @@ calculate_secure_digest(op_digest_cache_t *data, pe_resource_t *rsc,
  *       data->params_all, which already has overrides applied.
  */
 static void
-calculate_restart_digest(op_digest_cache_t *data, xmlNode *xml_op,
+calculate_restart_digest(op_digest_cache_t *data, const xmlNode *xml_op,
                          const char *op_version)
 {
     const char *value = NULL;
@@ -291,7 +268,7 @@ calculate_restart_digest(op_digest_cache_t *data, xmlNode *xml_op,
     // Then filter out reloadable parameters, if any
     value = crm_element_value(xml_op, XML_LRM_ATTR_OP_RESTART);
     if (value != NULL) {
-        pcmk__xe_remove_matching_attrs(data->params_restart, attr_in_string,
+        pcmk__xe_remove_matching_attrs(data->params_restart, attr_not_in_string,
                                        (void *) value);
     }
 
@@ -304,14 +281,14 @@ calculate_restart_digest(op_digest_cache_t *data, xmlNode *xml_op,
  * \internal
  * \brief Create a new digest cache entry with calculated digests
  *
- * \param[in]     rsc          Resource that action was for
+ * \param[in,out] rsc          Resource that action was for
  * \param[in]     task         Name of action performed
  * \param[in,out] interval_ms  Action's interval (will be reset if in overrides)
  * \param[in]     node         Node action was performed on
  * \param[in]     xml_op       XML of operation in CIB status (if available)
  * \param[in]     overrides    Key/value table to override resource parameters
  * \param[in]     calc_secure  Whether to calculate secure digest
- * \param[in]     data_set     Cluster working set
+ * \param[in,out] data_set     Cluster working set
  *
  * \return Pointer to new digest cache entry (or NULL on memory error)
  * \note It is the caller's responsibility to free the result using
@@ -319,18 +296,30 @@ calculate_restart_digest(op_digest_cache_t *data, xmlNode *xml_op,
  */
 op_digest_cache_t *
 pe__calculate_digests(pe_resource_t *rsc, const char *task, guint *interval_ms,
-                      pe_node_t *node, xmlNode *xml_op, GHashTable *overrides,
-                      bool calc_secure, pe_working_set_t *data_set)
+                      const pe_node_t *node, const xmlNode *xml_op,
+                      GHashTable *overrides, bool calc_secure,
+                      pe_working_set_t *data_set)
 {
     op_digest_cache_t *data = calloc(1, sizeof(op_digest_cache_t));
-    const char *op_version = CRM_FEATURE_SET;
+    const char *op_version = NULL;
     GHashTable *params = NULL;
 
     if (data == NULL) {
         return NULL;
     }
+
+    data->rc = RSC_DIGEST_MATCH;
+
     if (xml_op != NULL) {
         op_version = crm_element_value(xml_op, XML_ATTR_CRM_VERSION);
+    }
+
+    if (op_version == NULL && data_set != NULL && data_set->input != NULL) {
+        op_version = crm_element_value(data_set->input, XML_ATTR_CRM_VERSION);
+    }
+
+    if (op_version == NULL) {
+        op_version = CRM_FEATURE_SET;
     }
 
     params = pe_rsc_params(rsc, node, data_set);
@@ -348,20 +337,20 @@ pe__calculate_digests(pe_resource_t *rsc, const char *task, guint *interval_ms,
  * \internal
  * \brief Calculate action digests and store in node's digest cache
  *
- * \param[in] rsc          Resource that action was for
- * \param[in] task         Name of action performed
- * \param[in] interval_ms  Action's interval
- * \param[in] node         Node action was performed on
- * \param[in] xml_op       XML of operation in CIB status (if available)
- * \param[in] calc_secure  Whether to calculate secure digest
- * \param[in] data_set     Cluster working set
+ * \param[in,out] rsc          Resource that action was for
+ * \param[in]     task         Name of action performed
+ * \param[in]     interval_ms  Action's interval
+ * \param[in,out] node         Node action was performed on
+ * \param[in]     xml_op       XML of operation in CIB status (if available)
+ * \param[in]     calc_secure  Whether to calculate secure digest
+ * \param[in,out] data_set     Cluster working set
  *
  * \return Pointer to node's digest cache entry
  */
 static op_digest_cache_t *
 rsc_action_digest(pe_resource_t *rsc, const char *task, guint interval_ms,
-                  pe_node_t *node, xmlNode *xml_op, bool calc_secure,
-                  pe_working_set_t *data_set)
+                  pe_node_t *node, const xmlNode *xml_op,
+                  bool calc_secure, pe_working_set_t *data_set)
 {
     op_digest_cache_t *data = NULL;
     char *key = pcmk__op_key(rsc->id, task, interval_ms);
@@ -381,16 +370,16 @@ rsc_action_digest(pe_resource_t *rsc, const char *task, guint interval_ms,
  * \internal
  * \brief Calculate operation digests and compare against an XML history entry
  *
- * \param[in] rsc       Resource to check
- * \param[in] xml_op    Resource history XML
- * \param[in] node      Node to use for digest calculation
- * \param[in] data_set  Cluster working set
+ * \param[in,out] rsc       Resource to check
+ * \param[in]     xml_op    Resource history XML
+ * \param[in,out] node      Node to use for digest calculation
+ * \param[in,out] data_set  Cluster working set
  *
  * \return Pointer to node's digest cache entry, with comparison result set
  */
 op_digest_cache_t *
-rsc_action_digest_cmp(pe_resource_t * rsc, xmlNode * xml_op, pe_node_t * node,
-                      pe_working_set_t * data_set)
+rsc_action_digest_cmp(pe_resource_t *rsc, const xmlNode *xml_op,
+                      pe_node_t *node, pe_working_set_t *data_set)
 {
     op_digest_cache_t *data = NULL;
     guint interval_ms = 0;
@@ -411,12 +400,12 @@ rsc_action_digest_cmp(pe_resource_t * rsc, xmlNode * xml_op, pe_node_t * node,
                              pcmk_is_set(data_set->flags, pe_flag_sanitized),
                              data_set);
 
-    data->rc = RSC_DIGEST_MATCH;
     if (digest_restart && data->digest_restart_calc && strcmp(data->digest_restart_calc, digest_restart) != 0) {
         pe_rsc_info(rsc, "Parameters to %ums-interval %s action for %s on %s "
                          "changed: hash was %s vs. now %s (restart:%s) %s",
-                    interval_ms, task, rsc->id, node->details->uname,
-                    crm_str(digest_restart), data->digest_restart_calc,
+                    interval_ms, task, rsc->id, pe__node_name(node),
+                    pcmk__s(digest_restart, "missing"),
+                    data->digest_restart_calc,
                     op_version,
                     crm_element_value(xml_op, XML_ATTR_TRANSITION_MAGIC));
         data->rc = RSC_DIGEST_RESTART;
@@ -426,14 +415,38 @@ rsc_action_digest_cmp(pe_resource_t * rsc, xmlNode * xml_op, pe_node_t * node,
         data->rc = RSC_DIGEST_UNKNOWN;
 
     } else if (strcmp(digest_all, data->digest_all_calc) != 0) {
-        pe_rsc_info(rsc, "Parameters to %ums-interval %s action for %s on %s "
-                         "changed: hash was %s vs. now %s (%s:%s) %s",
-                    interval_ms, task, rsc->id, node->details->uname,
-                    crm_str(digest_all), data->digest_all_calc,
-                    (interval_ms > 0)? "reschedule" : "reload",
-                    op_version,
-                    crm_element_value(xml_op, XML_ATTR_TRANSITION_MAGIC));
-        data->rc = RSC_DIGEST_ALL;
+        /* Given a non-recurring operation with extra parameters configured,
+         * in case that the main digest doesn't match, even if the restart
+         * digest matches, enforce a restart rather than a reload-agent anyway.
+         * So that it ensures any changes of the extra parameters get applied
+         * for this specific operation, and the digests calculated for the
+         * resulting lrm_rsc_op will be correct.
+         * Preserve the implied rc RSC_DIGEST_RESTART for the case that the main
+         * digest doesn't match.
+         */
+        if (interval_ms == 0
+            && data->rc == RSC_DIGEST_RESTART) {
+            pe_rsc_info(rsc, "Parameters containing extra ones to %ums-interval"
+                             " %s action for %s on %s "
+                             "changed: hash was %s vs. now %s (restart:%s) %s",
+                        interval_ms, task, rsc->id, pe__node_name(node),
+                        pcmk__s(digest_all, "missing"), data->digest_all_calc,
+                        op_version,
+                        crm_element_value(xml_op, XML_ATTR_TRANSITION_MAGIC));
+
+        } else {
+            pe_rsc_info(rsc, "Parameters to %ums-interval %s action for %s on %s "
+                             "changed: hash was %s vs. now %s (%s:%s) %s",
+                        interval_ms, task, rsc->id, pe__node_name(node),
+                        pcmk__s(digest_all, "missing"), data->digest_all_calc,
+                        (interval_ms > 0)? "reschedule" : "reload",
+                        op_version,
+                        crm_element_value(xml_op, XML_ATTR_TRANSITION_MAGIC));
+            data->rc = RSC_DIGEST_ALL;
+        }
+
+    } else {
+        data->rc = RSC_DIGEST_MATCH;
     }
     return data;
 }
@@ -501,7 +514,7 @@ unfencing_digest_matches(const char *rsc_id, const char *agent,
 
 /* Magic string to use as action name for digest cache entries used for
  * unfencing checks. This is not a real action name (i.e. "on"), so
- * check_action_definition() won't confuse these entries with real actions.
+ * pcmk__check_action_config() won't confuse these entries with real actions.
  */
 #define STONITH_DIGEST_TASK "stonith-on"
 
@@ -509,10 +522,10 @@ unfencing_digest_matches(const char *rsc_id, const char *agent,
  * \internal
  * \brief Calculate fence device digests and digest comparison result
  *
- * \param[in] rsc       Fence device resource
- * \param[in] agent     Fence device's agent type
- * \param[in] node      Node with digest cache to use
- * \param[in] data_set  Cluster working set
+ * \param[in,out] rsc       Fence device resource
+ * \param[in]     agent     Fence device's agent type
+ * \param[in,out] node      Node with digest cache to use
+ * \param[in,out] data_set  Cluster working set
  *
  * \return Node's digest cache entry
  */
@@ -549,7 +562,7 @@ pe__compare_fencing_digest(pe_resource_t *rsc, const char *agent,
             pcmk__output_t *out = data_set->priv;
             out->info(out, "Only 'private' parameters to %s "
                       "for unfencing %s changed", rsc->id,
-                      node->details->uname);
+                      pe__node_name(node));
         }
         return data;
     }
@@ -564,14 +577,14 @@ pe__compare_fencing_digest(pe_resource_t *rsc, const char *agent,
 
             out->info(out, "Parameters to %s for unfencing "
                       "%s changed, try '%s'", rsc->id,
-                      node->details->uname, digest);
+                      pe__node_name(node), digest);
             free(digest);
         } else if (!pcmk__is_daemon) {
             char *digest = create_unfencing_summary(rsc->id, agent,
                                                     data->digest_secure_calc);
 
             printf("Parameters to %s for unfencing %s changed, try '%s'\n",
-                   rsc->id, node->details->uname, digest);
+                   rsc->id, pe__node_name(node), digest);
             free(digest);
         }
     }

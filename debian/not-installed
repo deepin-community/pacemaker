@@ -1,0 +1,5 @@
+usr/lib/*/lib*.la
+usr/lib/python*/site-packages/pacemaker/__pycache__
+usr/share/doc/pacemaker/COPYING
+usr/share/doc/pacemaker/README.markdown
+usr/share/doc/pacemaker/licenses

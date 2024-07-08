@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2021 the Pacemaker project contributors
+ * Copyright 2017-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -7,8 +7,8 @@
  * version 2.1 or later (LGPLv2.1+) WITHOUT ANY WARRANTY.
  */
 
-#ifndef PCMK__AGENTS__H
-#  define PCMK__AGENTS__H
+#ifndef PCMK__CRM_COMMON_AGENTS__H
+#  define PCMK__CRM_COMMON_AGENTS__H
 
 #ifdef __cplusplus
 extern "C" {
@@ -22,6 +22,18 @@ extern "C" {
 
 #include <stdint.h>       // uint32_t
 #include <stdbool.h>
+
+// Known resource classes
+#define PCMK_RESOURCE_CLASS_OCF     "ocf"
+#define PCMK_RESOURCE_CLASS_SERVICE "service"
+#define PCMK_RESOURCE_CLASS_LSB     "lsb"
+#define PCMK_RESOURCE_CLASS_SYSTEMD "systemd"
+#define PCMK_RESOURCE_CLASS_STONITH "stonith"
+#define PCMK_RESOURCE_CLASS_ALERT   "alert"
+//! \deprecated Do not use
+#define PCMK_RESOURCE_CLASS_NAGIOS  "nagios"
+//! \deprecated Do not use
+#define PCMK_RESOURCE_CLASS_UPSTART "upstart"
 
 /* Special stonith-class agent parameters interpreted directly by Pacemaker
  * (not including the pcmk_ACTION_{action,retries,timeout} parameters)
@@ -68,4 +80,4 @@ bool pcmk_stonith_param(const char *param);
 }
 #endif
 
-#endif // PCMK__AGENTS__H
+#endif // PCMK__CRM_COMMON_AGENTS__H

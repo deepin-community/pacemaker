@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -19,249 +19,21 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
-#ifdef HAVE_GETOPT_H
-#  include <getopt.h>
-#endif
-
 #include <crm/crm.h>
 
-
-/*
- * Command-line option handling
- */
-
-static char *crm_short_options = NULL;
-static pcmk__cli_option_t *crm_long_options = NULL;
-static const char *crm_app_description = NULL;
-static const char *crm_app_usage = NULL;
-
 void
-pcmk__cli_option_cleanup()
+pcmk__cli_help(char cmd)
 {
-    free(crm_short_options);
-    crm_short_options = NULL;
-}
-
-static struct option *
-create_long_opts(pcmk__cli_option_t *long_options)
-{
-    struct option *long_opts = NULL;
-
-#ifdef HAVE_GETOPT_H
-    int index = 0, lpc = 0;
-
-    /*
-     * A previous, possibly poor, choice of '?' as the short form of --help
-     * means that getopt_long() returns '?' for both --help and for "unknown option"
-     *
-     * This dummy entry allows us to differentiate between the two in
-     * pcmk__next_cli_option() and exit with the correct error code.
-     */
-    long_opts = pcmk__realloc(long_opts, (index + 1) * sizeof(struct option));
-    long_opts[index].name = "__dummmy__";
-    long_opts[index].has_arg = 0;
-    long_opts[index].flag = 0;
-    long_opts[index].val = '_';
-    index++;
-
-    // cppcheck seems not to understand the abort-logic in pcmk__realloc
-    // cppcheck-suppress memleak
-    for (lpc = 0; long_options[lpc].name != NULL; lpc++) {
-        if (long_options[lpc].name[0] == '-') {
-            continue;
-        }
-
-        long_opts = pcmk__realloc(long_opts, (index + 1) * sizeof(struct option));
-        /*fprintf(stderr, "Creating %d %s = %c\n", index,
-         * long_options[lpc].name, long_options[lpc].val);      */
-        long_opts[index].name = long_options[lpc].name;
-        long_opts[index].has_arg = long_options[lpc].has_arg;
-        long_opts[index].flag = long_options[lpc].flag;
-        long_opts[index].val = long_options[lpc].val;
-        index++;
-    }
-
-    /* Now create the list terminator */
-    long_opts = pcmk__realloc(long_opts, (index + 1) * sizeof(struct option));
-    long_opts[index].name = NULL;
-    long_opts[index].has_arg = 0;
-    long_opts[index].flag = 0;
-    long_opts[index].val = 0;
-#endif
-
-    return long_opts;
-}
-
-/*!
- * \internal
- * \brief Define the command-line options a daemon or tool accepts
- *
- * \param[in] short_options  getopt(3)-style short option list
- * \param[in] app_usage      summary of how command is invoked (for help)
- * \param[in] long_options   definition of options accepted
- * \param[in] app_desc       brief command description (for help)
- */
-void
-pcmk__set_cli_options(const char *short_options, const char *app_usage,
-                      pcmk__cli_option_t *long_options, const char *app_desc)
-{
-    if (short_options) {
-        crm_short_options = strdup(short_options);
-
-    } else if (long_options) {
-        int lpc = 0;
-        int opt_string_len = 0;
-        char *local_short_options = NULL;
-
-        for (lpc = 0; long_options[lpc].name != NULL; lpc++) {
-            if (long_options[lpc].val && long_options[lpc].val != '-' && long_options[lpc].val < UCHAR_MAX) {
-                local_short_options = pcmk__realloc(local_short_options,
-                                                    opt_string_len + 4);
-                local_short_options[opt_string_len++] = long_options[lpc].val;
-                /* getopt(3) says: Two colons mean an option takes an optional arg; */
-                if (long_options[lpc].has_arg == optional_argument) {
-                    local_short_options[opt_string_len++] = ':';
-                }
-                if (long_options[lpc].has_arg >= required_argument) {
-                    local_short_options[opt_string_len++] = ':';
-                }
-                local_short_options[opt_string_len] = 0;
-            }
-        }
-        crm_short_options = local_short_options;
-        crm_trace("Generated short option string: '%s'", local_short_options);
-    }
-
-    if (long_options) {
-        crm_long_options = long_options;
-    }
-    if (app_desc) {
-        crm_app_description = app_desc;
-    }
-    if (app_usage) {
-        crm_app_usage = app_usage;
-    }
-}
-
-int
-pcmk__next_cli_option(int argc, char **argv, int *index, const char **longname)
-{
-#ifdef HAVE_GETOPT_H
-    static struct option *long_opts = NULL;
-
-    if (long_opts == NULL && crm_long_options) {
-        long_opts = create_long_opts(crm_long_options);
-    }
-
-    *index = 0;
-    if (long_opts) {
-        int flag = getopt_long(argc, argv, crm_short_options, long_opts, index);
-
-        switch (flag) {
-            case 0:
-                if (long_opts[*index].val) {
-                    return long_opts[*index].val;
-                } else if (longname) {
-                    *longname = long_opts[*index].name;
-                } else {
-                    crm_notice("Unhandled option --%s", long_opts[*index].name);
-                    return flag;
-                }
-            case -1:           /* End of option processing */
-                break;
-            case ':':
-                crm_trace("Missing argument");
-                pcmk__cli_help('?', CRM_EX_USAGE);
-                break;
-            case '?':
-                pcmk__cli_help('?', (*index? CRM_EX_OK : CRM_EX_USAGE));
-                break;
-        }
-        return flag;
-    }
-#endif
-
-    if (crm_short_options) {
-        return getopt(argc, argv, crm_short_options);
-    }
-
-    return -1;
-}
-
-void
-pcmk__cli_help(char cmd, crm_exit_t exit_code)
-{
-    int i = 0;
-    FILE *stream = (exit_code ? stderr : stdout);
-
     if (cmd == 'v' || cmd == '$') {
-        fprintf(stream, "Pacemaker %s\n", PACEMAKER_VERSION);
-        fprintf(stream, "Written by Andrew Beekhof\n");
-        goto out;
+        printf("Pacemaker %s\n", PACEMAKER_VERSION);
+        printf("Written by Andrew Beekhof and "
+               "the Pacemaker project contributors\n");
+
+    } else if (cmd == '!') {
+        printf("Pacemaker %s (Build: %s): %s\n", PACEMAKER_VERSION, BUILD_VERSION, CRM_FEATURES);
     }
 
-    if (cmd == '!') {
-        fprintf(stream, "Pacemaker %s (Build: %s): %s\n", PACEMAKER_VERSION, BUILD_VERSION, CRM_FEATURES);
-        goto out;
-    }
-
-    fprintf(stream, "%s - %s\n", crm_system_name, crm_app_description);
-
-    if (crm_app_usage) {
-        fprintf(stream, "Usage: %s %s\n", crm_system_name, crm_app_usage);
-    }
-
-    if (crm_long_options) {
-        fprintf(stream, "Options:\n");
-        for (i = 0; crm_long_options[i].name != NULL; i++) {
-            if (crm_long_options[i].flags & pcmk__option_hidden) {
-
-            } else if (crm_long_options[i].flags & pcmk__option_paragraph) {
-                fprintf(stream, "%s\n\n", crm_long_options[i].desc);
-
-            } else if (crm_long_options[i].flags & pcmk__option_example) {
-                fprintf(stream, "\t#%s\n\n", crm_long_options[i].desc);
-
-            } else if (crm_long_options[i].val == '-' && crm_long_options[i].desc) {
-                fprintf(stream, "%s\n", crm_long_options[i].desc);
-
-            } else {
-                /* is val printable as char ? */
-                if (crm_long_options[i].val && crm_long_options[i].val <= UCHAR_MAX) {
-                    fprintf(stream, " -%c,", crm_long_options[i].val);
-                } else {
-                    fputs("    ", stream);
-                }
-                fprintf(stream, " --%s%s\t%s\n", crm_long_options[i].name,
-                        crm_long_options[i].has_arg == optional_argument ? "[=value]" :
-                        crm_long_options[i].has_arg == required_argument ? "=value" : "",
-                        crm_long_options[i].desc ? crm_long_options[i].desc : "");
-            }
-        }
-
-    } else if (crm_short_options) {
-        fprintf(stream, "Usage: %s - %s\n", crm_system_name, crm_app_description);
-        for (i = 0; crm_short_options[i] != 0; i++) {
-            int has_arg = no_argument /* 0 */;
-
-            if (crm_short_options[i + 1] == ':') {
-                if (crm_short_options[i + 2] == ':')
-                    has_arg = optional_argument /* 2 */;
-                else
-                    has_arg = required_argument /* 1 */;
-            }
-
-            fprintf(stream, " -%c %s\n", crm_short_options[i],
-                    has_arg == optional_argument ? "[value]" :
-                    has_arg == required_argument ? "{value}" : "");
-            i += has_arg;
-        }
-    }
-
-    fprintf(stream, "\nReport bugs to %s\n", PACKAGE_BUGREPORT);
-
-  out:
-    crm_exit(exit_code);
+    crm_exit(CRM_EX_OK);
     while(1); // above does not return
 }
 
@@ -279,26 +51,37 @@ pcmk__cli_help(char cmd, crm_exit_t exit_code)
  *
  * \param[in] option  Environment variable name (without prefix)
  *
- * \return Value of environment variable option
+ * \return Value of environment variable option, or NULL in case of
+ *         option name too long or value not found
  */
 const char *
 pcmk__env_option(const char *option)
 {
+    const char *const prefixes[] = {"PCMK_", "HA_"};
     char env_name[NAME_MAX];
     const char *value = NULL;
 
-    snprintf(env_name, NAME_MAX, "PCMK_%s", option);
-    value = getenv(env_name);
-    if (value != NULL) {
-        crm_trace("Found %s = %s", env_name, value);
-        return value;
-    }
+    CRM_CHECK(!pcmk__str_empty(option), return NULL);
 
-    snprintf(env_name, NAME_MAX, "HA_%s", option);
-    value = getenv(env_name);
-    if (value != NULL) {
-        crm_trace("Found %s = %s", env_name, value);
-        return value;
+    for (int i = 0; i < PCMK__NELEM(prefixes); i++) {
+        int rv = snprintf(env_name, NAME_MAX, "%s%s", prefixes[i], option);
+
+        if (rv < 0) {
+            crm_err("Failed to write %s%s to buffer: %s", prefixes[i], option,
+                    strerror(errno));
+            return NULL;
+        }
+
+        if (rv >= sizeof(env_name)) {
+            crm_trace("\"%s%s\" is too long", prefixes[i], option);
+            continue;
+        }
+
+        value = getenv(env_name);
+        if (value != NULL) {
+            crm_trace("Found %s = %s", env_name, value);
+            return value;
+        }
     }
 
     crm_trace("Nothing found for %s", option);
@@ -317,24 +100,38 @@ pcmk__env_option(const char *option)
 void
 pcmk__set_env_option(const char *option, const char *value)
 {
+    const char *const prefixes[] = {"PCMK_", "HA_"};
     char env_name[NAME_MAX];
 
-    snprintf(env_name, NAME_MAX, "PCMK_%s", option);
-    if (value) {
-        crm_trace("Setting %s to %s", env_name, value);
-        setenv(env_name, value, 1);
-    } else {
-        crm_trace("Unsetting %s", env_name);
-        unsetenv(env_name);
-    }
+    CRM_CHECK(!pcmk__str_empty(option) && (strchr(option, '=') == NULL),
+              return);
 
-    snprintf(env_name, NAME_MAX, "HA_%s", option);
-    if (value) {
-        crm_trace("Setting %s to %s", env_name, value);
-        setenv(env_name, value, 1);
-    } else {
-        crm_trace("Unsetting %s", env_name);
-        unsetenv(env_name);
+    for (int i = 0; i < PCMK__NELEM(prefixes); i++) {
+        int rv = snprintf(env_name, NAME_MAX, "%s%s", prefixes[i], option);
+
+        if (rv < 0) {
+            crm_err("Failed to write %s%s to buffer: %s", prefixes[i], option,
+                    strerror(errno));
+            return;
+        }
+
+        if (rv >= sizeof(env_name)) {
+            crm_trace("\"%s%s\" is too long", prefixes[i], option);
+            continue;
+        }
+
+        if (value != NULL) {
+            crm_trace("Setting %s to %s", env_name, value);
+            rv = setenv(env_name, value, 1);
+        } else {
+            crm_trace("Unsetting %s", env_name);
+            rv = unsetenv(env_name);
+        }
+
+        if (rv < 0) {
+            crm_err("Failed to %sset %s: %s", (value != NULL)? "" : "un",
+                    env_name, strerror(errno));
+        }
     }
 }
 
@@ -346,7 +143,7 @@ pcmk__set_env_option(const char *option, const char *value)
  * or a list of daemon names, return true if the option is enabled for a given
  * daemon.
  *
- * \param[in] daemon   Daemon name
+ * \param[in] daemon   Daemon name (can be NULL)
  * \param[in] option   Pacemaker environment variable name
  *
  * \return true if variable is enabled for daemon, otherwise false
@@ -356,7 +153,9 @@ pcmk__env_option_enabled(const char *daemon, const char *option)
 {
     const char *value = pcmk__env_option(option);
 
-    return (value != NULL) && (crm_is_true(value) || strstr(value, daemon));
+    return (value != NULL)
+        && (crm_is_true(value)
+            || ((daemon != NULL) && (strstr(value, daemon) != NULL)));
 }
 
 
@@ -436,7 +235,7 @@ pcmk__valid_script(const char *value)
 }
 
 bool
-pcmk__valid_utilization(const char *value)
+pcmk__valid_percentage(const char *value)
 {
     char *end = NULL;
     long number = strtol(value, &end, 10);
@@ -451,11 +250,11 @@ pcmk__valid_utilization(const char *value)
  * \internal
  * \brief Check a table of configured options for a particular option
  *
- * \param[in] options    Name/value pairs for configured options
- * \param[in] validate   If not NULL, validator function for option value
- * \param[in] name       Option name to look for
- * \param[in] old_name   Alternative option name to look for
- * \param[in] def_value  Default to use if option not configured
+ * \param[in,out] options    Name/value pairs for configured options
+ * \param[in]     validate   If not NULL, validator function for option value
+ * \param[in]     name       Option name to look for
+ * \param[in]     old_name   Alternative option name to look for
+ * \param[in]     def_value  Default to use if option not configured
  *
  * \return Option value (from supplied options table or default value)
  */
@@ -527,14 +326,16 @@ cluster_option_value(GHashTable *options, bool (*validate)(const char *),
  * \internal
  * \brief Get the value of a cluster option
  *
- * \param[in] options      Name/value pairs for configured options
- * \param[in] option_list  Possible cluster options
- * \param[in] name         (Primary) option name to look for
+ * \param[in,out] options      Name/value pairs for configured options
+ * \param[in]     option_list  Possible cluster options
+ * \param[in]     len          Length of \p option_list
+ * \param[in]     name         (Primary) option name to look for
  *
  * \return Option value
  */
 const char *
-pcmk__cluster_option(GHashTable *options, pcmk__cluster_option_t *option_list,
+pcmk__cluster_option(GHashTable *options,
+                     const pcmk__cluster_option_t *option_list,
                      int len, const char *name)
 {
     const char *value = NULL;
@@ -552,42 +353,135 @@ pcmk__cluster_option(GHashTable *options, pcmk__cluster_option_t *option_list,
     return NULL;
 }
 
-void
-pcmk__print_option_metadata(const char *name, const char *version,
-                            const char *desc_short, const char *desc_long,
-                            pcmk__cluster_option_t *option_list, int len)
+/*!
+ * \internal
+ * \brief Add a description element to a meta-data string
+ *
+ * \param[in,out] s       Meta-data string to add to
+ * \param[in]     tag     Name of element to add ("longdesc" or "shortdesc")
+ * \param[in]     desc    Textual description to add
+ * \param[in]     values  If not \p NULL, the allowed values for the parameter
+ * \param[in]     spaces  If not \p NULL, spaces to insert at the beginning of
+ *                        each line
+ */
+static void
+add_desc(GString *s, const char *tag, const char *desc, const char *values,
+         const char *spaces)
 {
-    int lpc = 0;
+    char *escaped_en = crm_xml_escape(desc);
 
-    fprintf(stdout, "<?xml version=\"1.0\"?>"
-            "<!DOCTYPE resource-agent SYSTEM \"ra-api-1.dtd\">\n"
-            "<resource-agent name=\"%s\">\n"
-            "  <version>%s</version>\n"
-            "  <longdesc lang=\"en\">%s</longdesc>\n"
-            "  <shortdesc lang=\"en\">%s</shortdesc>\n"
-            "  <parameters>\n", name, version, desc_long, desc_short);
-
-    for (lpc = 0; lpc < len; lpc++) {
-        if ((option_list[lpc].description_long == NULL)
-            && (option_list[lpc].description_short == NULL)) {
-            continue;
-        }
-        fprintf(stdout, "    <parameter name=\"%s\" unique=\"0\">\n"
-                "      <shortdesc lang=\"en\">%s</shortdesc>\n"
-                "      <content type=\"%s\" default=\"%s\"/>\n"
-                "      <longdesc lang=\"en\">%s%s%s</longdesc>\n"
-                "    </parameter>\n",
-                option_list[lpc].name,
-                option_list[lpc].description_short,
-                option_list[lpc].type,
-                option_list[lpc].default_value,
-                option_list[lpc].description_long?
-                    option_list[lpc].description_long :
-                    option_list[lpc].description_short,
-                (option_list[lpc].values? "  Allowed values: " : ""),
-                (option_list[lpc].values? option_list[lpc].values : ""));
+    if (spaces != NULL) {
+        g_string_append(s, spaces);
     }
-    fprintf(stdout, "  </parameters>\n</resource-agent>\n");
+    pcmk__g_strcat(s, "<", tag, " lang=\"en\">", escaped_en, NULL);
+
+    if (values != NULL) {
+        pcmk__g_strcat(s, "  Allowed values: ", values, NULL);
+    }
+    pcmk__g_strcat(s, "</", tag, ">\n", NULL);
+
+#ifdef ENABLE_NLS
+    {
+        static const char *locale = NULL;
+
+        char *localized = crm_xml_escape(_(desc));
+
+        if (strcmp(escaped_en, localized) != 0) {
+            if (locale == NULL) {
+                locale = strtok(setlocale(LC_ALL, NULL), "_");
+            }
+
+            if (spaces != NULL) {
+                g_string_append(s, spaces);
+            }
+            pcmk__g_strcat(s, "<", tag, " lang=\"", locale, "\">", localized,
+                           NULL);
+
+            if (values != NULL) {
+                pcmk__g_strcat(s, _("  Allowed values: "), _(values), NULL);
+            }
+            pcmk__g_strcat(s, "</", tag, ">\n", NULL);
+        }
+        free(localized);
+    }
+#endif
+
+    free(escaped_en);
+}
+
+gchar *
+pcmk__format_option_metadata(const char *name, const char *desc_short,
+                             const char *desc_long,
+                             pcmk__cluster_option_t *option_list, int len)
+{
+    /* big enough to hold "pacemaker-schedulerd metadata" output */
+    GString *s = g_string_sized_new(13000);
+
+    pcmk__g_strcat(s,
+                   "<?xml version=\"1.0\"?>\n"
+                   "<resource-agent name=\"", name, "\" "
+                                   "version=\"" PACEMAKER_VERSION "\">\n"
+                   "  <version>" PCMK_OCF_VERSION "</version>\n", NULL);
+
+    add_desc(s, "longdesc", desc_long, NULL, "  ");
+    add_desc(s, "shortdesc", desc_short, NULL, "  ");
+
+    g_string_append(s, "  <parameters>\n");
+
+    for (int lpc = 0; lpc < len; lpc++) {
+        const char *opt_name = option_list[lpc].name;
+        const char *opt_type = option_list[lpc].type;
+        const char *opt_values = option_list[lpc].values;
+        const char *opt_default = option_list[lpc].default_value;
+        const char *opt_desc_short = option_list[lpc].description_short;
+        const char *opt_desc_long = option_list[lpc].description_long;
+
+        // The standard requires long and short parameter descriptions
+        CRM_ASSERT((opt_desc_short != NULL) || (opt_desc_long != NULL));
+
+        if (opt_desc_short == NULL) {
+            opt_desc_short = opt_desc_long;
+        } else if (opt_desc_long == NULL) {
+            opt_desc_long = opt_desc_short;
+        }
+
+        // The standard requires a parameter type
+        CRM_ASSERT(opt_type != NULL);
+
+        pcmk__g_strcat(s, "    <parameter name=\"", opt_name, "\">\n", NULL);
+
+        add_desc(s, "longdesc", opt_desc_long, opt_values, "      ");
+        add_desc(s, "shortdesc", opt_desc_short, NULL, "      ");
+
+        pcmk__g_strcat(s, "      <content type=\"", opt_type, "\"", NULL);
+        if (opt_default != NULL) {
+            pcmk__g_strcat(s, " default=\"", opt_default, "\"", NULL);
+        }
+
+        if ((opt_values != NULL) && (strcmp(opt_type, "select") == 0)) {
+            char *str = strdup(opt_values);
+            const char *delim = ", ";
+            char *ptr = strtok(str, delim);
+
+            g_string_append(s, ">\n");
+
+            while (ptr != NULL) {
+                pcmk__g_strcat(s, "        <option value=\"", ptr, "\" />\n",
+                               NULL);
+                ptr = strtok(NULL, delim);
+            }
+            g_string_append_printf(s, "      </content>\n");
+            free(str);
+
+        } else {
+            g_string_append(s, "/>\n");
+        }
+
+        g_string_append(s, "    </parameter>\n");
+    }
+    g_string_append(s, "  </parameters>\n</resource-agent>\n");
+
+    return g_string_free(s, FALSE);
 }
 
 void

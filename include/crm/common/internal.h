@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2021 the Pacemaker project contributors
+ * Copyright 2015-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -10,12 +10,9 @@
 #ifndef CRM_COMMON_INTERNAL__H
 #define CRM_COMMON_INTERNAL__H
 
-#include <unistd.h>             // getpid()
+#include <unistd.h>             // pid_t, getpid()
 #include <stdbool.h>            // bool
 #include <stdint.h>             // uint8_t, uint64_t
-#include <string.h>             // strcmp()
-#include <fcntl.h>              // open()
-#include <sys/types.h>          // uid_t, gid_t, pid_t
 
 #include <glib.h>               // guint, GList, GHashTable
 #include <libxml/tree.h>        // xmlNode
@@ -23,7 +20,13 @@
 #include <crm/common/util.h>    // crm_strdup_printf()
 #include <crm/common/logging.h>  // do_crm_log_unlikely(), etc.
 #include <crm/common/mainloop.h> // mainloop_io_t, struct ipc_client_callbacks
+#include <crm/common/health_internal.h>
+#include <crm/common/io_internal.h>
+#include <crm/common/iso8601_internal.h>
+#include <crm/common/results_internal.h>
+#include <crm/common/messages_internal.h>
 #include <crm/common/strings_internal.h>
+#include <crm/common/acl_internal.h>
 
 /* This says whether the current application is a Pacemaker daemon or not,
  * and is used to change default logging settings such as whether to log to
@@ -34,23 +37,14 @@
  */
 extern bool pcmk__is_daemon;
 
+//! Node name of the local node
+extern char *pcmk__our_nodename;
+
 // Number of elements in a statically defined array
 #define PCMK__NELEM(a) ((int) (sizeof(a)/sizeof(a[0])) )
 
-// Internal ACL-related utilities (from acl.c)
-
-char *pcmk__uid2username(uid_t uid);
-const char *pcmk__update_acl_user(xmlNode *request, const char *field,
-                                  const char *peer_user);
-
-static inline bool
-pcmk__is_privileged(const char *user)
-{
-    return user && (!strcmp(user, CRM_DAEMON_USER) || !strcmp(user, "root"));
-}
-
 #if SUPPORT_CIBSECRETS
-// Internal CIB utilities (from cib_secrets.c) */
+/* internal CIB utilities (from cib_secrets.c) */
 
 int pcmk__substitute_secrets(const char *rsc_id, GHashTable *params);
 #endif
@@ -61,59 +55,25 @@ int pcmk__substitute_secrets(const char *rsc_id, GHashTable *params);
 bool pcmk__verify_digest(xmlNode *input, const char *expected);
 
 
-/* internal I/O utilities (from io.c) */
-
-int pcmk__real_path(const char *path, char **resolved_path);
-
-char *pcmk__series_filename(const char *directory, const char *series,
-                            int sequence, bool bzip);
-int pcmk__read_series_sequence(const char *directory, const char *series,
-                               unsigned int *seq);
-void pcmk__write_series_sequence(const char *directory, const char *series,
-                                 unsigned int sequence, int max);
-int pcmk__chown_series_sequence(const char *directory, const char *series,
-                                uid_t uid, gid_t gid);
-
-int pcmk__build_path(const char *path_c, mode_t mode);
-bool pcmk__daemon_can_write(const char *dir, const char *file);
-void pcmk__sync_directory(const char *name);
-
-int pcmk__file_contents(const char *filename, char **contents);
-int pcmk__write_sync(int fd, const char *contents);
-int pcmk__set_nonblocking(int fd);
-const char *pcmk__get_tmpdir(void);
-
-void pcmk__close_fds_in_child(bool);
-
-/*!
- * \internal
- * \brief Open /dev/null to consume next available file descriptor
- *
- * Open /dev/null, disregarding the result. This is intended when daemonizing to
- * be able to null stdin, stdout, and stderr.
- *
- * \param[in] flags  O_RDONLY (stdin) or O_WRONLY (stdout and stderr)
- */
-static inline void
-pcmk__open_devnull(int flags)
-{
-    // Static analysis clutter
-    // cppcheck-suppress leakReturnValNotUsed
-    (void) open("/dev/null", flags);
-}
-
-
 /* internal main loop utilities (from mainloop.c) */
 
 int pcmk__add_mainloop_ipc(crm_ipc_t *ipc, int priority, void *userdata,
-                           struct ipc_client_callbacks *callbacks,
+                           const struct ipc_client_callbacks *callbacks,
                            mainloop_io_t **source);
-guint pcmk__mainloop_timer_get_period(mainloop_timer_t *timer);
+guint pcmk__mainloop_timer_get_period(const mainloop_timer_t *timer);
 
 
-/* internal messaging utilities (from messages.c) */
+/* internal node-related XML utilities (from nodes.c) */
 
-const char *pcmk__message_name(const char *name);
+/*!
+ * \internal
+ * \brief Add local node name and ID to an XML node
+ *
+ * \param[in,out] request  XML node to modify
+ * \param[in]     node     The local node's name
+ * \param[in]     nodeid   The local node's ID (can be 0)
+ */
+void pcmk__xe_add_node(xmlNode *xml, const char *node, int nodeid);
 
 
 /* internal name/value utilities (from nvpair.c) */
@@ -121,14 +81,56 @@ const char *pcmk__message_name(const char *name);
 int pcmk__scan_nvpair(const char *input, char **name, char **value);
 char *pcmk__format_nvpair(const char *name, const char *value,
                           const char *units);
-char *pcmk__format_named_time(const char *name, time_t epoch_time);
+
+/*!
+ * \internal
+ * \brief Add a boolean attribute to an XML node.
+ *
+ * \param[in,out] node  XML node to add attributes to
+ * \param[in]     name  XML attribute to create
+ * \param[in]     value Value to give to the attribute
+ */
+void
+pcmk__xe_set_bool_attr(xmlNodePtr node, const char *name, bool value);
+
+/*!
+ * \internal
+ * \brief Extract a boolean attribute's value from an XML element
+ *
+ * \param[in] node XML node to get attribute from
+ * \param[in] name XML attribute to get
+ *
+ * \return True if the given \p name is an attribute on \p node and has
+ *         the value "true", False in all other cases
+ */
+bool
+pcmk__xe_attr_is_true(const xmlNode *node, const char *name);
+
+/*!
+ * \internal
+ * \brief Extract a boolean attribute's value from an XML element, with
+ *        error checking
+ *
+ * \param[in]  node  XML node to get attribute from
+ * \param[in]  name  XML attribute to get
+ * \param[out] value Destination for the value of the attribute
+ *
+ * \return EINVAL if \p name or \p value are NULL, ENODATA if \p node is
+ *         NULL or the attribute does not exist, pcmk_rc_unknown_format
+ *         if the attribute is not a boolean, and pcmk_rc_ok otherwise.
+ *
+ * \note \p value only has any meaning if the return value is pcmk_rc_ok.
+ */
+int
+pcmk__xe_get_bool_attr(const xmlNode *node, const char *name, bool *value);
 
 
 /* internal procfs utilities (from procfs.c) */
 
 pid_t pcmk__procfs_pid_of(const char *name);
 unsigned int pcmk__procfs_num_cores(void);
-
+int pcmk__procfs_pid2path(pid_t pid, char path[], size_t path_size);
+bool pcmk__procfs_has_pids(void);
 
 /* internal XML schema functions (from xml.c) */
 
@@ -173,6 +175,7 @@ char *pcmk__notify_key(const char *rsc_id, const char *notify_type,
 char *pcmk__transition_key(int transition_id, int action_id, int target_rc,
                            const char *node);
 void pcmk__filter_op_for_digest(xmlNode *param_set);
+bool pcmk__is_fencing_action(const char *action);
 
 
 // bitwise arithmetic utilities
@@ -201,7 +204,7 @@ pcmk__set_flags_as(const char *function, int line, uint8_t log_level,
 
     if (result != flag_group) {
         do_crm_log_unlikely(log_level,
-                            "%s flags 0x%.8llx (%s) for %s set by %s:%d",
+                            "%s flags %#.8llx (%s) for %s set by %s:%d",
                             ((flag_type == NULL)? "Group of" : flag_type),
                             (unsigned long long) flags,
                             ((flags_str == NULL)? "flags" : flags_str),
@@ -235,7 +238,7 @@ pcmk__clear_flags_as(const char *function, int line, uint8_t log_level,
 
     if (result != flag_group) {
         do_crm_log_unlikely(log_level,
-                            "%s flags 0x%.8llx (%s) for %s cleared by %s:%d",
+                            "%s flags %#.8llx (%s) for %s cleared by %s:%d",
                             ((flag_type == NULL)? "Group of" : flag_type),
                             (unsigned long long) flags,
                             ((flags_str == NULL)? "flags" : flags_str),
@@ -284,14 +287,6 @@ pcmk__realloc(void *ptr, size_t size)
     return new_ptr;
 }
 
-
-/* Error domains for use with g_set_error (from results.c) */
-
-GQuark pcmk__rc_error_quark(void);
-GQuark pcmk__exitc_error_quark(void);
-
-#define PCMK__RC_ERROR       pcmk__rc_error_quark()
-#define PCMK__EXITC_ERROR    pcmk__exitc_error_quark()
 
 static inline char *
 pcmk__getpid_s(void)

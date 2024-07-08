@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -23,6 +23,8 @@
 #include <crm/common/xml.h>
 
 #include <stonith/stonith.h>
+
+#include "fencing_private.h"
 
 #define LHA_STONITH_LIBRARY "libstonith.so.1"
 
@@ -70,24 +72,24 @@ find_library_function(void **handle, const char *lib, const char *fn)
 }
 
 /*!
- * \brief Determine namespace of a fence agent
+ * \internal
+ * \brief Check whether a given fence agent is an LHA agent
  *
  * \param[in] agent        Fence agent type
- * \param[in] namespace_s  Name of agent namespace as string, if known
  *
- * \return Namespace of specified agent, as enum value
+ * \return true if \p agent is an LHA agent, otherwise false
  */
 bool
 stonith__agent_is_lha(const char *agent)
 {
     Stonith *stonith_obj = NULL;
 
-    static gboolean need_init = TRUE;
+    static bool need_init = true;
     static Stonith *(*st_new_fn) (const char *) = NULL;
     static void (*st_del_fn) (Stonith *) = NULL;
 
     if (need_init) {
-        need_init = FALSE;
+        need_init = false;
         st_new_fn = find_library_function(&lha_agents_lib, LHA_STONITH_LIBRARY,
                                           "stonith_new");
         st_del_fn = find_library_function(&lha_agents_lib, LHA_STONITH_LIBRARY,
@@ -98,10 +100,10 @@ stonith__agent_is_lha(const char *agent)
         stonith_obj = (*st_new_fn) (agent);
         if (stonith_obj) {
             (*st_del_fn) (stonith_obj);
-            return TRUE;
+            return true;
         }
     }
-    return FALSE;
+    return false;
 }
 
 int
@@ -138,15 +140,6 @@ stonith__list_lha_agents(stonith_key_value_t **devices)
         (*type_free_fn) (type_list);
     }
     return count;
-}
-
-static inline char *
-strdup_null(const char *val)
-{
-    if (val) {
-        return strdup(val);
-    }
-    return NULL;
 }
 
 static void
@@ -211,19 +204,22 @@ stonith__lha_metadata(const char *agent, int timeout, char **output)
         stonith_obj = (*st_new_fn) (agent);
         if (stonith_obj) {
             (*st_log_fn) (stonith_obj, (PILLogFun) & stonith_plugin);
-            meta_longdesc = strdup_null((*st_info_fn) (stonith_obj, ST_DEVICEDESCR));
+            pcmk__str_update(&meta_longdesc,
+                             (*st_info_fn) (stonith_obj, ST_DEVICEDESCR));
             if (meta_longdesc == NULL) {
                 crm_warn("no long description in %s's metadata.", agent);
                 meta_longdesc = strdup(no_parameter_info);
             }
 
-            meta_shortdesc = strdup_null((*st_info_fn) (stonith_obj, ST_DEVICEID));
+            pcmk__str_update(&meta_shortdesc,
+                             (*st_info_fn) (stonith_obj, ST_DEVICEID));
             if (meta_shortdesc == NULL) {
                 crm_warn("no short description in %s's metadata.", agent);
                 meta_shortdesc = strdup(no_parameter_info);
             }
 
-            meta_param = strdup_null((*st_info_fn) (stonith_obj, ST_CONF_XML));
+            pcmk__str_update(&meta_param,
+                             (*st_info_fn) (stonith_obj, ST_CONF_XML));
             if (meta_param == NULL) {
                 crm_warn("no list of parameters in %s's metadata.", agent);
                 meta_param = strdup(no_parameter_info);

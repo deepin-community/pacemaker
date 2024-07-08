@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2020 the Pacemaker project contributors
+ * Copyright 2004-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -19,458 +19,502 @@
 
 #include <crm/crm.h>
 #include <crm/msg_xml.h>
+#include <crm/common/ipc_attrd_internal.h>
+#include <crm/common/cmdline_internal.h>
+#include <crm/common/output_internal.h>
 #include <crm/common/xml_internal.h>
-#include <crm/common/ipc.h>
 
 #include <crm/common/attrd_internal.h>
 
-static pcmk__cli_option_t long_options[] = {
-    // long option, argument type, storage, short option, description, flags
-    {
-        "help", no_argument, NULL, '?',
-        "\tThis text", pcmk__option_default
-    },
-    {
-        "version", no_argument, NULL, '$',
-        "\tVersion information", pcmk__option_default
-    },
-    {
-        "verbose", no_argument, NULL, 'V',
-        "\tIncrease debug output\n", pcmk__option_default
-    },
-    {
-        "name", required_argument, NULL, 'n',
-        "The attribute's name", pcmk__option_default
-    },
-    {
-        "-spacer-", no_argument, NULL, '-',
-        "\nCommands:", pcmk__option_default
-    },
-    {
-        "update", required_argument, NULL, 'U',
-        "Update attribute's value in pacemaker-attrd. If this causes the value "
-            "to change, it will also be updated in the cluster configuration.",
-        pcmk__option_default
-    },
-    {
-        "update-both", required_argument, NULL, 'B',
-        "Update attribute's value and time to wait (dampening) in "
-            "pacemaker-attrd. If this causes the value or dampening to change, "
-            "the attribute will also be written to the cluster configuration, "
-            "so be aware that repeatedly changing the dampening reduces its "
-            "effectiveness.",
-        pcmk__option_default
-    },
-    {
-        "update-delay", no_argument, NULL, 'Y',
-        "Update attribute's dampening in pacemaker-attrd (requires "
-            "-d/--delay). If this causes the dampening to change, the "
-            "attribute will also be written to the cluster configuration, so "
-            "be aware that repeatedly changing the dampening reduces its "
-            "effectiveness.",
-        pcmk__option_default
-    },
-    {
-        "query", no_argument, NULL, 'Q',
-        "\tQuery the attribute's value from pacemaker-attrd",
-        pcmk__option_default
-    },
-    {
-        "delete", no_argument, NULL, 'D',
-        "\tDelete attribute from pacemaker-attrd. If a value was previously "
-            "set, it will also be removed from the cluster configuration",
-        pcmk__option_default
-    },
-    {
-        "refresh", no_argument, NULL, 'R',
-        "\t(Advanced) Force the pacemaker-attrd daemon to resend all current "
-            "values to the CIB",
-        pcmk__option_default
-    },
+#include <pcmki/pcmki_output.h>
 
-    {
-        "-spacer-", no_argument, NULL, '-',
-        "\nAdditional options:", pcmk__option_default
-    },
-    {
-        "delay", required_argument, NULL, 'd',
-        "The time to wait (dampening) in seconds for further changes "
-            "before writing",
-        pcmk__option_default
-    },
-    {
-        "set", required_argument, NULL, 's',
-        "(Advanced) The attribute set in which to place the value",
-        pcmk__option_default
-    },
-    {
-        "node", required_argument, NULL, 'N',
-        "Set the attribute for the named node (instead of the local one)",
-        pcmk__option_default
-    },
-    {
-        "all", no_argument, NULL, 'A',
-        "Show values of the attribute for all nodes (query only)",
-        pcmk__option_default
-    },
+#define SUMMARY "query and update Pacemaker node attributes"
 
-    // @TODO Implement --lifetime
-    {
-        "lifetime", required_argument, NULL, 'l',
-        "(Not yet implemented) Lifetime of the node attribute (silently "
-            "ignored by cluster)",
-        pcmk__option_default
-    },
-    {
-        "private", no_argument, NULL, 'p',
-        "\tIf this creates a new attribute, never write the attribute to CIB",
-        pcmk__option_default
-    },
-
-    /* Legacy options */
-    {
-        "quiet", no_argument, NULL, 'q',
-        NULL, pcmk__option_hidden
-    },
-    {
-        "update", required_argument, NULL, 'v',
-        NULL, pcmk__option_hidden
-    },
-    {
-        "section", required_argument, NULL, 'S',
-        NULL, pcmk__option_hidden
-    },
-    { 0, 0, 0, 0 }
+static pcmk__supported_format_t formats[] = {
+    PCMK__SUPPORTED_FORMAT_NONE,
+    PCMK__SUPPORTED_FORMAT_TEXT,
+    PCMK__SUPPORTED_FORMAT_XML,
+    { NULL, NULL, NULL }
 };
 
-static int do_query(const char *attr_name, const char *attr_node, gboolean query_all);
-static int do_update(char command, const char *attr_node, const char *attr_name,
-                     const char *attr_value, const char *attr_section,
-                     const char *attr_set, const char *attr_dampen, int attr_options);
+GError *error = NULL;
+bool printed_values = false;
 
-// Free memory at exit to make analyzers happy
-#define cleanup_memory() \
-    free(attr_dampen); \
-    free(attr_name); \
-    free(attr_node); \
-    free(attr_section); \
-    free(attr_set);
+struct {
+    char command;
+    gchar *attr_dampen;
+    gchar *attr_name;
+    gchar *attr_pattern;
+    gchar *attr_node;
+    gchar *attr_set;
+    char *attr_value;
+    uint32_t attr_options;
+    gboolean query_all;
+    gboolean quiet;
+} options = {
+    .attr_options = pcmk__node_attr_none,
+    .command = 'Q',
+};
 
-#define set_option(option_var) \
-    if (option_var) { \
-        free(option_var); \
-    } \
-    option_var = strdup(optarg);
+static gboolean
+command_cb (const gchar *option_name, const gchar *optarg, gpointer data, GError **err) {
+    pcmk__str_update(&options.attr_value, optarg);
+
+    if (pcmk__str_any_of(option_name, "--update-both", "-B", NULL)) {
+        options.command = 'B';
+    } else if (pcmk__str_any_of(option_name, "--delete", "-D", NULL)) {
+        options.command = 'D';
+    } else if (pcmk__str_any_of(option_name, "--query", "-Q", NULL)) {
+        options.command = 'Q';
+    } else if (pcmk__str_any_of(option_name, "--refresh", "-R", NULL)) {
+        options.command = 'R';
+    } else if (pcmk__str_any_of(option_name, "--update", "-U", "-v", NULL)) {
+        options.command = 'U';
+    } else if (pcmk__str_any_of(option_name, "--update-delay", "-Y", NULL)) {
+        options.command = 'Y';
+    }
+
+    return TRUE;
+}
+
+static gboolean
+private_cb (const gchar *option_name, const gchar *optarg, gpointer data, GError **err) {
+    pcmk__set_node_attr_flags(options.attr_options, pcmk__node_attr_private);
+    return TRUE;
+}
+
+static gboolean
+section_cb (const gchar *option_name, const gchar *optarg, gpointer data, GError **err) {
+    if (pcmk__str_any_of(optarg, "nodes", "forever", NULL)) {
+        pcmk__set_node_attr_flags(options.attr_options, pcmk__node_attr_perm);
+    } else if (pcmk__str_any_of(optarg, "status", "reboot", NULL)) {
+        pcmk__clear_node_attr_flags(options.attr_options, pcmk__node_attr_perm);
+    } else {
+        g_set_error(err, PCMK__EXITC_ERROR, CRM_EX_USAGE, "Unknown value for --lifetime: %s",
+                    optarg);
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+static gboolean
+attr_set_type_cb(const gchar *option_name, const gchar *optarg, gpointer data, GError **error) {
+    if (pcmk__str_any_of(option_name, "-z", "--utilization", NULL)) {
+        pcmk__set_node_attr_flags(options.attr_options, pcmk__node_attr_utilization);
+    }
+
+    return TRUE;
+}
+
+static gboolean
+wait_cb (const gchar *option_name, const gchar *optarg, gpointer data, GError **err) {
+    if (pcmk__str_eq(optarg, "no", pcmk__str_none)) {
+        pcmk__clear_node_attr_flags(options.attr_options, pcmk__node_attr_sync_local | pcmk__node_attr_sync_cluster);
+        return TRUE;
+    } else if (pcmk__str_eq(optarg, PCMK__VALUE_LOCAL, pcmk__str_none)) {
+        pcmk__clear_node_attr_flags(options.attr_options, pcmk__node_attr_sync_local | pcmk__node_attr_sync_cluster);
+        pcmk__set_node_attr_flags(options.attr_options, pcmk__node_attr_sync_local);
+        return TRUE;
+    } else if (pcmk__str_eq(optarg, PCMK__VALUE_CLUSTER, pcmk__str_none)) {
+        pcmk__clear_node_attr_flags(options.attr_options, pcmk__node_attr_sync_local | pcmk__node_attr_sync_cluster);
+        pcmk__set_node_attr_flags(options.attr_options, pcmk__node_attr_sync_cluster);
+        return TRUE;
+    } else {
+        g_set_error(err, PCMK__EXITC_ERROR, CRM_EX_USAGE,
+                    "--wait= must be one of 'no', 'local', 'cluster'");
+        return FALSE;
+    }
+}
+
+#define INDENT "                              "
+
+static GOptionEntry required_entries[] = {
+    { "name", 'n', 0, G_OPTION_ARG_STRING, &options.attr_name,
+      "The attribute's name",
+      "NAME" },
+
+    { "pattern", 'P', 0, G_OPTION_ARG_STRING, &options.attr_pattern,
+      "Operate on all attributes matching this pattern\n"
+      INDENT "(with -B, -D, -U, or -Y)",
+      "PATTERN"
+    },
+
+    { NULL }
+};
+
+static GOptionEntry command_entries[] = {
+    { "update", 'U', 0, G_OPTION_ARG_CALLBACK, command_cb,
+      "Update attribute's value in pacemaker-attrd. If this causes the value\n"
+      INDENT "to change, it will also be updated in the cluster configuration.",
+      "VALUE" },
+
+    { "update-both", 'B', 0, G_OPTION_ARG_CALLBACK, command_cb,
+      "Update attribute's value and time to wait (dampening) in\n"
+      INDENT "pacemaker-attrd. If this causes the value or dampening to change,\n"
+      INDENT "the attribute will also be written to the cluster configuration,\n"
+      INDENT "so be aware that repeatedly changing the dampening reduces its\n"
+      INDENT "effectiveness.\n"
+      INDENT "Requires -d/--delay",
+      "VALUE" },
+
+    { "update-delay", 'Y', G_OPTION_FLAG_NO_ARG, G_OPTION_ARG_CALLBACK, command_cb,
+      "Update attribute's dampening in pacemaker-attrd. If this causes\n"
+      INDENT "the dampening to change, the attribute will also be written\n"
+      INDENT "to the cluster configuration, so be aware that repeatedly\n"
+      INDENT "changing the dampening reduces its effectiveness.\n"
+      INDENT "Requires -d/--delay",
+      NULL },
+
+    { "query", 'Q', G_OPTION_FLAG_NO_ARG, G_OPTION_ARG_CALLBACK, command_cb,
+      "Query the attribute's value from pacemaker-attrd",
+      NULL },
+
+    { "delete", 'D', G_OPTION_FLAG_NO_ARG, G_OPTION_ARG_CALLBACK, command_cb,
+      "Unset attribute from pacemaker-attrd. At the moment, there is no way\n"
+      INDENT "to remove an attribute. This option will instead set its value\n"
+      INDENT "to the empty string.",
+      NULL },
+
+    { "refresh", 'R', G_OPTION_FLAG_NO_ARG, G_OPTION_ARG_CALLBACK, command_cb,
+      "(Advanced) Force the pacemaker-attrd daemon to resend all current\n"
+      INDENT "values to the CIB",
+      NULL },
+
+    { NULL }
+};
+
+static GOptionEntry addl_entries[] = {
+    { "delay", 'd', 0, G_OPTION_ARG_STRING, &options.attr_dampen,
+      "The time to wait (dampening) in seconds for further changes\n"
+      INDENT "before sending to the CIB",
+      "SECONDS" },
+
+    { "set", 's', 0, G_OPTION_ARG_STRING, &options.attr_set,
+      "(Advanced) The attribute set in which to place the value",
+      "SET" },
+
+    { "node", 'N', 0, G_OPTION_ARG_STRING, &options.attr_node,
+      "Set the attribute for the named node (instead of the local one)",
+      "NODE" },
+
+    { "all", 'A', 0, G_OPTION_ARG_NONE, &options.query_all,
+      "Show values of the attribute for all nodes (query only)",
+      NULL },
+
+    { "lifetime", 'l', 0, G_OPTION_ARG_CALLBACK, section_cb,
+      "(Not yet implemented) Lifetime of the node attribute (silently\n"
+      INDENT "ignored by cluster)",
+      "SECTION" },
+
+    { "private", 'p', G_OPTION_FLAG_NO_ARG, G_OPTION_ARG_CALLBACK, private_cb,
+      "If this creates a new attribute, never write the attribute to CIB",
+      NULL },
+
+    { "wait", 'W', 0, G_OPTION_ARG_CALLBACK, wait_cb,
+      "Wait for some event to occur before returning.  Values are 'no' (wait\n"
+      INDENT "only for the attribute daemon to acknowledge the request),\n"
+      INDENT "'local' (wait until the change has propagated to where a local\n"
+      INDENT "query will return the request value, or the value set by a\n"
+      INDENT "later request), or 'cluster' (wait until the change has propagated\n"
+      INDENT "to where a query anywhere on the cluster will return the requested\n"
+      INDENT "value, or the value set by a later request).  Default is 'no'.",
+      "UNTIL" },
+
+    { "utilization", 'z', G_OPTION_FLAG_NO_ARG, G_OPTION_ARG_CALLBACK, attr_set_type_cb,
+      "When creating a new attribute, create it as a node utilization attribute\n"
+      INDENT "instead of an instance attribute.  If the attribute already exists,\n"
+      INDENT "its existing type (utilization vs. instance) will be used regardless.\n"
+      INDENT "(with -B, -U, -Y)",
+      NULL },
+
+    { NULL }
+};
+
+static GOptionEntry deprecated_entries[] = {
+    { "quiet", 'q', G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_NONE, &options.quiet,
+      NULL,
+      NULL },
+
+    { "update", 'v', G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_CALLBACK, command_cb,
+      NULL,
+      NULL },
+
+    { "section", 'S', G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_CALLBACK, section_cb,
+      NULL,
+      NULL },
+
+    { NULL }
+};
+
+static int send_attrd_query(pcmk__output_t *out, const char *attr_name, const char *attr_node,
+                    gboolean query_all);
+static int send_attrd_update(char command, const char *attr_node, const char *attr_name,
+                             const char *attr_value, const char *attr_set,
+                             const char *attr_dampen, uint32_t attr_options);
+
+static bool
+pattern_used_correctly(void)
+{
+    /* --pattern can only be used with:
+     * -B (update-both), -D (delete), -U (update), or -Y (update-delay)
+     */
+    return options.command == 'B' || options.command == 'D' || options.command == 'U' || options.command == 'Y';
+}
+
+static GOptionContext *
+build_arg_context(pcmk__common_args_t *args, GOptionGroup **group) {
+    GOptionContext *context = NULL;
+
+    context = pcmk__build_arg_context(args, "text (default), xml", group, NULL);
+
+    pcmk__add_arg_group(context, "required", "Required Arguments:",
+                        "Show required arguments", required_entries);
+    pcmk__add_arg_group(context, "command", "Command:",
+                        "Show command options (mutually exclusive)", command_entries);
+    pcmk__add_arg_group(context, "additional", "Additional Options:",
+                        "Show additional options", addl_entries);
+    pcmk__add_arg_group(context, "deprecated", "Deprecated Options:",
+                        "Show deprecated options", deprecated_entries);
+
+    return context;
+}
 
 int
 main(int argc, char **argv)
 {
-    int index = 0;
-    int argerr = 0;
-    int attr_options = pcmk__node_attr_none;
-    int flag;
+    int rc = pcmk_rc_ok;
     crm_exit_t exit_code = CRM_EX_OK;
-    char *attr_node = NULL;
-    char *attr_name = NULL;
-    char *attr_set = NULL;
-    char *attr_section = NULL;
-    char *attr_dampen = NULL;
-    const char *attr_value = NULL;
-    char command = 'Q';
 
-    gboolean query_all = FALSE;
+    pcmk__output_t *out = NULL;
 
-    pcmk__cli_init_logging("attrd_updater", 0);
-    pcmk__set_cli_options(NULL, "-n <attribute> <command> [options]",
-                          long_options,
-                          "query and update Pacemaker node attributes");
+    GOptionGroup *output_group = NULL;
+    pcmk__common_args_t *args = pcmk__new_common_args(SUMMARY);
+    GOptionContext *context = build_arg_context(args, &output_group);
+    gchar **processed_args = pcmk__cmdline_preproc(argv, "dlnsvBNUS");
 
-    if (argc < 2) {
-        pcmk__cli_help('?', CRM_EX_USAGE);
+    pcmk__register_formats(output_group, formats);
+    if (!g_option_context_parse_strv(context, &processed_args, &error)) {
+        exit_code = CRM_EX_USAGE;
+        goto done;
     }
 
-    while (1) {
-        flag = pcmk__next_cli_option(argc, argv, &index, NULL);
-        if (flag == -1)
-            break;
+    pcmk__cli_init_logging("attrd_updater", args->verbosity);
 
-        switch (flag) {
-            case 'V':
-                crm_bump_log_level(argc, argv);
-                break;
-            case '?':
-            case '$':
-                cleanup_memory();
-                pcmk__cli_help(flag, CRM_EX_OK);
-                break;
-            case 'n':
-                set_option(attr_name);
-                break;
-            case 's':
-                set_option(attr_set);
-                break;
-            case 'd':
-                set_option(attr_dampen);
-                break;
-            case 'l':
-            case 'S':
-                set_option(attr_section);
-                break;
-            case 'N':
-                set_option(attr_node);
-                break;
-            case 'A':
-                query_all = TRUE;
-                break;
-            case 'p':
-                pcmk__set_node_attr_flags(attr_options, pcmk__node_attr_private);
-                break;
-            case 'q':
-                break;
-            case 'Y':
-                command = flag;
-                crm_log_args(argc, argv); /* Too much? */
-                break;
-            case 'Q':
-            case 'B':
-            case 'R':
-            case 'D':
-            case 'U':
-            case 'v':
-                command = flag;
-                attr_value = optarg;
-                crm_log_args(argc, argv); /* Too much? */
-                break;
-            default:
-                ++argerr;
-                break;
+    rc = pcmk__output_new(&out, args->output_ty, args->output_dest, argv);
+    if (rc != pcmk_rc_ok) {
+        exit_code = CRM_EX_ERROR;
+        g_set_error(&error, PCMK__EXITC_ERROR, exit_code, "Error creating output format %s: %s",
+                    args->output_ty, pcmk_rc_str(rc));
+        goto done;
+    }
+
+    if (args->version) {
+        out->version(out, false);
+        goto done;
+    }
+
+    if (options.attr_pattern) {
+        if (options.attr_name) {
+            exit_code = CRM_EX_USAGE;
+            g_set_error(&error, PCMK__EXITC_ERROR, exit_code,
+                        "Error: --name and --pattern cannot be used at the same time");
+            goto done;
         }
+
+        if (!pattern_used_correctly()) {
+            exit_code = CRM_EX_USAGE;
+            g_set_error(&error, PCMK__EXITC_ERROR, exit_code,
+                        "Error: pattern can only be used with delete or update");
+            goto done;
+        }
+
+        g_free(options.attr_name);
+        options.attr_name = options.attr_pattern;
+        options.attr_options |= pcmk__node_attr_pattern;
     }
 
-    if (optind > argc) {
-        ++argerr;
+    if (options.command != 'R' && options.attr_name == NULL) {
+        exit_code = CRM_EX_USAGE;
+        g_set_error(&error, PCMK__EXITC_ERROR, exit_code, "Command requires --name or --pattern argument");
+        goto done;
+    } else if ((options.command == 'B'|| options.command == 'Y') && options.attr_dampen == NULL) {
+        out->info(out, "Warning: '%c' command given without required --delay", options.command);
     }
 
-    if (command != 'R' && attr_name == NULL) {
-        ++argerr;
-    }
+    pcmk__register_lib_messages(out);
 
-    if (argerr) {
-        cleanup_memory();
-        pcmk__cli_help('?', CRM_EX_USAGE);
-    }
-
-    if (command == 'Q') {
-        exit_code = crm_errno2exit(do_query(attr_name, attr_node, query_all));
+    if (options.command == 'Q') {
+        int rc = send_attrd_query(out, options.attr_name, options.attr_node, options.query_all);
+        exit_code = pcmk_rc2exitc(rc);
     } else {
         /* @TODO We don't know whether the specified node is a Pacemaker Remote
          * node or not, so we can't set pcmk__node_attr_remote when appropriate.
          * However, it's not a big problem, because pacemaker-attrd will learn
          * and remember a node's "remoteness".
          */
-        const char *target = pcmk__node_attr_target(attr_node);
-
-        exit_code = pcmk_rc2exitc(do_update(command,
-                                            target == NULL ? attr_node : target,
-                                            attr_name, attr_value,
-                                            attr_section, attr_set,
-                                            attr_dampen, attr_options));
+        int rc = send_attrd_update(options.command, options.attr_node,
+                                   options.attr_name, options.attr_value,
+                                   options.attr_set, options.attr_dampen,
+                                   options.attr_options);
+        exit_code = pcmk_rc2exitc(rc);
     }
 
-    cleanup_memory();
+done:
+    g_strfreev(processed_args);
+    pcmk__free_arg_context(context);
+    g_free(options.attr_dampen);
+    g_free(options.attr_name);
+    g_free(options.attr_node);
+    g_free(options.attr_set);
+    free(options.attr_value);
+
+    pcmk__output_and_clear_error(&error, out);
+
+    if (out != NULL) {
+        out->finish(out, exit_code, true, NULL);
+        pcmk__output_free(out);
+    }
+
+    pcmk__unregister_formats();
     crm_exit(exit_code);
-}
-
-/*!
- * \internal
- * \brief Submit a query request to pacemaker-attrd and wait for reply
- *
- * \param[in] name    Name of attribute to query
- * \param[in] host    Query applies to this host only (or all hosts if NULL)
- * \param[out] reply  On success, will be set to new XML tree with reply
- *
- * \return pcmk_ok on success, -errno on error
- * \note On success, caller is responsible for freeing result via free_xml(*reply)
- */
-static int
-send_attrd_query(const char *name, const char *host, xmlNode **reply)
-{
-    int rc;
-    crm_ipc_t *ipc;
-    xmlNode *query;
-
-    /* Build the query XML */
-    query = create_xml_node(NULL, __func__);
-    if (query == NULL) {
-        return -ENOMEM;
-    }
-    crm_xml_add(query, F_TYPE, T_ATTRD);
-    crm_xml_add(query, F_ORIG, crm_system_name);
-    crm_xml_add(query, PCMK__XA_ATTR_NODE_NAME, host);
-    crm_xml_add(query, PCMK__XA_TASK, PCMK__ATTRD_CMD_QUERY);
-    crm_xml_add(query, PCMK__XA_ATTR_NAME, name);
-
-    /* Connect to pacemaker-attrd, send query XML and get reply */
-    crm_debug("Sending query for value of %s on %s", name, (host? host : "all nodes"));
-    ipc = crm_ipc_new(T_ATTRD, 0);
-    if (crm_ipc_connect(ipc) == FALSE) {
-        crm_perror(LOG_ERR, "Connection to cluster attribute manager failed");
-        rc = -ENOTCONN;
-    } else {
-        rc = crm_ipc_send(ipc, query, crm_ipc_client_response, 0, reply);
-        if (rc > 0) {
-            rc = pcmk_ok;
-        }
-        crm_ipc_close(ipc);
-    }
-    crm_ipc_destroy(ipc);
-
-    free_xml(query);
-    return(rc);
-}
-
-/*!
- * \brief Validate pacemaker-attrd's XML reply to an query
- *
- * param[in] reply      Root of reply XML tree to validate
- * param[in] attr_name  Name of attribute that was queried
- *
- * \return pcmk_ok on success,
- *         -errno on error (-ENXIO = requested attribute does not exist)
- */
-static int
-validate_attrd_reply(xmlNode *reply, const char *attr_name)
-{
-    const char *reply_attr;
-
-    if (reply == NULL) {
-        fprintf(stderr, "Could not query value of %s: reply did not contain valid XML\n",
-                attr_name);
-        return -pcmk_err_schema_validation;
-    }
-    crm_log_xml_trace(reply, "Reply");
-
-    reply_attr = crm_element_value(reply, PCMK__XA_ATTR_NAME);
-    if (reply_attr == NULL) {
-        fprintf(stderr, "Could not query value of %s: attribute does not exist\n",
-                attr_name);
-        return -ENXIO;
-    }
-
-    if (!pcmk__str_eq(crm_element_value(reply, F_TYPE), T_ATTRD, pcmk__str_casei)
-        || (crm_element_value(reply, PCMK__XA_ATTR_VERSION) == NULL)
-        || strcmp(reply_attr, attr_name)) {
-            fprintf(stderr,
-                    "Could not query value of %s: reply did not contain expected identification\n",
-                    attr_name);
-            return -pcmk_err_schema_validation;
-    }
-    return pcmk_ok;
 }
 
 /*!
  * \brief Print the attribute values in a pacemaker-attrd XML query reply
  *
- * \param[in] reply     Root of XML tree with query reply
- * \param[in] attr_name Name of attribute that was queried
+ * \param[in,out] out    Output object
+ * \param[in]     reply  List of attribute name/value pairs
  *
- * \return TRUE if any values were printed
+ * \return true if any values were printed
  */
-static gboolean
-print_attrd_values(xmlNode *reply, const char *attr_name)
+static void
+print_attrd_values(pcmk__output_t *out, const GList *reply)
 {
-    xmlNode *child;
-    const char *reply_host, *reply_value;
-    gboolean have_values = FALSE;
+    for (const GList *iter = reply; iter != NULL; iter = iter->next) {
+        const pcmk__attrd_query_pair_t *pair = iter->data;
 
-    /* Iterate through reply's XML tags (a node tag for each host-value pair) */
-    for (child = pcmk__xml_first_child(reply); child != NULL;
-         child = pcmk__xml_next(child)) {
-
-        if (!pcmk__str_eq((const char *)child->name, XML_CIB_TAG_NODE,
-                          pcmk__str_casei)) {
-            crm_warn("Ignoring unexpected %s tag in query reply", child->name);
-        } else {
-            reply_host = crm_element_value(child, PCMK__XA_ATTR_NODE_NAME);
-            reply_value = crm_element_value(child, PCMK__XA_ATTR_VALUE);
-
-            if (reply_host == NULL) {
-                crm_warn("Ignoring %s tag without %s attribute in query reply",
-                         XML_CIB_TAG_NODE, PCMK__XA_ATTR_NODE_NAME);
-            } else {
-                printf("name=\"%s\" host=\"%s\" value=\"%s\"\n",
-                       attr_name, reply_host, (reply_value? reply_value : ""));
-                have_values = TRUE;
-            }
-        }
+        out->message(out, "attribute", NULL, NULL, pair->name, pair->value,
+                     pair->node);
+        printed_values = true;
     }
-    return have_values;
+}
+
+static void
+attrd_event_cb(pcmk_ipc_api_t *attrd_api, enum pcmk_ipc_event event_type,
+               crm_exit_t status, void *event_data, void *user_data)
+{
+    pcmk__output_t *out = (pcmk__output_t *) user_data;
+    pcmk__attrd_api_reply_t *reply = event_data;
+
+    if (event_type != pcmk_ipc_event_reply || status != CRM_EX_OK) {
+        return;
+    }
+
+    /* Print the values from the reply. */
+    if (reply->reply_type == pcmk__attrd_reply_query) {
+        print_attrd_values(out, reply->data.pairs);
+    }
 }
 
 /*!
  * \brief Submit a query to pacemaker-attrd and print reply
  *
- * \param[in] attr_name  Name of attribute to be affected by request
- * \param[in] attr_node  Name of host to query for (or NULL for localhost)
- * \param[in] query_all  If TRUE, ignore attr_node and query all nodes instead
+ * \param[in,out] out  Output object
+ * \param[in]     attr_name  Name of attribute to be affected by request
+ * \param[in]     attr_node  Name of host to query for (or NULL for localhost)
+ * \param[in]     query_all  If TRUE, ignore attr_node and query all nodes
  *
- * \return pcmk_ok on success, -errno on error
+ * \return Standard Pacemaker return code
  */
 static int
-do_query(const char *attr_name, const char *attr_node, gboolean query_all)
+send_attrd_query(pcmk__output_t *out, const char *attr_name,
+                 const char *attr_node, gboolean query_all)
 {
-    xmlNode *reply = NULL;
-    int rc;
+    uint32_t options = pcmk__node_attr_none;
+    pcmk_ipc_api_t *attrd_api = NULL;
+    int rc = pcmk_rc_ok;
+
+    // Create attrd IPC object
+    rc = pcmk_new_ipc_api(&attrd_api, pcmk_ipc_attrd);
+    if (rc != pcmk_rc_ok) {
+        g_set_error(&error, PCMK__RC_ERROR, rc,
+                    "Could not connect to attrd: %s", pcmk_rc_str(rc));
+        return ENOTCONN;
+    }
+
+    pcmk_register_ipc_callback(attrd_api, attrd_event_cb, out);
+
+    // Connect to attrd (without main loop)
+    rc = pcmk_connect_ipc(attrd_api, pcmk_ipc_dispatch_sync);
+    if (rc != pcmk_rc_ok) {
+        g_set_error(&error, PCMK__RC_ERROR, rc,
+                    "Could not connect to attrd: %s", pcmk_rc_str(rc));
+        pcmk_free_ipc_api(attrd_api);
+        return rc;
+    }
 
     /* Decide which node(s) to query */
     if (query_all == TRUE) {
-        attr_node = NULL;
-    } else {
-        const char *target = pcmk__node_attr_target(attr_node);
-        if (target != NULL) {
-            attr_node = target;
-        }
+        options |= pcmk__node_attr_query_all;
     }
 
-    /* Build and send pacemaker-attrd request, and get XML reply */
-    rc = send_attrd_query(attr_name, attr_node, &reply);
-    if (rc != pcmk_ok) {
-        fprintf(stderr, "Could not query value of %s: %s (%d)\n", attr_name, pcmk_strerror(rc), rc);
-        return rc;
+    rc = pcmk__attrd_api_query(attrd_api, attr_node, attr_name, options);
+
+    if (rc != pcmk_rc_ok) {
+        g_set_error(&error, PCMK__RC_ERROR, rc, "Could not query value of %s: %s (%d)",
+                    attr_name, pcmk_strerror(rc), rc);
+    } else if (!printed_values) {
+        rc = pcmk_rc_schema_validation;
+        g_set_error(&error, PCMK__RC_ERROR, rc,
+                    "Could not query value of %s: attribute does not exist", attr_name);
     }
 
-    /* Validate the XML reply */
-    rc = validate_attrd_reply(reply, attr_name);
-    if (rc != pcmk_ok) {
-        if (reply != NULL) {
-            free_xml(reply);
-        }
-        return rc;
-    }
+    pcmk_disconnect_ipc(attrd_api);
+    pcmk_free_ipc_api(attrd_api);
 
-    /* Print the values from the reply */
-    if (print_attrd_values(reply, attr_name) == FALSE) {
-        fprintf(stderr,
-                "Could not query value of %s: reply had attribute name but no host values\n",
-                attr_name);
-        free_xml(reply);
-        return -pcmk_err_schema_validation;
-    }
-
-    return pcmk_ok;
+    return rc;
 }
 
 static int
-do_update(char command, const char *attr_node, const char *attr_name,
-          const char *attr_value, const char *attr_section,
-          const char *attr_set, const char *attr_dampen, int attr_options)
+send_attrd_update(char command, const char *attr_node, const char *attr_name,
+                  const char *attr_value, const char *attr_set,
+                  const char *attr_dampen, uint32_t attr_options)
 {
-    int rc = pcmk__node_attr_request(NULL, command, attr_node, attr_name,
-                                     attr_value, attr_section, attr_set,
-                                     attr_dampen, NULL, attr_options);
-    if (rc != pcmk_rc_ok) {
-        fprintf(stderr, "Could not update %s=%s: %s (%d)\n",
-                attr_name, attr_value, pcmk_rc_str(rc), rc);
+    int rc = pcmk_rc_ok;
+
+    switch (command) {
+        case 'B':
+            rc = pcmk__attrd_api_update(NULL, attr_node, attr_name, attr_value,
+                                        attr_dampen, attr_set, NULL,
+                                        attr_options | pcmk__node_attr_value | pcmk__node_attr_delay);
+            break;
+
+        case 'D':
+            rc = pcmk__attrd_api_delete(NULL, attr_node, attr_name, attr_options);
+            break;
+
+        case 'R':
+            rc = pcmk__attrd_api_refresh(NULL, attr_node);
+            break;
+
+        case 'U':
+            rc = pcmk__attrd_api_update(NULL, attr_node, attr_name, attr_value,
+                                        NULL, attr_set, NULL,
+                                        attr_options | pcmk__node_attr_value);
+            break;
+
+        case 'Y':
+            rc = pcmk__attrd_api_update(NULL, attr_node, attr_name, NULL,
+                                        attr_dampen, attr_set, NULL,
+                                        attr_options | pcmk__node_attr_delay);
+            break;
     }
+
+    if (rc != pcmk_rc_ok) {
+        g_set_error(&error, PCMK__RC_ERROR, rc, "Could not update %s=%s: %s (%d)",
+                    attr_name, attr_value, pcmk_rc_str(rc), rc);
+    }
+
     return rc;
 }

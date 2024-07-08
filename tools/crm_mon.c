@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -13,6 +13,7 @@
 
 #include <crm/crm.h>
 
+#include <stdint.h>
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -29,13 +30,12 @@
 #include <crm/services.h>
 #include <crm/lrmd.h>
 #include <crm/common/cmdline_internal.h>
-#include <crm/common/curses_internal.h>
 #include <crm/common/internal.h>  // pcmk__ends_with_ext()
 #include <crm/common/ipc.h>
-#include <crm/common/iso8601_internal.h>
 #include <crm/common/mainloop.h>
 #include <crm/common/output.h>
 #include <crm/common/output_internal.h>
+#include <crm/common/results.h>
 #include <crm/common/util.h>
 #include <crm/common/xml.h>
 #include <crm/common/xml_internal.h>
@@ -56,8 +56,8 @@
  * Definitions indicating which items to print
  */
 
-static unsigned int show;
-static unsigned int show_opts = pcmk_show_pending;
+static uint32_t show;
+static uint32_t show_opts = pcmk_show_pending;
 
 /*
  * Definitions indicating how to output
@@ -70,8 +70,8 @@ static GIOChannel *io_channel = NULL;
 static GMainLoop *mainloop = NULL;
 static guint reconnect_timer = 0;
 static mainloop_timer_t *refresh_timer = NULL;
-static pe_working_set_t *mon_data_set = NULL;
 
+static enum pcmk_pacemakerd_state pcmkd_state = pcmk_pacemakerd_state_invalid;
 static cib_t *cib = NULL;
 static stonith_t *st = NULL;
 static xmlNode *current_cib = NULL;
@@ -85,10 +85,7 @@ static gchar **processed_args = NULL;
 static time_t last_refresh = 0;
 volatile crm_trigger_t *refresh_trigger = NULL;
 
-static gboolean fence_history = FALSE;
-static gboolean has_warnings = FALSE;
-static gboolean on_remote_node = FALSE;
-static gboolean use_cib_native = FALSE;
+static enum pcmk__fence_history fence_history = pcmk__fence_history_none;
 
 int interactive_fence_level = 0;
 
@@ -103,6 +100,108 @@ static pcmk__supported_format_t formats[] = {
     { NULL, NULL, NULL }
 };
 
+PCMK__OUTPUT_ARGS("crm-mon-disconnected", "const char *",
+                  "enum pcmk_pacemakerd_state")
+static int
+crm_mon_disconnected_default(pcmk__output_t *out, va_list args)
+{
+    return pcmk_rc_no_output;
+}
+
+PCMK__OUTPUT_ARGS("crm-mon-disconnected", "const char *",
+                  "enum pcmk_pacemakerd_state")
+static int
+crm_mon_disconnected_html(pcmk__output_t *out, va_list args)
+{
+    const char *desc = va_arg(args, const char *);
+    enum pcmk_pacemakerd_state state =
+        (enum pcmk_pacemakerd_state) va_arg(args, int);
+
+    if (out->dest != stdout) {
+        out->reset(out);
+    }
+
+    pcmk__output_create_xml_text_node(out, "span", "Not connected to CIB");
+
+    if (desc != NULL) {
+        pcmk__output_create_xml_text_node(out, "span", ": ");
+        pcmk__output_create_xml_text_node(out, "span", desc);
+    }
+
+    if (state != pcmk_pacemakerd_state_invalid) {
+        const char *state_s = pcmk__pcmkd_state_enum2friendly(state);
+
+        pcmk__output_create_xml_text_node(out, "span", " (");
+        pcmk__output_create_xml_text_node(out, "span", state_s);
+        pcmk__output_create_xml_text_node(out, "span", ")");
+    }
+
+    out->finish(out, CRM_EX_DISCONNECT, true, NULL);
+    return pcmk_rc_ok;
+}
+
+PCMK__OUTPUT_ARGS("crm-mon-disconnected", "const char *",
+                  "enum pcmk_pacemakerd_state")
+static int
+crm_mon_disconnected_text(pcmk__output_t *out, va_list args)
+{
+    const char *desc = va_arg(args, const char *);
+    enum pcmk_pacemakerd_state state =
+        (enum pcmk_pacemakerd_state) va_arg(args, int);
+    int rc = pcmk_rc_ok;
+
+    if (out->dest != stdout) {
+        out->reset(out);
+    }
+
+    if (state != pcmk_pacemakerd_state_invalid) {
+        rc = out->info(out, "Not connected to CIB%s%s (%s)",
+                       (desc != NULL)? ": " : "", pcmk__s(desc, ""),
+                       pcmk__pcmkd_state_enum2friendly(state));
+    } else {
+        rc = out->info(out, "Not connected to CIB%s%s",
+                       (desc != NULL)? ": " : "", pcmk__s(desc, ""));
+    }
+
+    out->finish(out, CRM_EX_DISCONNECT, true, NULL);
+    return rc;
+}
+
+PCMK__OUTPUT_ARGS("crm-mon-disconnected", "const char *",
+                  "enum pcmk_pacemakerd_state")
+static int
+crm_mon_disconnected_xml(pcmk__output_t *out, va_list args)
+{
+    const char *desc = va_arg(args, const char *);
+    enum pcmk_pacemakerd_state state =
+        (enum pcmk_pacemakerd_state) va_arg(args, int);
+    const char *state_s = NULL;
+
+    if (out->dest != stdout) {
+        out->reset(out);
+    }
+
+    if (state != pcmk_pacemakerd_state_invalid) {
+        state_s = pcmk_pacemakerd_api_daemon_state_enum2text(state);
+    }
+
+    pcmk__output_create_xml_node(out, "crm-mon-disconnected",
+                                 XML_ATTR_DESC, desc,
+                                 "pacemakerd-state", state_s,
+                                 NULL);
+
+    out->finish(out, CRM_EX_DISCONNECT, true, NULL);
+    return pcmk_rc_ok;
+}
+
+static pcmk__message_entry_t fmt_functions[] = {
+    { "crm-mon-disconnected", "default", crm_mon_disconnected_default },
+    { "crm-mon-disconnected", "html", crm_mon_disconnected_html },
+    { "crm-mon-disconnected", "text", crm_mon_disconnected_text },
+    { "crm-mon-disconnected", "xml", crm_mon_disconnected_xml },
+    { NULL, NULL, NULL },
+};
+
 /* Define exit codes for monitoring-compatible output
  * For nagios plugins, the possibilities are
  * OK=0, WARN=1, CRIT=2, and UNKNOWN=3
@@ -115,9 +214,8 @@ static pcmk__supported_format_t formats[] = {
 
 struct {
     guint reconnect_ms;
-    gboolean daemonize;
+    enum mon_exec_mode exec_mode;
     gboolean fence_connect;
-    gboolean one_shot;
     gboolean print_pending;
     gboolean show_bans;
     gboolean watch_fencing;
@@ -130,24 +228,23 @@ struct {
     GSList *user_includes_excludes;
     GSList *includes_excludes;
 } options = {
+    .reconnect_ms = RECONNECT_MSECS,
+    .exec_mode = mon_exec_unset,
     .fence_connect = TRUE,
-    .reconnect_ms = RECONNECT_MSECS
 };
 
-static void clean_up_cib_connection(void);
-static void clean_up_fencing_connection(void);
 static crm_exit_t clean_up(crm_exit_t exit_code);
 static void crm_diff_update(const char *event, xmlNode * msg);
-static void handle_connection_failures(int rc);
+static void clean_up_on_connection_failure(int rc);
 static int mon_refresh_display(gpointer user_data);
-static int cib_connect(gboolean full);
-static int fencing_connect(void);
-static int pacemakerd_status(void);
+static int setup_cib_connection(void);
+static int setup_fencer_connection(void);
+static int setup_api_connections(void);
 static void mon_st_callback_event(stonith_t * st, stonith_event_t * e);
 static void mon_st_callback_display(stonith_t * st, stonith_event_t * e);
 static void refresh_after_event(gboolean data_updated, gboolean enforce);
 
-static unsigned int
+static uint32_t
 all_includes(mon_output_format_t fmt) {
     if (fmt == mon_output_monitor || fmt == mon_output_plain || fmt == mon_output_console) {
         return ~pcmk_section_options;
@@ -156,23 +253,21 @@ all_includes(mon_output_format_t fmt) {
     }
 }
 
-static unsigned int
+static uint32_t
 default_includes(mon_output_format_t fmt) {
     switch (fmt) {
         case mon_output_monitor:
         case mon_output_plain:
         case mon_output_console:
-            return pcmk_section_stack | pcmk_section_dc | pcmk_section_times | pcmk_section_counts |
-                   pcmk_section_nodes | pcmk_section_resources | pcmk_section_failures;
-
-        case mon_output_xml:
-        case mon_output_legacy_xml:
-            return all_includes(fmt);
-
         case mon_output_html:
         case mon_output_cgi:
-            return pcmk_section_summary | pcmk_section_nodes | pcmk_section_resources |
-                   pcmk_section_failures;
+            return pcmk_section_summary
+                   |pcmk_section_nodes
+                   |pcmk_section_resources
+                   |pcmk_section_failures;
+
+        case mon_output_xml:
+            return all_includes(fmt);
 
         default:
             return 0;
@@ -181,7 +276,7 @@ default_includes(mon_output_format_t fmt) {
 
 struct {
     const char *name;
-    unsigned int bit;
+    uint32_t bit;
 } sections[] = {
     { "attributes", pcmk_section_attributes },
     { "bans", pcmk_section_bans },
@@ -189,10 +284,11 @@ struct {
     { "dc", pcmk_section_dc },
     { "failcounts", pcmk_section_failcounts },
     { "failures", pcmk_section_failures },
-    { "fencing", pcmk_section_fencing_all },
+    { PCMK__VALUE_FENCING, pcmk_section_fencing_all },
     { "fencing-failed", pcmk_section_fence_failed },
     { "fencing-pending", pcmk_section_fence_pending },
     { "fencing-succeeded", pcmk_section_fence_worked },
+    { "maint-mode", pcmk_section_maint_mode },
     { "nodes", pcmk_section_nodes },
     { "operations", pcmk_section_operations },
     { "options", pcmk_section_options },
@@ -204,7 +300,7 @@ struct {
     { NULL }
 };
 
-static unsigned int
+static uint32_t
 find_section_bit(const char *name) {
     for (int i = 0; sections[i].name != NULL; i++) {
         if (pcmk__str_eq(sections[i].name, name, pcmk__str_casei)) {
@@ -222,11 +318,11 @@ apply_exclude(const gchar *excludes, GError **error) {
 
     parts = g_strsplit(excludes, ",", 0);
     for (char **s = parts; *s != NULL; s++) {
-        unsigned int bit = find_section_bit(*s);
+        uint32_t bit = find_section_bit(*s);
 
         if (pcmk__str_eq(*s, "all", pcmk__str_none)) {
             show = 0;
-        } else if (pcmk__str_eq(*s, "none", pcmk__str_none)) {
+        } else if (pcmk__str_eq(*s, PCMK__VALUE_NONE, pcmk__str_none)) {
             show = all_includes(output_format);
         } else if (bit != 0) {
             show &= ~bit;
@@ -234,9 +330,9 @@ apply_exclude(const gchar *excludes, GError **error) {
             g_set_error(error, PCMK__EXITC_ERROR, CRM_EX_USAGE,
                         "--exclude options: all, attributes, bans, counts, dc, "
                         "failcounts, failures, fencing, fencing-failed, "
-                        "fencing-pending, fencing-succeeded, nodes, none, "
-                        "operations, options, resources, stack, summary, "
-                        "tickets, times");
+                        "fencing-pending, fencing-succeeded, maint-mode, nodes, "
+                        PCMK__VALUE_NONE ", operations, options, resources, "
+                        "stack, summary, tickets, times");
             result = FALSE;
             break;
         }
@@ -252,7 +348,7 @@ apply_include(const gchar *includes, GError **error) {
 
     parts = g_strsplit(includes, ",", 0);
     for (char **s = parts; *s != NULL; s++) {
-        unsigned int bit = find_section_bit(*s);
+        uint32_t bit = find_section_bit(*s);
 
         if (pcmk__str_eq(*s, "all", pcmk__str_none)) {
             show = all_includes(output_format);
@@ -268,7 +364,7 @@ apply_include(const gchar *includes, GError **error) {
             }
         } else if (pcmk__str_any_of(*s, "default", "defaults", NULL)) {
             show |= default_includes(output_format);
-        } else if (pcmk__str_eq(*s, "none", pcmk__str_none)) {
+        } else if (pcmk__str_eq(*s, PCMK__VALUE_NONE, pcmk__str_none)) {
             show = 0;
         } else if (bit != 0) {
             show |= bit;
@@ -276,8 +372,9 @@ apply_include(const gchar *includes, GError **error) {
             g_set_error(error, PCMK__EXITC_ERROR, CRM_EX_USAGE,
                         "--include options: all, attributes, bans[:PREFIX], counts, dc, "
                         "default, failcounts, failures, fencing, fencing-failed, "
-                        "fencing-pending, fencing-succeeded, nodes, none, operations, "
-                        "options, resources, stack, summary, tickets, times");
+                        "fencing-pending, fencing-succeeded, maint-mode, nodes, "
+                        PCMK__VALUE_NONE ", operations, options, resources, "
+                        "stack, summary, tickets, times");
             result = FALSE;
             break;
         }
@@ -287,15 +384,9 @@ apply_include(const gchar *includes, GError **error) {
 }
 
 static gboolean
-apply_include_exclude(GSList *lst, mon_output_format_t fmt, GError **error) {
+apply_include_exclude(GSList *lst, GError **error) {
     gboolean rc = TRUE;
     GSList *node = lst;
-
-    /* Set the default of what to display here.  Note that we OR everything to
-     * show instead of set show directly because it could have already had some
-     * settings applied to it in main.
-     */
-    show |= default_includes(fmt);
 
     while (node != NULL) {
         char *s = node->data;
@@ -338,56 +429,32 @@ include_exclude_cb(const gchar *option_name, const gchar *optarg, gpointer data,
 
 static gboolean
 as_cgi_cb(const gchar *option_name, const gchar *optarg, gpointer data, GError **err) {
-    if (args->output_ty != NULL) {
-        free(args->output_ty);
-    }
-
-    args->output_ty = strdup("html");
+    pcmk__str_update(&args->output_ty, "html");
     output_format = mon_output_cgi;
-    options.one_shot = TRUE;
+    options.exec_mode = mon_exec_one_shot;
     return TRUE;
 }
 
 static gboolean
 as_html_cb(const gchar *option_name, const gchar *optarg, gpointer data, GError **err) {
-    if (args->output_ty != NULL) {
-        free(args->output_ty);
-    }
-
-    if (args->output_dest != NULL) {
-        free(args->output_dest);
-        args->output_dest = NULL;
-    }
-
-    if (optarg != NULL) {
-        args->output_dest = strdup(optarg);
-    }
-
-    args->output_ty = strdup("html");
+    pcmk__str_update(&args->output_dest, optarg);
+    pcmk__str_update(&args->output_ty, "html");
     output_format = mon_output_html;
-    umask(S_IWGRP | S_IWOTH);
+    umask(S_IWGRP | S_IWOTH);   // World-readable HTML
     return TRUE;
 }
 
 static gboolean
 as_simple_cb(const gchar *option_name, const gchar *optarg, gpointer data, GError **err) {
-    if (args->output_ty != NULL) {
-        free(args->output_ty);
-    }
-
-    args->output_ty = strdup("text");
+    pcmk__str_update(&args->output_ty, "text");
     output_format = mon_output_monitor;
-    options.one_shot = TRUE;
+    options.exec_mode = mon_exec_one_shot;
     return TRUE;
 }
 
 static gboolean
 as_xml_cb(const gchar *option_name, const gchar *optarg, gpointer data, GError **err) {
-    if (args->output_ty != NULL) {
-        free(args->output_ty);
-    }
-
-    args->output_ty = strdup("xml");
+    pcmk__str_update(&args->output_ty, "xml");
     output_format = mon_output_legacy_xml;
     return TRUE;
 }
@@ -403,23 +470,26 @@ fence_history_cb(const gchar *option_name, const gchar *optarg, gpointer data, G
     switch (interactive_fence_level) {
         case 3:
             options.fence_connect = TRUE;
-            fence_history = TRUE;
-            return include_exclude_cb("--include", "fencing", data, err);
+            fence_history = pcmk__fence_history_full;
+            return include_exclude_cb("--include", PCMK__VALUE_FENCING, data,
+                                      err);
 
         case 2:
             options.fence_connect = TRUE;
-            fence_history = TRUE;
-            return include_exclude_cb("--include", "fencing", data, err);
+            fence_history = pcmk__fence_history_full;
+            return include_exclude_cb("--include", PCMK__VALUE_FENCING, data,
+                                      err);
 
         case 1:
             options.fence_connect = TRUE;
-            fence_history = TRUE;
+            fence_history = pcmk__fence_history_full;
             return include_exclude_cb("--include", "fencing-failed,fencing-pending", data, err);
 
         case 0:
             options.fence_connect = FALSE;
-            fence_history = FALSE;
-            return include_exclude_cb("--exclude", "fencing", data, err);
+            fence_history = pcmk__fence_history_none;
+            return include_exclude_cb("--exclude", PCMK__VALUE_FENCING, data,
+                                      err);
 
         default:
             g_set_error(err, PCMK__EXITC_ERROR, CRM_EX_INVALID_PARAM, "Fence history must be 0-3");
@@ -435,7 +505,7 @@ group_by_node_cb(const gchar *option_name, const gchar *optarg, gpointer data, G
 
 static gboolean
 hide_headers_cb(const gchar *option_name, const gchar *optarg, gpointer data, GError **err) {
-    return include_exclude_cb("--exclude", "summary", data, err);
+    return user_include_exclude_cb("--exclude", "summary", data, err);
 }
 
 static gboolean
@@ -446,6 +516,7 @@ inactive_resources_cb(const gchar *option_name, const gchar *optarg, gpointer da
 
 static gboolean
 no_curses_cb(const gchar *option_name, const gchar *optarg, gpointer data, GError **err) {
+    pcmk__str_update(&args->output_ty, "text");
     output_format = mon_output_plain;
     return TRUE;
 }
@@ -463,9 +534,15 @@ print_detail_cb(const gchar *option_name, const gchar *optarg, gpointer data, GE
 }
 
 static gboolean
+print_description_cb(const gchar *option_name, const gchar *optarg, gpointer data, GError **err) {
+    show_opts |= pcmk_show_description;
+    return TRUE;
+}
+
+static gboolean
 print_timing_cb(const gchar *option_name, const gchar *optarg, gpointer data, GError **err) {
     show_opts |= pcmk_show_timing;
-    return include_exclude_cb("--include", "operations", data, err);
+    return user_include_exclude_cb("--include", "operations", data, err);
 }
 
 static gboolean
@@ -477,47 +554,86 @@ reconnect_cb(const gchar *option_name, const gchar *optarg, gpointer data, GErro
         return FALSE;
     } else {
         options.reconnect_ms = crm_parse_interval_spec(optarg);
+
+        if (options.exec_mode != mon_exec_daemonized) {
+            // Reconnect interval applies to daemonized too, so don't override
+            options.exec_mode = mon_exec_update;
+        }
     }
 
     return TRUE;
 }
 
+/*!
+ * \internal
+ * \brief Enable one-shot mode
+ *
+ * \param[in]  option_name  Name of option being parsed (ignored)
+ * \param[in]  optarg       Value to be parsed (ignored)
+ * \param[in]  data         User data (ignored)
+ * \param[out] err          Where to store error (ignored)
+ */
+static gboolean
+one_shot_cb(const gchar *option_name, const gchar *optarg, gpointer data,
+            GError **err)
+{
+    options.exec_mode = mon_exec_one_shot;
+    return TRUE;
+}
+
+/*!
+ * \internal
+ * \brief Enable daemonized mode
+ *
+ * \param[in]  option_name  Name of option being parsed (ignored)
+ * \param[in]  optarg       Value to be parsed (ignored)
+ * \param[in]  data         User data (ignored)
+ * \param[out] err          Where to store error (ignored)
+ */
+static gboolean
+daemonize_cb(const gchar *option_name, const gchar *optarg, gpointer data,
+             GError **err)
+{
+    options.exec_mode = mon_exec_daemonized;
+    return TRUE;
+}
+
 static gboolean
 show_attributes_cb(const gchar *option_name, const gchar *optarg, gpointer data, GError **err) {
-    return include_exclude_cb("--include", "attributes", data, err);
+    return user_include_exclude_cb("--include", "attributes", data, err);
 }
 
 static gboolean
 show_bans_cb(const gchar *option_name, const gchar *optarg, gpointer data, GError **err) {
     if (optarg != NULL) {
         char *s = crm_strdup_printf("bans:%s", optarg);
-        gboolean rc = include_exclude_cb("--include", s, data, err);
+        gboolean rc = user_include_exclude_cb("--include", s, data, err);
         free(s);
         return rc;
     } else {
-        return include_exclude_cb("--include", "bans", data, err);
+        return user_include_exclude_cb("--include", "bans", data, err);
     }
 }
 
 static gboolean
 show_failcounts_cb(const gchar *option_name, const gchar *optarg, gpointer data, GError **err) {
-    return include_exclude_cb("--include", "failcounts", data, err);
+    return user_include_exclude_cb("--include", "failcounts", data, err);
 }
 
 static gboolean
 show_operations_cb(const gchar *option_name, const gchar *optarg, gpointer data, GError **err) {
-    return include_exclude_cb("--include", "failcounts,operations", data, err);
+    return user_include_exclude_cb("--include", "failcounts,operations", data, err);
 }
 
 static gboolean
 show_tickets_cb(const gchar *option_name, const gchar *optarg, gpointer data, GError **err) {
-    return include_exclude_cb("--include", "tickets", data, err);
+    return user_include_exclude_cb("--include", "tickets", data, err);
 }
 
 static gboolean
 use_cib_file_cb(const gchar *option_name, const gchar *optarg, gpointer data, GError **err) {
     setenv("CIB_file", optarg, 1);
-    options.one_shot = TRUE;
+    options.exec_mode = mon_exec_one_shot;
     return TRUE;
 }
 
@@ -529,11 +645,13 @@ static GOptionEntry addl_entries[] = {
       "Update frequency (default is 5 seconds)",
       "TIMESPEC" },
 
-    { "one-shot", '1', 0, G_OPTION_ARG_NONE, &options.one_shot,
-      "Display the cluster status once on the console and exit",
+    { "one-shot", '1', G_OPTION_FLAG_NO_ARG, G_OPTION_ARG_CALLBACK,
+      one_shot_cb,
+      "Display the cluster status once and exit",
       NULL },
 
-    { "daemonize", 'd', 0, G_OPTION_ARG_NONE, &options.daemonize,
+    { "daemonize", 'd', G_OPTION_FLAG_NO_ARG, G_OPTION_ARG_CALLBACK,
+      daemonize_cb,
       "Run in the background as a daemon.\n"
       INDENT "Requires at least one of --output-to and --external-agent.",
       NULL },
@@ -629,16 +747,16 @@ static GOptionEntry display_entries[] = {
       "Show more details (node IDs, individual clone instances)",
       NULL },
 
+    { "show-description", 0, G_OPTION_FLAG_NO_ARG, G_OPTION_ARG_CALLBACK, print_description_cb,
+      "Show resource descriptions",
+      NULL },
+
     { "brief", 'b', G_OPTION_FLAG_NO_ARG, G_OPTION_ARG_CALLBACK, print_brief_cb,
       "Brief output",
       NULL },
 
     { "pending", 'j', G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_NONE, &options.print_pending,
       "Display pending state if 'record-pending' is enabled",
-      NULL },
-
-    { "simple-status", 's', G_OPTION_FLAG_NO_ARG, G_OPTION_ARG_CALLBACK, as_simple_cb,
-      "Display the cluster status once as a simple one line output (suitable for nagios)",
       NULL },
 
     { NULL }
@@ -653,6 +771,12 @@ static GOptionEntry deprecated_entries[] = {
     { "as-xml", 'X', G_OPTION_FLAG_NO_ARG, G_OPTION_ARG_CALLBACK, as_xml_cb,
       "Write cluster status as XML to stdout. This will enable one-shot mode.\n"
       INDENT "Use --output-as=xml instead.",
+      NULL },
+
+    { "simple-status", 's', G_OPTION_FLAG_NO_ARG, G_OPTION_ARG_CALLBACK,
+      as_simple_cb,
+      "Display the cluster status once as a simple one line output\n"
+      INDENT "(suitable for nagios)",
       NULL },
 
     { "disable-ncurses", 'N', G_OPTION_FLAG_NO_ARG, G_OPTION_ARG_CALLBACK, no_curses_cb,
@@ -683,16 +807,16 @@ reconnect_after_timeout(gpointer data)
     }
 #endif
 
-    out->info(out, "Reconnecting...");
-    if (pacemakerd_status() == pcmk_rc_ok) {
-        fencing_connect();
-        if (cib_connect(TRUE) == pcmk_rc_ok) {
-            /* trigger redrawing the screen (needs reconnect_timer == 0) */
-            reconnect_timer = 0;
-            refresh_after_event(FALSE, TRUE);
-            return G_SOURCE_REMOVE;
-        }
+    out->transient(out, "Reconnecting...");
+    if (setup_api_connections() == pcmk_rc_ok) {
+        // Trigger redrawing the screen (needs reconnect_timer == 0)
+        reconnect_timer = 0;
+        refresh_after_event(FALSE, TRUE);
+        return G_SOURCE_REMOVE;
     }
+
+    out->message(out, "crm-mon-disconnected",
+                 "Latest connection attempt failed", pcmkd_state);
 
     reconnect_timer = g_timeout_add(options.reconnect_ms,
                                     reconnect_after_timeout, NULL);
@@ -706,7 +830,16 @@ reconnect_after_timeout(gpointer data)
 static void
 mon_cib_connection_destroy(gpointer user_data)
 {
-    out->info(out, "Connection to the cluster-daemons terminated");
+    const char *msg = "Connection to the cluster lost";
+
+    pcmkd_state = pcmk_pacemakerd_state_invalid;
+
+    /* No crm-mon-disconnected message for console; a working implementation
+     * is not currently worth the effort
+     */
+    out->transient(out, "%s", msg);
+
+    out->message(out, "crm-mon-disconnected", msg, pcmkd_state);
 
     if (refresh_timer != NULL) {
         /* we'll trigger a refresh after reconnect */
@@ -717,18 +850,18 @@ mon_cib_connection_destroy(gpointer user_data)
         g_source_remove(reconnect_timer);
         reconnect_timer = 0;
     }
-    if (st) {
-        /* the client API won't properly reconnect notifications
-         * if they are still in the table - so remove them
-         */
-        clean_up_fencing_connection();
-    }
+
+    /* the client API won't properly reconnect notifications if they are still
+     * in the table - so remove them
+     */
+    stonith_api_delete(st);
+    st = NULL;
+
     if (cib) {
         cib->cmds->signoff(cib);
         reconnect_timer = g_timeout_add(options.reconnect_ms,
                                         reconnect_after_timeout, NULL);
     }
-    return;
 }
 
 /* Signal handler installed into the mainloop for normal program shutdown */
@@ -769,7 +902,7 @@ mon_winresize(int nsig)
 #endif
 
 static int
-fencing_connect(void)
+setup_fencer_connection(void)
 {
     int rc = pcmk_ok;
 
@@ -794,53 +927,35 @@ fencing_connect(void)
             st->cmds->register_notification(st, T_STONITH_NOTIFY_HISTORY, mon_st_callback_display);
         }
     } else {
-        clean_up_fencing_connection();
+        stonith_api_delete(st);
+        st = NULL;
     }
 
     return rc;
 }
 
 static int
-cib_connect(gboolean full)
+setup_cib_connection(void)
 {
     int rc = pcmk_rc_ok;
 
     CRM_CHECK(cib != NULL, return EINVAL);
 
-    if (cib->state == cib_connected_query ||
-        cib->state == cib_connected_command) {
+    if (cib->state != cib_disconnected) {
+        // Already connected with notifications registered for CIB updates
         return rc;
     }
 
-    crm_trace("Connecting to the CIB");
+    rc = cib__signon_query(out, &cib, &current_cib);
 
-    rc = pcmk_legacy2rc(cib->cmds->signon(cib, crm_system_name, cib_query));
-    if (rc != pcmk_rc_ok) {
-        out->err(out, "Could not connect to the CIB: %s",
-                 pcmk_rc_str(rc));
-        return rc;
-    }
-
-#if CURSES_ENABLED
-    /* just show this if refresh is gonna remove all traces */
-    if (output_format == mon_output_console) {
-        out->info(out,"Waiting for CIB ...");
-    }
-#endif
-
-    rc = pcmk_legacy2rc(cib->cmds->query(cib, NULL, &current_cib,
-                                         cib_scope_local | cib_sync_call));
-
-    if (rc == pcmk_rc_ok && full) {
+    if (rc == pcmk_rc_ok) {
         rc = pcmk_legacy2rc(cib->cmds->set_connection_dnotify(cib,
             mon_cib_connection_destroy));
         if (rc == EPROTONOSUPPORT) {
             out->err(out,
-                     "Notification setup not supported, won't be "
-                     "able to reconnect after failure");
-            if (output_format == mon_output_console) {
-                sleep(2);
-            }
+                     "CIB client does not support connection loss "
+                     "notifications; crm_mon will be unable to reconnect after "
+                     "connection loss");
             rc = pcmk_rc_ok;
         }
 
@@ -852,9 +967,18 @@ cib_connect(gboolean full)
         }
 
         if (rc != pcmk_rc_ok) {
-            out->err(out, "Notification setup failed, could not monitor CIB actions");
-            clean_up_cib_connection();
-            clean_up_fencing_connection();
+            if (rc == EPROTONOSUPPORT) {
+                out->err(out,
+                         "CIB client does not support CIB diff "
+                         "notifications");
+            } else {
+                out->err(out, "CIB diff notification setup failed");
+            }
+
+            out->err(out, "Cannot monitor CIB changes; exiting");
+            cib__clean_up_connection(&cib);
+            stonith_api_delete(st);
+            st = NULL;
         }
     }
     return rc;
@@ -871,176 +995,68 @@ set_fencing_options(int level)
     switch (level) {
         case 3:
             options.fence_connect = TRUE;
-            fence_history = TRUE;
+            fence_history = pcmk__fence_history_full;
             show |= pcmk_section_fencing_all;
             break;
 
         case 2:
             options.fence_connect = TRUE;
-            fence_history = TRUE;
+            fence_history = pcmk__fence_history_full;
             show |= pcmk_section_fencing_all;
             break;
 
         case 1:
             options.fence_connect = TRUE;
-            fence_history = TRUE;
+            fence_history = pcmk__fence_history_full;
             show |= pcmk_section_fence_failed | pcmk_section_fence_pending;
             break;
 
         default:
             interactive_fence_level = 0;
             options.fence_connect = FALSE;
-            fence_history = FALSE;
+            fence_history = pcmk__fence_history_none;
             show &= ~pcmk_section_fencing_all;
             break;
     }
 }
 
-/* Before trying to connect to fencer or cib check for state of
-   pacemakerd - just no sense in trying till pacemakerd has
-   taken care of starting all the sub-processes
-
-   Only noteworthy thing to show here is when pacemakerd is
-   waiting for startup-trigger from SBD.
- */
-static void
-pacemakerd_event_cb(pcmk_ipc_api_t *pacemakerd_api,
-                    enum pcmk_ipc_event event_type, crm_exit_t status,
-                    void *event_data, void *user_data)
-{
-    pcmk_pacemakerd_api_reply_t *reply = event_data;
-    enum pcmk_pacemakerd_state *state =
-        (enum pcmk_pacemakerd_state *) user_data;
-
-    /* we are just interested in the latest reply */
-    *state = pcmk_pacemakerd_state_invalid;
-
-    switch (event_type) {
-        case pcmk_ipc_event_reply:
-            break;
-
-        default:
-            return;
-    }
-
-    if (status != CRM_EX_OK) {
-        out->err(out, "Bad reply from pacemakerd: %s",
-                 crm_exit_str(status));
-        return;
-    }
-
-    if (reply->reply_type != pcmk_pacemakerd_reply_ping) {
-        out->err(out, "Unknown reply type %d from pacemakerd",
-                 reply->reply_type);
-    } else {
-        if ((reply->data.ping.last_good != (time_t) 0) &&
-            (reply->data.ping.status == pcmk_rc_ok)) {
-            *state = reply->data.ping.state;
-        }
-    }
-}
-
 static int
-pacemakerd_status(void)
+setup_api_connections(void)
 {
     int rc = pcmk_rc_ok;
-    pcmk_ipc_api_t *pacemakerd_api = NULL;
-    enum pcmk_pacemakerd_state state = pcmk_pacemakerd_state_invalid;
 
-    if (!use_cib_native) {
-        /* we don't need fully functional pacemakerd otherwise */
+    CRM_CHECK(cib != NULL, return EINVAL);
+
+    if (cib->state != cib_disconnected) {
         return rc;
     }
-    if (cib != NULL &&
-        (cib->state == cib_connected_query ||
-         cib->state == cib_connected_command)) {
-        /* As long as we have a cib-connection let's go with
-         * that to fetch further cluster-status and avoid
-         * unnecessary pings to pacemakerd.
-         * If cluster is going down and fencer is down already
-         * this will lead to a silently failing fencer reconnect.
-         * On cluster startup we shouldn't see this situation
-         * as first we do is wait for pacemakerd to report all
-         * daemons running.
-         */
-        return rc;
+
+    if (cib->variant == cib_native) {
+        rc = pcmk__pacemakerd_status(out, crm_system_name,
+                                     options.reconnect_ms / 2, false,
+                                     &pcmkd_state);
+        if (rc != pcmk_rc_ok) {
+            return rc;
+        }
+
+        switch (pcmkd_state) {
+            case pcmk_pacemakerd_state_running:
+            case pcmk_pacemakerd_state_remote:
+            case pcmk_pacemakerd_state_shutting_down:
+                /* Fencer and CIB may still be available while shutting down or
+                 * running on a Pacemaker Remote node
+                 */
+                break;
+            default:
+                // Fencer and CIB are definitely unavailable
+                return ENOTCONN;
+        }
+
+        setup_fencer_connection();
     }
-    rc = pcmk_new_ipc_api(&pacemakerd_api, pcmk_ipc_pacemakerd);
-    if (pacemakerd_api == NULL) {
-        out->err(out, "Could not connect to pacemakerd: %s",
-                 pcmk_rc_str(rc));
-        /* this is unrecoverable so return with rc we have */
-        return rc;
-    }
-    pcmk_register_ipc_callback(pacemakerd_api, pacemakerd_event_cb, (void *) &state);
-    rc = pcmk_connect_ipc(pacemakerd_api, pcmk_ipc_dispatch_poll);
-    switch (rc) {
-        case pcmk_rc_ok:
-            rc = pcmk_pacemakerd_api_ping(pacemakerd_api, crm_system_name);
-            if (rc == pcmk_rc_ok) {
-                rc = pcmk_poll_ipc(pacemakerd_api, options.reconnect_ms/2);
-                if (rc == pcmk_rc_ok) {
-                    pcmk_dispatch_ipc(pacemakerd_api);
-                    rc = ENOTCONN;
-                    if ((output_format == mon_output_console) ||
-                        (output_format == mon_output_plain)) {
-                        switch (state) {
-                            case pcmk_pacemakerd_state_running:
-                                rc = pcmk_rc_ok;
-                                break;
-                            case pcmk_pacemakerd_state_starting_daemons:
-                                out->info(out,"Pacemaker daemons starting ...");
-                                break;
-                            case pcmk_pacemakerd_state_wait_for_ping:
-                                out->info(out,"Waiting for startup-trigger from SBD ...");
-                                break;
-                            case pcmk_pacemakerd_state_shutting_down:
-                                out->info(out,"Pacemaker daemons shutting down ...");
-                                /* try our luck maybe CIB is still accessible */
-                                rc = pcmk_rc_ok;
-                                break;
-                            case pcmk_pacemakerd_state_shutdown_complete:
-                                /* assuming pacemakerd doesn't dispatch any pings after entering
-                                * that state unless it is waiting for SBD
-                                */
-                                out->info(out,"Pacemaker daemons shut down - reporting to SBD ...");
-                                break;
-                            default:
-                                break;
-                        }
-                    } else {
-                        switch (state) {
-                            case pcmk_pacemakerd_state_running:
-                                rc = pcmk_rc_ok;
-                                break;
-                            case pcmk_pacemakerd_state_shutting_down:
-                                /* try our luck maybe CIB is still accessible */
-                                rc = pcmk_rc_ok;
-                                break;
-                            default:
-                                break;
-                        }
-                    }
-                }
-            }
-            break;
-        case EREMOTEIO:
-            rc = pcmk_rc_ok;
-            on_remote_node = TRUE;
-#if CURSES_ENABLED
-            /* just show this if refresh is gonna remove all traces */
-            if (output_format == mon_output_console) {
-                out->info(out,
-                    "Running on remote-node waiting to be connected by cluster ...");
-            }
-#endif
-            break;
-        default:
-            break;
-    }
-    pcmk_free_ipc_api(pacemakerd_api);
-    /* returning with ENOTCONN triggers a retry */
-    return (rc == pcmk_rc_ok)?rc:ENOTCONN;
+
+    rc = setup_cib_connection();
+    return rc;
 }
 
 #if CURSES_ENABLED
@@ -1107,6 +1123,10 @@ detect_user_input(GIOChannel *channel, GIOCondition condition, gpointer user_dat
                 break;
             case 'R':
                 show_opts ^= pcmk_show_details;
+#ifdef PCMK__COMPAT_2_0
+                // Keep failed action output the same as 2.0.x
+                show_opts |= pcmk_show_failed_detail;
+#endif
                 break;
             case 't':
                 show_opts ^= pcmk_show_timing;
@@ -1147,7 +1167,8 @@ detect_user_input(GIOChannel *channel, GIOCondition condition, gpointer user_dat
         if (!config_mode)
             goto refresh;
 
-        blank_screen();
+        clear();
+        refresh();
 
         curses_formatted_printf(out, "%s", "Display option change mode\n");
         print_option_help(out, 'c', pcmk_is_set(show, pcmk_section_tickets));
@@ -1159,7 +1180,11 @@ detect_user_input(GIOChannel *channel, GIOCondition condition, gpointer user_dat
         print_option_help(out, 'A', pcmk_is_set(show, pcmk_section_attributes));
         print_option_help(out, 'L', pcmk_is_set(show, pcmk_section_bans));
         print_option_help(out, 'D', !pcmk_is_set(show, pcmk_section_summary));
+#ifdef PCMK__COMPAT_2_0
+        print_option_help(out, 'R', pcmk_any_flags_set(show_opts, pcmk_show_details & ~pcmk_show_failed_detail));
+#else
         print_option_help(out, 'R', pcmk_any_flags_set(show_opts, pcmk_show_details));
+#endif
         print_option_help(out, 'b', pcmk_is_set(show_opts, pcmk_show_brief));
         print_option_help(out, 'j', pcmk_is_set(show_opts, pcmk_show_pending));
         curses_formatted_printf(out, "%d m: \t%s\n", interactive_fence_level, get_option_desc('m'));
@@ -1171,7 +1196,7 @@ refresh:
 
     return TRUE;
 }
-#endif
+#endif  // CURSES_ENABLED
 
 // Basically crm_signal_handler(SIGCHLD, SIG_IGN) plus the SA_NOCLDWAIT flag
 static void
@@ -1181,13 +1206,13 @@ avoid_zombies(void)
 
     memset(&sa, 0, sizeof(struct sigaction));
     if (sigemptyset(&sa.sa_mask) < 0) {
-        crm_warn("Cannot avoid zombies: %s", pcmk_strerror(errno));
+        crm_warn("Cannot avoid zombies: %s", pcmk_rc_str(errno));
         return;
     }
     sa.sa_handler = SIG_IGN;
     sa.sa_flags = SA_RESTART|SA_NOCLDWAIT;
     if (sigaction(SIGCHLD, &sa, NULL) < 0) {
-        crm_warn("Cannot avoid zombies: %s", pcmk_strerror(errno));
+        crm_warn("Cannot avoid zombies: %s", pcmk_rc_str(errno));
     }
 }
 
@@ -1203,40 +1228,72 @@ build_arg_context(pcmk__common_args_t *args, GOptionGroup **group) {
         { NULL }
     };
 
-    const char *description = "Notes:\n\n"
-                              "If this program is called as crm_mon.cgi, --output-as=html --html-cgi will\n"
-                              "automatically be added to the command line arguments.\n\n"
-                              "Time Specification:\n\n"
-                              "The TIMESPEC in any command line option can be specified in many different\n"
-                              "formats.  It can be just an integer number of seconds, a number plus units\n"
-                              "(ms/msec/us/usec/s/sec/m/min/h/hr), or an ISO 8601 period specification.\n\n"
-                              "Output Control:\n\n"
-                              "By default, a certain list of sections are written to the output destination.\n"
-                              "The default varies based on the output format - XML includes everything, while\n"
-                              "other output formats will display less.  This list can be modified with the\n"
-                              "--include and --exclude command line options.  Each option may be given multiple\n"
-                              "times on the command line, and each can give a comma-separated list of sections.\n"
-                              "The options are applied to the default set, from left to right as seen on the\n"
-                              "command line.  For a list of valid sections, pass --include=list or --exclude=list.\n\n"
-                              "Interactive Use:\n\n"
-                              "When run interactively, crm_mon can be told to hide and display various sections\n"
-                              "of output.  To see a help screen explaining the options, hit '?'.  Any key stroke\n"
-                              "aside from those listed will cause the screen to refresh.\n\n"
-                              "Examples:\n\n"
-                              "Display the cluster status on the console with updates as they occur:\n\n"
-                              "\tcrm_mon\n\n"
-                              "Display the cluster status on the console just once then exit:\n\n"
-                              "\tcrm_mon -1\n\n"
-                              "Display your cluster status, group resources by node, and include inactive resources in the list:\n\n"
-                              "\tcrm_mon --group-by-node --inactive\n\n"
-                              "Start crm_mon as a background daemon and have it write the cluster status to an HTML file:\n\n"
-                              "\tcrm_mon --daemonize --output-as html --output-to /path/to/docroot/filename.html\n\n"
-                              "Start crm_mon and export the current cluster status as XML to stdout, then exit:\n\n"
-                              "\tcrm_mon --output-as xml\n\n";
+#if CURSES_ENABLED
+    const char *fmts = "console (default), html, text, xml, none";
+#else
+    const char *fmts = "text (default), html, xml, none";
+#endif // CURSES_ENABLED
+    const char *desc = NULL;
 
-    context = pcmk__build_arg_context(args, "console (default), html, text, xml", group, NULL);
+    desc = "Notes:\n\n"
+           "If this program is called as crm_mon.cgi, --output-as=html and\n"
+           "--html-cgi are automatically added to the command line\n"
+           "arguments.\n\n"
+
+           "Time Specification:\n\n"
+           "The TIMESPEC in any command line option can be specified in many\n"
+           "different formats. It can be an integer number of seconds, a\n"
+           "number plus units (us/usec/ms/msec/s/sec/m/min/h/hr), or an ISO\n"
+           "8601 period specification.\n\n"
+
+           "Output Control:\n\n"
+           "By default, a particular set of sections are written to the\n"
+           "output destination. The default varies based on the output\n"
+           "format: XML includes all sections by default, while other output\n"
+           "formats include less. This set can be modified with the --include\n"
+           "and --exclude command line options. Each option may be passed\n"
+           "multiple times, and each can specify a comma-separated list of\n"
+           "sections. The options are applied to the default set, in order\n"
+           "from left to right as they are passed on the command line. For a\n"
+           "list of valid sections, pass --include=list or --exclude=list.\n\n"
+
+           "Interactive Use:\n\n"
+#if CURSES_ENABLED
+           "When run interactively, crm_mon can be told to hide and show\n"
+           "various sections of output. To see a help screen explaining the\n"
+           "options, press '?'. Any key stroke aside from those listed will\n"
+           "cause the screen to refresh.\n\n"
+#else
+           "The local installation of Pacemaker was built without support for\n"
+           "interactive (console) mode. A curses library must be available at\n"
+           "build time to support interactive mode.\n\n"
+#endif // CURSES_ENABLED
+
+           "Examples:\n\n"
+#if CURSES_ENABLED
+           "Display the cluster status on the console with updates as they\n"
+           "occur:\n\n"
+           "\tcrm_mon\n\n"
+#endif // CURSES_ENABLED
+
+           "Display the cluster status once and exit:\n\n"
+           "\tcrm_mon -1\n\n"
+
+           "Display the cluster status, group resources by node, and include\n"
+           "inactive resources in the list:\n\n"
+           "\tcrm_mon --group-by-node --inactive\n\n"
+
+           "Start crm_mon as a background daemon and have it write the\n"
+           "cluster status to an HTML file:\n\n"
+           "\tcrm_mon --daemonize --output-as html "
+           "--output-to /path/to/docroot/filename.html\n\n"
+
+           "Display the cluster status as XML:\n\n"
+           "\tcrm_mon --output-as xml\n\n";
+
+    context = pcmk__build_arg_context(args, fmts, group, NULL);
     pcmk__add_main_args(context, extra_prog_entries);
-    g_option_context_set_description(context, description);
+    g_option_context_set_description(context, desc);
 
     pcmk__add_arg_group(context, "display", "Display Options:",
                         "Show display options", display_entries);
@@ -1280,115 +1337,153 @@ add_output_args(void) {
     }
 }
 
-/* Which output format to use could come from two places:  The --as-xml
- * style arguments we gave in deprecated_entries above, or the formatted output
- * arguments added by pcmk__register_formats.  If the latter were used,
- * output_format will be mon_output_unset.
+/*!
+ * \internal
+ * \brief Set output format based on \p --output-as arguments and mode arguments
  *
- * Call the callbacks as if those older style arguments were provided so
- * the various things they do get done.
+ * When the deprecated output format arguments (\p --as-cgi, \p --as-html,
+ * \p --simple-status, \p --as-xml) are parsed, callback functions set
+ * \p output_format (and the umask if appropriate). If none of the deprecated
+ * arguments were specified, this function does the same based on the current
+ * \p --output-as arguments and the \p --one-shot and \p --daemonize arguments.
+ *
+ * \param[in,out] args  Command line arguments
  */
 static void
-reconcile_output_format(pcmk__common_args_t *args) {
-    gboolean retval = TRUE;
-    GError *err = NULL;
-
+reconcile_output_format(pcmk__common_args_t *args)
+{
     if (output_format != mon_output_unset) {
+        /* One of the deprecated arguments was used, and we're finished. Note
+         * that this means the deprecated arguments take precedence.
+         */
         return;
     }
 
-    if (pcmk__str_eq(args->output_ty, "html", pcmk__str_casei)) {
-        char *dest = NULL;
+    if (pcmk__str_eq(args->output_ty, "none", pcmk__str_none)) {
+        output_format = mon_output_none;
 
-        if (args->output_dest != NULL) {
-            dest = strdup(args->output_dest);
-        }
+    } else if (pcmk__str_eq(args->output_ty, "html", pcmk__str_none)) {
+        output_format = mon_output_html;
+        umask(S_IWGRP | S_IWOTH);   // World-readable HTML
 
-        retval = as_html_cb("h", dest, NULL, &err);
-        free(dest);
-    } else if (pcmk__str_eq(args->output_ty, "text", pcmk__str_casei)) {
-        retval = no_curses_cb("N", NULL, NULL, &err);
-    } else if (pcmk__str_eq(args->output_ty, "xml", pcmk__str_casei)) {
-        if (args->output_ty != NULL) {
-            free(args->output_ty);
-        }
-
-        args->output_ty = strdup("xml");
+    } else if (pcmk__str_eq(args->output_ty, "xml", pcmk__str_none)) {
         output_format = mon_output_xml;
-    } else if (options.one_shot) {
-        if (args->output_ty != NULL) {
-            free(args->output_ty);
-        }
 
-        args->output_ty = strdup("text");
+#if CURSES_ENABLED
+    } else if (pcmk__str_eq(args->output_ty, "console",
+                            pcmk__str_null_matches)) {
+        /* Console is the default format if no conflicting options are given.
+         *
+         * Use text output instead if one of the following conditions is met:
+         * * We've requested daemonized or one-shot mode (console output is
+         *   incompatible with modes other than mon_exec_update)
+         * * We requested the version, which is effectively one-shot
+         * * We specified a non-stdout output destination (console mode is
+         *   compatible only with stdout)
+         */
+        if ((options.exec_mode == mon_exec_daemonized)
+            || (options.exec_mode == mon_exec_one_shot)
+            || args->version
+            || !pcmk__str_eq(args->output_dest, "-", pcmk__str_null_matches)) {
+
+            pcmk__str_update(&args->output_ty, "text");
+            output_format = mon_output_plain;
+        } else {
+            pcmk__str_update(&args->output_ty, "console");
+            output_format = mon_output_console;
+            crm_enable_stderr(FALSE);
+        }
+#endif // CURSES_ENABLED
+
+    } else if (pcmk__str_eq(args->output_ty, "text", pcmk__str_null_matches)) {
+        /* Text output was explicitly requested, or it's the default because
+         * curses is not enabled
+         */
+        pcmk__str_update(&args->output_ty, "text");
         output_format = mon_output_plain;
-    } else {
-        /* Neither old nor new arguments were given, so set the default. */
-        if (args->output_ty != NULL) {
-            free(args->output_ty);
-        }
-
-        args->output_ty = strdup("console");
-        output_format = mon_output_console;
     }
 
-    if (!retval) {
-        g_propagate_error(&error, err);
-        clean_up(CRM_EX_USAGE);
+    // Otherwise, invalid format. Let pcmk__output_new() throw an error.
+}
+
+/*!
+ * \internal
+ * \brief Set execution mode to the output format's default if appropriate
+ *
+ * \param[in,out] args  Command line arguments
+ */
+static void
+set_default_exec_mode(const pcmk__common_args_t *args)
+{
+    if (output_format == mon_output_console) {
+        /* Update is the only valid mode for console, but set here instead of
+         * reconcile_output_format() for isolation and consistency
+         */
+        options.exec_mode = mon_exec_update;
+
+    } else if (options.exec_mode == mon_exec_unset) {
+        // Default to one-shot mode for all other formats
+        options.exec_mode = mon_exec_one_shot;
+
+    } else if ((options.exec_mode == mon_exec_update)
+               && pcmk__str_eq(args->output_dest, "-",
+                               pcmk__str_null_matches)) {
+        // If not using console format, update mode cannot be used with stdout
+        options.exec_mode = mon_exec_one_shot;
     }
 }
 
 static void
-handle_connection_failures(int rc)
+clean_up_on_connection_failure(int rc)
 {
-    if (rc == pcmk_rc_ok) {
-        return;
-    }
-
     if (output_format == mon_output_monitor) {
         g_set_error(&error, PCMK__EXITC_ERROR, CRM_EX_ERROR, "CLUSTER CRIT: Connection to cluster failed: %s",
                     pcmk_rc_str(rc));
-        rc = MON_STATUS_CRIT;
+        clean_up(MON_STATUS_CRIT);
     } else if (rc == ENOTCONN) {
-        if (on_remote_node) {
+        if (pcmkd_state == pcmk_pacemakerd_state_remote) {
             g_set_error(&error, PCMK__EXITC_ERROR, CRM_EX_ERROR, "Error: remote-node not connected to cluster");
         } else {
             g_set_error(&error, PCMK__EXITC_ERROR, CRM_EX_ERROR, "Error: cluster is not available on this node");
         }
-        rc = pcmk_rc2exitc(rc);
     } else {
         g_set_error(&error, PCMK__EXITC_ERROR, CRM_EX_ERROR, "Connection to cluster failed: %s", pcmk_rc_str(rc));
-        rc = pcmk_rc2exitc(rc);
     }
 
-    clean_up(rc);
+    clean_up(pcmk_rc2exitc(rc));
 }
 
 static void
 one_shot(void)
 {
-    int rc;
-
-    rc = pacemakerd_status();
-
-    if (rc == pcmk_rc_ok) {
-        fencing_connect();
-        rc = cib_connect(FALSE);
-    }
+    int rc = pcmk__status(out, cib, fence_history, show, show_opts,
+                          options.only_node, options.only_rsc,
+                          options.neg_location_prefix,
+                          output_format == mon_output_monitor, 0);
 
     if (rc == pcmk_rc_ok) {
-        mon_refresh_display(NULL);
+        clean_up(pcmk_rc2exitc(rc));
     } else {
-        handle_connection_failures(rc);
+        clean_up_on_connection_failure(rc);
+    }
+}
+
+static void
+exit_on_invalid_cib(void)
+{
+    if (cib != NULL) {
+        return;
     }
 
-    clean_up(CRM_EX_OK);
+    // Shouldn't really be possible
+    g_set_error(&error, PCMK__EXITC_ERROR, CRM_EX_ERROR, "Invalid CIB source");
+    clean_up(CRM_EX_ERROR);
 }
 
 int
 main(int argc, char **argv)
 {
-    int rc = pcmk_ok;
+    int rc = pcmk_rc_ok;
     GOptionGroup *output_group = NULL;
 
     args = pcmk__new_common_args(SUMMARY);
@@ -1403,7 +1498,7 @@ main(int argc, char **argv)
 
     if (pcmk__ends_with_ext(argv[0], ".cgi")) {
         output_format = mon_output_cgi;
-        options.one_shot = TRUE;
+        options.exec_mode = mon_exec_one_shot;
     }
 
     processed_args = pcmk__cmdline_preproc(argv, "ehimpxEILU");
@@ -1444,123 +1539,90 @@ main(int argc, char **argv)
          */
         cib = cib_new();
 
-        if (cib == NULL) {
-            rc = -EINVAL;
-        } else {
-            switch (cib->variant) {
+        exit_on_invalid_cib();
 
-                case cib_native:
-                    /* cib & fencing - everything available */
-                    use_cib_native = TRUE;
-                    break;
+        switch (cib->variant) {
+            case cib_native:
+                // Everything (fencer, CIB, pcmkd status) should be available
+                break;
 
-                case cib_file:
-                    /* Don't try to connect to fencing as we
-                     * either don't have a running cluster or
-                     * the fencing-information would possibly
-                     * not match the cib data from a file.
-                     * As we don't expect cib-updates coming
-                     * in enforce one-shot. */
-                    fence_history_cb("--fence-history", "0", NULL, NULL);
-                    options.one_shot = TRUE;
-                    break;
+            case cib_file:
+                // Live fence history is not meaningful
+                fence_history_cb("--fence-history", "0", NULL, NULL);
 
-                case cib_remote:
-                    /* updates coming in but no fencing */
-                    fence_history_cb("--fence-history", "0", NULL, NULL);
-                    break;
+                /* Notifications are unsupported; nothing to monitor
+                 * @COMPAT: Let setup_cib_connection() handle this by exiting?
+                 */
+                options.exec_mode = mon_exec_one_shot;
+                break;
 
-                case cib_undefined:
-                case cib_database:
-                default:
-                    /* something is odd */
-                    rc = -EINVAL;
-                    break;
-            }
+            case cib_remote:
+                // We won't receive any fencing updates
+                fence_history_cb("--fence-history", "0", NULL, NULL);
+                break;
+
+            default:
+                /* something is odd */
+                exit_on_invalid_cib();
+                break;
         }
 
-        if (options.one_shot) {
-            if (output_format == mon_output_console) {
-                output_format = mon_output_plain;
-            }
+        if ((options.exec_mode == mon_exec_daemonized)
+            && !options.external_agent
+            && pcmk__str_eq(args->output_dest, "-", pcmk__str_null_matches)) {
 
-        } else if (options.daemonize) {
-            if ((output_format == mon_output_console) || (args->output_dest == NULL)) {
-                output_format = mon_output_none;
-            }
-            crm_enable_stderr(FALSE);
-
-            if (pcmk__str_eq(args->output_dest, "-", pcmk__str_null_matches | pcmk__str_casei) && !options.external_agent) {
-                g_set_error(&error, PCMK__EXITC_ERROR, CRM_EX_USAGE, "--daemonize requires at least one of --output-to and --external-agent");
-                return clean_up(CRM_EX_USAGE);
-            }
-
-            if (cib) {
-                /* to be on the safe side don't have cib-object around
-                 * when we are forking
-                 */
-                cib_delete(cib);
-                cib = NULL;
-                pcmk__daemonize(crm_system_name, options.pid_file);
-                cib = cib_new();
-                if (cib == NULL) {
-                    rc = -EINVAL;
-                }
-                /* otherwise assume we've got the same cib-object we've just destroyed
-                 * in our parent
-                 */
-            }
-
-
-        } else if (output_format == mon_output_console) {
-#if CURSES_ENABLED
-            crm_enable_stderr(FALSE);
-#else
-            options.one_shot = TRUE;
-            output_format = mon_output_plain;
-            printf("Defaulting to one-shot mode\n");
-            printf("You need to have curses available at compile time to enable console mode\n");
-#endif
+            g_set_error(&error, PCMK__EXITC_ERROR, CRM_EX_USAGE,
+                        "--daemonize requires at least one of --output-to "
+                        "(with value not set to '-') and --external-agent");
+            return clean_up(CRM_EX_USAGE);
         }
-    }
-
-    if (rc != pcmk_ok) {
-        // Shouldn't really be possible
-        g_set_error(&error, PCMK__EXITC_ERROR, CRM_EX_ERROR, "Invalid CIB source");
-        return clean_up(CRM_EX_ERROR);
     }
 
     reconcile_output_format(args);
+    set_default_exec_mode(args);
     add_output_args();
 
-    if (args->version && output_format == mon_output_console) {
-        /* Use the text output format here if we are in curses mode but were given
-         * --version.  Displaying version information uses printf, and then we
-         *  immediately exit.  We don't want to initialize curses for that.
-         */
-        rc = pcmk__output_new(&out, "text", args->output_dest, argv);
-    } else {
-        rc = pcmk__output_new(&out, args->output_ty, args->output_dest, argv);
-    }
+    /* output_format MUST NOT BE CHANGED AFTER THIS POINT. */
 
+    rc = pcmk__output_new(&out, args->output_ty, args->output_dest, argv);
     if (rc != pcmk_rc_ok) {
         g_set_error(&error, PCMK__EXITC_ERROR, CRM_EX_ERROR, "Error creating output format %s: %s",
                     args->output_ty, pcmk_rc_str(rc));
         return clean_up(CRM_EX_ERROR);
     }
 
-    /* output_format MUST NOT BE CHANGED AFTER THIS POINT. */
+    /* If we had a valid format for pcmk__output_new(), output_format should be
+     * set by now.
+     */
+    CRM_ASSERT(output_format != mon_output_unset);
+
+    if (options.exec_mode == mon_exec_daemonized) {
+        if (!options.external_agent && (output_format == mon_output_none)) {
+            g_set_error(&error, PCMK__EXITC_ERROR, CRM_EX_USAGE,
+                        "--daemonize requires --external-agent if used with "
+                        "--output-as=none");
+            return clean_up(CRM_EX_USAGE);
+        }
+        crm_enable_stderr(FALSE);
+        cib_delete(cib);
+        cib = NULL;
+        pcmk__daemonize(crm_system_name, options.pid_file);
+        cib = cib_new();
+        exit_on_invalid_cib();
+    }
+
+    show = default_includes(output_format);
 
     /* Apply --include/--exclude flags we used internally.  There's no error reporting
      * here because this would be a programming error.
      */
-    apply_include_exclude(options.includes_excludes, output_format, &error);
+    apply_include_exclude(options.includes_excludes, &error);
 
     /* And now apply any --include/--exclude flags the user gave on the command line.
      * These are done in a separate pass from the internal ones because we want to
      * make sure whatever the user specifies overrides whatever we do.
      */
-    if (!apply_include_exclude(options.user_includes_excludes, output_format, &error)) {
+    if (!apply_include_exclude(options.user_includes_excludes, &error)) {
         return clean_up(CRM_EX_USAGE);
     }
 
@@ -1582,6 +1644,9 @@ main(int argc, char **argv)
     pe__register_messages(out);
     stonith__register_messages(out);
 
+    // Messages internal to this file, nothing curses-specific
+    pcmk__register_messages(out, fmt_functions);
+
     if (args->version) {
         out->version(out, false);
         return clean_up(CRM_EX_OK);
@@ -1595,18 +1660,14 @@ main(int argc, char **argv)
         } else if (options.external_agent != NULL) {
             g_set_error(&error, PCMK__EXITC_ERROR, CRM_EX_USAGE, "CGI mode cannot be used with --external-agent");
             return clean_up(CRM_EX_USAGE);
-        } else if (options.daemonize == TRUE) {
+        } else if (options.exec_mode == mon_exec_daemonized) {
             g_set_error(&error, PCMK__EXITC_ERROR, CRM_EX_USAGE, "CGI mode cannot be used with -d");
             return clean_up(CRM_EX_USAGE);
         }
     }
 
-    if (output_format == mon_output_xml || output_format == mon_output_legacy_xml) {
+    if (output_format == mon_output_xml) {
         show_opts |= pcmk_show_inactive_rscs | pcmk_show_timing;
-
-        if (!options.daemonize) {
-            options.one_shot = TRUE;
-        }
     }
 
     if ((output_format == mon_output_html || output_format == mon_output_cgi) &&
@@ -1615,24 +1676,32 @@ main(int argc, char **argv)
                               pcmk__itoa(options.reconnect_ms / 1000), NULL);
     }
 
+#ifdef PCMK__COMPAT_2_0
+    // Keep failed action output the same as 2.0.x
+    show_opts |= pcmk_show_failed_detail;
+#endif
+
     crm_info("Starting %s", crm_system_name);
 
     cib__set_output(cib, out);
 
-    if (options.one_shot) {
+    if (options.exec_mode == mon_exec_one_shot) {
         one_shot();
     }
 
+    out->message(out, "crm-mon-disconnected",
+                 "Waiting for initial connection", pcmkd_state);
     do {
-        out->info(out,"Waiting until cluster is available on this node ...");
-
-        rc = pacemakerd_status();
-        if (rc == pcmk_rc_ok) {
-            fencing_connect();
-            rc = cib_connect(TRUE);
-        }
+        out->transient(out, "Connecting to cluster...");
+        rc = setup_api_connections();
 
         if (rc != pcmk_rc_ok) {
+            if ((rc == ENOTCONN) || (rc == ECONNREFUSED)) {
+                out->transient(out, "Connection failed. Retrying in %ums...",
+                               options.reconnect_ms);
+            }
+
+            // Give some time to view all output even if we won't retry
             pcmk__sleep_ms(options.reconnect_ms);
 #if CURSES_ENABLED
             if (output_format == mon_output_console) {
@@ -1640,13 +1709,13 @@ main(int argc, char **argv)
                 refresh();
             }
 #endif
-        } else if (output_format == mon_output_html && out->dest != stdout) {
-            printf("Writing html to %s ...\n", args->output_dest);
         }
+    } while ((rc == ENOTCONN) || (rc == ECONNREFUSED));
 
-    } while (rc == ENOTCONN);
+    if (rc != pcmk_rc_ok) {
+        clean_up_on_connection_failure(rc);
+    }
 
-    handle_connection_failures(rc);
     set_fencing_options(interactive_fence_level);
     mon_refresh_display(NULL);
 
@@ -1681,85 +1750,6 @@ main(int argc, char **argv)
     crm_info("Exiting %s", crm_system_name);
 
     return clean_up(CRM_EX_OK);
-}
-
-/*!
- * \internal
- * \brief Print one-line status suitable for use with monitoring software
- *
- * \param[in] data_set  Working set of CIB state
- *
- * \note This function's output (and the return code when the program exits)
- *       should conform to https://www.monitoring-plugins.org/doc/guidelines.html
- */
-static void
-print_simple_status(pcmk__output_t *out, pe_working_set_t * data_set)
-{
-    GList *gIter = NULL;
-    int nodes_online = 0;
-    int nodes_standby = 0;
-    int nodes_maintenance = 0;
-    char *offline_nodes = NULL;
-    size_t offline_nodes_len = 0;
-    gboolean no_dc = FALSE;
-    gboolean offline = FALSE;
-
-    if (data_set->dc_node == NULL) {
-        has_warnings = TRUE;
-        no_dc = TRUE;
-    }
-
-    for (gIter = data_set->nodes; gIter != NULL; gIter = gIter->next) {
-        pe_node_t *node = (pe_node_t *) gIter->data;
-
-        if (node->details->standby && node->details->online) {
-            nodes_standby++;
-        } else if (node->details->maintenance && node->details->online) {
-            nodes_maintenance++;
-        } else if (node->details->online) {
-            nodes_online++;
-        } else {
-            char *s = crm_strdup_printf("offline node: %s", node->details->uname);
-            /* coverity[leaked_storage] False positive */
-            pcmk__add_word(&offline_nodes, &offline_nodes_len, s);
-            free(s);
-            has_warnings = TRUE;
-            offline = TRUE;
-        }
-    }
-
-    if (has_warnings) {
-        out->info(out, "CLUSTER WARN: %s%s%s",
-                  no_dc ? "No DC" : "",
-                  no_dc && offline ? ", " : "",
-                  (offline? offline_nodes : ""));
-        free(offline_nodes);
-    } else {
-        char *nodes_standby_s = NULL;
-        char *nodes_maint_s = NULL;
-
-        if (nodes_standby > 0) {
-            nodes_standby_s = crm_strdup_printf(", %d standby node%s", nodes_standby,
-                                                pcmk__plural_s(nodes_standby));
-        }
-
-        if (nodes_maintenance > 0) {
-            nodes_maint_s = crm_strdup_printf(", %d maintenance node%s",
-                                              nodes_maintenance,
-                                              pcmk__plural_s(nodes_maintenance));
-        }
-
-        out->info(out, "CLUSTER OK: %d node%s online%s%s, "
-                       "%d resource instance%s configured",
-                  nodes_online, pcmk__plural_s(nodes_online),
-                  nodes_standby_s != NULL ? nodes_standby_s : "",
-                  nodes_maint_s != NULL ? nodes_maint_s : "",
-                  data_set->ninstances, pcmk__plural_s(data_set->ninstances));
-
-        free(nodes_standby_s);
-        free(nodes_maint_s);
-    }
-    /* coverity[leaked_storage] False positive */
 }
 
 static int
@@ -1805,9 +1795,10 @@ send_custom_trap(const char *node, const char *rsc, const char *task, int target
     return 0;
 }
 
-static void
-handle_rsc_op(xmlNode * xml, const char *node_id)
+static int
+handle_rsc_op(xmlNode *xml, void *userdata)
 {
+    const char *node_id = (const char *) userdata;
     int rc = -1;
     int status = -1;
     int target_rc = -1;
@@ -1824,31 +1815,22 @@ handle_rsc_op(xmlNode * xml, const char *node_id)
     xmlNode * rsc_op = xml;
 
     if(strcmp((const char*)xml->name, XML_LRM_TAG_RSC_OP) != 0) {
-        xmlNode *cIter;
-
-        for(cIter = xml->children; cIter; cIter = cIter->next) {
-            handle_rsc_op(cIter, node_id);
-        }
-
-        return;
+        pcmk__xe_foreach_child(xml, NULL, handle_rsc_op, (void *) node_id);
+        return pcmk_rc_ok;
     }
 
-    id = crm_element_value(rsc_op, XML_LRM_ATTR_TASK_KEY);
-    if (id == NULL) {
-        /* Compatibility with <= 1.1.5 */
-        id = ID(rsc_op);
-    }
+    id = pe__xe_history_key(rsc_op);
 
     magic = crm_element_value(rsc_op, XML_ATTR_TRANSITION_MAGIC);
     if (magic == NULL) {
         /* non-change */
-        return;
+        return pcmk_rc_ok;
     }
 
     if (!decode_transition_magic(magic, NULL, NULL, NULL, &status, &rc,
                                  &target_rc)) {
         crm_err("Invalid event %s detected for %s", magic, id);
-        return;
+        return pcmk_rc_ok;
     }
 
     if (parse_op_key(id, &rsc, &task, NULL) == FALSE) {
@@ -1880,28 +1862,30 @@ handle_rsc_op(xmlNode * xml, const char *node_id)
     }
 
     /* look up where we expected it to be? */
-    desc = pcmk_strerror(pcmk_ok);
-    if (status == PCMK_LRM_OP_DONE && target_rc == rc) {
+    desc = pcmk_rc_str(pcmk_rc_ok);
+    if ((status == PCMK_EXEC_DONE) && (target_rc == rc)) {
         crm_notice("%s of %s on %s completed: %s", task, rsc, node, desc);
         if (rc == PCMK_OCF_NOT_RUNNING) {
             notify = FALSE;
         }
 
-    } else if (status == PCMK_LRM_OP_DONE) {
+    } else if (status == PCMK_EXEC_DONE) {
         desc = services_ocf_exitcode_str(rc);
         crm_warn("%s of %s on %s failed: %s", task, rsc, node, desc);
 
     } else {
-        desc = services_lrm_status_str(status);
+        desc = pcmk_exec_status_str(status);
         crm_warn("%s of %s on %s failed: %s", task, rsc, node, desc);
     }
 
     if (notify && options.external_agent) {
         send_custom_trap(node, rsc, task, target_rc, rc, status, desc);
     }
+
   bail:
     free(rsc);
     free(task);
+    return pcmk_rc_ok;
 }
 
 /* This function is just a wrapper around mainloop_set_trigger so that it can be
@@ -1913,6 +1897,19 @@ mon_trigger_refresh(gpointer user_data)
 {
     mainloop_set_trigger((crm_trigger_t *) refresh_trigger);
     return FALSE;
+}
+
+static int
+handle_op_for_node(xmlNode *xml, void *userdata)
+{
+    const char *node = crm_element_value(xml, XML_ATTR_UNAME);
+
+    if (node == NULL) {
+        node = ID(xml);
+    }
+
+    handle_rsc_op(xml, (void *) node);
+    return pcmk_rc_ok;
 }
 
 static void
@@ -1961,42 +1958,22 @@ crm_diff_update_v2(const char *event, xmlNode * msg)
             CRM_ASSERT(strcmp(op, "delete") == 0 || strcmp(op, "move") == 0);
 
         } else if(strcmp(name, XML_TAG_CIB) == 0) {
-            xmlNode *state = NULL;
-            xmlNode *status = first_named_child(match, XML_CIB_TAG_STATUS);
-
-            for (state = pcmk__xe_first_child(status); state != NULL;
-                 state = pcmk__xe_next(state)) {
-
-                node = crm_element_value(state, XML_ATTR_UNAME);
-                if (node == NULL) {
-                    node = ID(state);
-                }
-                handle_rsc_op(state, node);
-            }
+            pcmk__xe_foreach_child(first_named_child(match, XML_CIB_TAG_STATUS),
+                                   NULL, handle_op_for_node, NULL);
 
         } else if(strcmp(name, XML_CIB_TAG_STATUS) == 0) {
-            xmlNode *state = NULL;
-
-            for (state = pcmk__xe_first_child(match); state != NULL;
-                 state = pcmk__xe_next(state)) {
-
-                node = crm_element_value(state, XML_ATTR_UNAME);
-                if (node == NULL) {
-                    node = ID(state);
-                }
-                handle_rsc_op(state, node);
-            }
+            pcmk__xe_foreach_child(match, NULL, handle_op_for_node, NULL);
 
         } else if(strcmp(name, XML_CIB_TAG_STATE) == 0) {
             node = crm_element_value(match, XML_ATTR_UNAME);
             if (node == NULL) {
                 node = ID(match);
             }
-            handle_rsc_op(match, node);
+            handle_rsc_op(match, (void *) node);
 
         } else if(strcmp(name, XML_CIB_TAG_LRM) == 0) {
             node = ID(match);
-            handle_rsc_op(match, node);
+            handle_rsc_op(match, (void *) node);
 
         } else if(strcmp(name, XML_LRM_TAG_RESOURCES) == 0) {
             char *local_node = pcmk__xpath_node_id(xpath, "lrm");
@@ -2100,125 +2077,55 @@ crm_diff_update(const char *event, xmlNode * msg)
 }
 
 static int
-get_fencing_history(stonith_history_t **stonith_history)
-{
-    int rc = 0;
-
-    while (fence_history) {
-        if (st != NULL) {
-            rc = st->cmds->history(st, st_opt_sync_call, NULL, stonith_history, 120);
-
-            if (rc == 0) {
-                *stonith_history = stonith__sort_history(*stonith_history);
-                if (!pcmk_all_flags_set(show, pcmk_section_fencing_all)
-                    && (output_format != mon_output_xml)) {
-
-                    *stonith_history = pcmk__reduce_fence_history(*stonith_history);
-                }
-                break; /* all other cases are errors */
-            }
-        } else {
-            rc = ENOTCONN;
-            break;
-        }
-    }
-
-    return rc;
-}
-
-static int
 mon_refresh_display(gpointer user_data)
 {
-    xmlNode *cib_copy = copy_xml(current_cib);
-    stonith_history_t *stonith_history = NULL;
-    int history_rc = 0;
-    GList *unames = NULL;
-    GList *resources = NULL;
+    int rc = pcmk_rc_ok;
 
     last_refresh = time(NULL);
 
-    if (cli_config_update(&cib_copy, NULL, FALSE) == FALSE) {
-        clean_up_cib_connection();
-        out->err(out, "Upgrade failed: %s", pcmk_strerror(-pcmk_err_schema_validation));
-        clean_up(CRM_EX_CONFIG);
-        return 0;
+    if (output_format == mon_output_none) {
+        return G_SOURCE_REMOVE;
     }
 
-    /* get the stonith-history if there is evidence we need it */
-    history_rc = get_fencing_history(&stonith_history);
-
-    if (mon_data_set == NULL) {
-        mon_data_set = pe_new_working_set();
-        CRM_ASSERT(mon_data_set != NULL);
-    }
-    pe__set_working_set_flags(mon_data_set, pe_flag_no_compat);
-
-    mon_data_set->input = cib_copy;
-    mon_data_set->priv = out;
-    cluster_status(mon_data_set);
-
-    /* Unpack constraints if any section will need them
-     * (tickets may be referenced in constraints but not granted yet,
-     * and bans need negative location constraints) */
-    if (pcmk_is_set(show, pcmk_section_bans) || pcmk_is_set(show, pcmk_section_tickets)) {
-        xmlNode *cib_constraints = get_object_root(XML_CIB_TAG_CONSTRAINTS,
-                                                   mon_data_set->input);
-        unpack_constraints(cib_constraints, mon_data_set);
+    if (fence_history == pcmk__fence_history_full &&
+        !pcmk_all_flags_set(show, pcmk_section_fencing_all) &&
+        output_format != mon_output_xml) {
+        fence_history = pcmk__fence_history_reduced;
     }
 
-    if (options.daemonize) {
+    // Get an up-to-date pacemakerd status for the cluster summary
+    if (cib->variant == cib_native) {
+        pcmk__pacemakerd_status(out, crm_system_name, options.reconnect_ms / 2,
+                                false, &pcmkd_state);
+    }
+
+    if (out->dest != stdout) {
         out->reset(out);
     }
 
-    unames = pe__build_node_name_list(mon_data_set, options.only_node);
-    resources = pe__build_rsc_list(mon_data_set, options.only_rsc);
+    rc = pcmk__output_cluster_status(out, st, cib, current_cib, pcmkd_state,
+                                     fence_history, show, show_opts,
+                                     options.only_node,options.only_rsc,
+                                     options.neg_location_prefix,
+                                     output_format == mon_output_monitor);
 
-    switch (output_format) {
-        case mon_output_html:
-        case mon_output_cgi:
-            if (out->message(out, "cluster-status", mon_data_set, crm_errno2exit(history_rc),
-                             stonith_history, fence_history, show, show_opts,
-                             options.neg_location_prefix, unames, resources) != 0) {
-                g_set_error(&error, PCMK__EXITC_ERROR, CRM_EX_CANTCREAT, "Critical: Unable to output html file");
-                clean_up(CRM_EX_CANTCREAT);
-                return 0;
-            }
-            break;
-
-        case mon_output_monitor:
-            print_simple_status(out, mon_data_set);
-            if (has_warnings) {
-                clean_up(MON_STATUS_WARN);
-                return FALSE;
-            }
-            break;
-
-        case mon_output_unset:
-        case mon_output_none:
-            break;
-
-        default:
-            out->message(out, "cluster-status", mon_data_set, crm_errno2exit(history_rc),
-                         stonith_history, fence_history, show, show_opts,
-                         options.neg_location_prefix, unames, resources);
-            break;
+    if (output_format == mon_output_monitor && rc != pcmk_rc_ok) {
+        clean_up(MON_STATUS_WARN);
+        return G_SOURCE_REMOVE;
+    } else if (rc == pcmk_rc_schema_validation) {
+        clean_up(CRM_EX_CONFIG);
+        return G_SOURCE_REMOVE;
     }
 
-    if (options.daemonize) {
+    if (out->dest != stdout) {
         out->finish(out, CRM_EX_OK, true, NULL);
     }
 
-    g_list_free_full(unames, free);
-    g_list_free_full(resources, free);
-
-    stonith_history_free(stonith_history);
-    stonith_history = NULL;
-    pe_reset_working_set(mon_data_set);
-    return 1;
+    return G_SOURCE_CONTINUE;
 }
 
-/* This function is called for fencing events (see fencing_connect for which ones) when
- * --watch-fencing is used on the command line.
+/* This function is called for fencing events (see setup_fencer_connection() for
+ * which ones) when --watch-fencing is used on the command line
  */
 static void
 mon_st_callback_event(stonith_t * st, stonith_event_t * e)
@@ -2227,9 +2134,8 @@ mon_st_callback_event(stonith_t * st, stonith_event_t * e)
         /* disconnect cib as well and have everything reconnect */
         mon_cib_connection_destroy(NULL);
     } else if (options.external_agent) {
-        char *desc = crm_strdup_printf("Operation %s requested by %s for peer %s: %s (ref=%s)",
-                                    e->operation, e->origin, e->target, pcmk_strerror(e->result),
-                                    e->id);
+        char *desc = stonith__event_description(e);
+
         send_custom_trap(e->target, NULL, e->operation, pcmk_ok, e->result, 0, desc);
         free(desc);
     }
@@ -2269,7 +2175,7 @@ refresh_after_event(gboolean data_updated, gboolean enforce)
      * fatal give it a retry here
      * not getting here if cib-reconnection is already on the way
      */
-    fencing_connect();
+    setup_fencer_connection();
 
     if (enforce ||
         ((now - last_refresh) > (options.reconnect_ms / 1000)) ||
@@ -2283,8 +2189,8 @@ refresh_after_event(gboolean data_updated, gboolean enforce)
     }
 }
 
-/* This function is called for fencing events (see fencing_connect for which ones) when
- * --watch-fencing is NOT used on the command line.
+/* This function is called for fencing events (see setup_fencer_connection() for
+ * which ones) when --watch-fencing is NOT used on the command line
  */
 static void
 mon_st_callback_display(stonith_t * st, stonith_event_t * e)
@@ -2296,36 +2202,6 @@ mon_st_callback_display(stonith_t * st, stonith_event_t * e)
         out->progress(out, false);
         refresh_after_event(TRUE, FALSE);
     }
-}
-
-static void
-clean_up_cib_connection(void)
-{
-    if (cib == NULL) {
-        return;
-    }
-
-    cib->cmds->signoff(cib);
-    cib_delete(cib);
-    cib = NULL;
-}
-
-static void
-clean_up_fencing_connection(void)
-{
-    if (st == NULL) {
-        return;
-    }
-
-    if (st->state != stonith_disconnected) {
-        st->cmds->remove_notification(st, T_STONITH_NOTIFY_DISCONNECT);
-        st->cmds->remove_notification(st, T_STONITH_NOTIFY_FENCE);
-        st->cmds->remove_notification(st, T_STONITH_NOTIFY_HISTORY);
-        st->cmds->disconnect(st);
-    }
-
-    stonith_api_delete(st);
-    st = NULL;
 }
 
 /*
@@ -2342,16 +2218,13 @@ clean_up(crm_exit_t exit_code)
     /* Quitting crm_mon is much more complicated than it ought to be. */
 
     /* (1) Close connections, free things, etc. */
-    clean_up_cib_connection();
-    clean_up_fencing_connection();
+    cib__clean_up_connection(&cib);
+    stonith_api_delete(st);
     free(options.neg_location_prefix);
     free(options.only_node);
     free(options.only_rsc);
     free(options.pid_file);
     g_slist_free_full(options.includes_excludes, free);
-
-    pe_free_working_set(mon_data_set);
-    mon_data_set = NULL;
 
     g_strfreev(processed_args);
 
@@ -2360,7 +2233,10 @@ clean_up(crm_exit_t exit_code)
      * down will be lost because doing the shut down will also restore the
      * screen to whatever it looked like before crm_mon was started.
      */
-    if ((error != NULL || exit_code == CRM_EX_USAGE) && output_format == mon_output_console) {
+    if (((error != NULL) || (exit_code == CRM_EX_USAGE))
+        && (output_format == mon_output_console)
+        && (out != NULL)) {
+
         out->finish(out, exit_code, false, NULL);
         pcmk__output_free(out);
         out = NULL;
@@ -2399,7 +2275,7 @@ clean_up(crm_exit_t exit_code)
      * crm_mon to be able to do so.
      */
     if (out != NULL) {
-        if (!options.daemonize) {
+        if (options.exec_mode != mon_exec_daemonized) {
             out->finish(out, exit_code, true, NULL);
         }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2021 the Pacemaker project contributors
+ * Copyright 2015-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -17,7 +17,6 @@
 #include <crm/services.h>
 #include <crm/common/mainloop.h>
 #include <crm/common/alerts_internal.h>
-#include <crm/common/iso8601_internal.h>
 #include <crm/lrmd_internal.h>
 
 #include <crm/pengine/status.h>
@@ -75,7 +74,7 @@ set_ev_kv(gpointer key, gpointer value, gpointer user_data)
 }
 
 static lrmd_key_value_t *
-alert_envvar2params(lrmd_key_value_t *head, pcmk__alert_t *entry)
+alert_envvar2params(lrmd_key_value_t *head, const pcmk__alert_t *entry)
 {
     if (entry->envvars) {
         g_hash_table_foreach(entry->envvars, set_ev_kv, &head);
@@ -114,7 +113,7 @@ is_target_alert(char **list, const char *value)
  * \internal
  * \brief Execute alert agents for an event
  *
- * \param[in]     lrmd        Executor connection to use
+ * \param[in,out] lrmd        Executor connection to use
  * \param[in]     alert_list  Alerts to execute
  * \param[in]     kind        Type of event that is being alerted for
  * \param[in]     attr_name   If pcmk__alert_attribute, the attribute name
@@ -125,22 +124,24 @@ is_target_alert(char **list, const char *value)
  * \retval -2 if all alerts failed
  */
 static int
-exec_alert_list(lrmd_t *lrmd, GList *alert_list, enum pcmk__alert_flags kind,
-                const char *attr_name, lrmd_key_value_t *params)
+exec_alert_list(lrmd_t *lrmd, const GList *alert_list,
+                enum pcmk__alert_flags kind, const char *attr_name,
+                lrmd_key_value_t *params)
 {
     bool any_success = FALSE, any_failure = FALSE;
     const char *kind_s = pcmk__alert_flag2text(kind);
     pcmk__time_hr_t *now = NULL;
-    struct timeval tv_now;
     char timestamp_epoch[20];
     char timestamp_usec[7];
+    time_t epoch = 0;
 
     params = alert_key2param(params, PCMK__alert_key_kind, kind_s);
     params = alert_key2param(params, PCMK__alert_key_version,
                              PACEMAKER_VERSION);
 
-    for (GList *iter = g_list_first(alert_list); iter; iter = g_list_next(iter)) {
-        pcmk__alert_t *entry = (pcmk__alert_t *)(iter->data);
+    for (const GList *iter = alert_list;
+         iter != NULL; iter = g_list_next(iter)) {
+        const pcmk__alert_t *entry = (pcmk__alert_t *) (iter->data);
         lrmd_key_value_t *copy_params = NULL;
         lrmd_key_value_t *head = NULL;
         int rc;
@@ -160,9 +161,7 @@ exec_alert_list(lrmd_t *lrmd, GList *alert_list, enum pcmk__alert_flags kind,
         }
 
         if (now == NULL) {
-            if (gettimeofday(&tv_now, NULL) == 0) {
-                now = pcmk__time_timeval_hr_convert(NULL, &tv_now);
-            }
+            now = pcmk__time_hr_now(&epoch);
         }
         crm_info("Sending %s alert via %s to %s",
                  kind_s, entry->id, entry->recipient);
@@ -186,7 +185,7 @@ exec_alert_list(lrmd_t *lrmd, GList *alert_list, enum pcmk__alert_flags kind,
             }
 
             snprintf(timestamp_epoch, sizeof(timestamp_epoch), "%lld",
-                     (long long) tv_now.tv_sec);
+                     (long long) epoch);
             copy_params = alert_key2param(copy_params,
                                           PCMK__alert_key_timestamp_epoch,
                                           timestamp_epoch);
@@ -223,19 +222,19 @@ exec_alert_list(lrmd_t *lrmd, GList *alert_list, enum pcmk__alert_flags kind,
  * \internal
  * \brief Send an alert for a node attribute change
  *
- * \param[in] lrmd        Executor connection to use
- * \param[in] alert_list  List of alert agents to execute
- * \param[in] node        Name of node with attribute change
- * \param[in] nodeid      Node ID of node with attribute change
- * \param[in] attr_name   Name of attribute that changed
- * \param[in] attr_value  New value of attribute that changed
+ * \param[in,out] lrmd        Executor connection to use
+ * \param[in]     alert_list  List of alert agents to execute
+ * \param[in]     node        Name of node with attribute change
+ * \param[in]     nodeid      Node ID of node with attribute change
+ * \param[in]     attr_name   Name of attribute that changed
+ * \param[in]     attr_value  New value of attribute that changed
  *
  * \retval pcmk_ok on success
  * \retval -1 if some alert agents failed
  * \retval -2 if all alert agents failed
  */
 int
-lrmd_send_attribute_alert(lrmd_t *lrmd, GList *alert_list,
+lrmd_send_attribute_alert(lrmd_t *lrmd, const GList *alert_list,
                           const char *node, uint32_t nodeid,
                           const char *attr_name, const char *attr_value)
 {
@@ -262,18 +261,18 @@ lrmd_send_attribute_alert(lrmd_t *lrmd, GList *alert_list,
  * \internal
  * \brief Send an alert for a node membership event
  *
- * \param[in] lrmd        Executor connection to use
- * \param[in] alert_list  List of alert agents to execute
- * \param[in] node        Name of node with change
- * \param[in] nodeid      Node ID of node with change
- * \param[in] state       New state of node with change
+ * \param[in,out] lrmd        Executor connection to use
+ * \param[in]     alert_list  List of alert agents to execute
+ * \param[in]     node        Name of node with change
+ * \param[in]     nodeid      Node ID of node with change
+ * \param[in]     state       New state of node with change
  *
  * \retval pcmk_ok on success
  * \retval -1 if some alert agents failed
  * \retval -2 if all alert agents failed
  */
 int
-lrmd_send_node_alert(lrmd_t *lrmd, GList *alert_list,
+lrmd_send_node_alert(lrmd_t *lrmd, const GList *alert_list,
                      const char *node, uint32_t nodeid, const char *state)
 {
     int rc = pcmk_ok;
@@ -296,19 +295,19 @@ lrmd_send_node_alert(lrmd_t *lrmd, GList *alert_list,
  * \internal
  * \brief Send an alert for a fencing event
  *
- * \param[in] lrmd        Executor connection to use
- * \param[in] alert_list  List of alert agents to execute
- * \param[in] target      Name of fence target node
- * \param[in] task        Type of fencing event that occurred
- * \param[in] desc        Readable description of event
- * \param[in] op_rc       Result of fence action
+ * \param[in,out] lrmd        Executor connection to use
+ * \param[in]     alert_list  List of alert agents to execute
+ * \param[in]     target      Name of fence target node
+ * \param[in]     task        Type of fencing event that occurred
+ * \param[in]     desc        Readable description of event
+ * \param[in]     op_rc       Result of fence action
  *
  * \retval pcmk_ok on success
  * \retval -1 if some alert agents failed
  * \retval -2 if all alert agents failed
  */
 int
-lrmd_send_fencing_alert(lrmd_t *lrmd, GList *alert_list,
+lrmd_send_fencing_alert(lrmd_t *lrmd, const GList *alert_list,
                         const char *target, const char *task, const char *desc,
                         int op_rc)
 {
@@ -333,18 +332,18 @@ lrmd_send_fencing_alert(lrmd_t *lrmd, GList *alert_list,
  * \internal
  * \brief Send an alert for a resource operation
  *
- * \param[in] lrmd        Executor connection to use
- * \param[in] alert_list  List of alert agents to execute
- * \param[in] node        Name of node that executed operation
- * \param[in] op          Resource operation
+ * \param[in,out] lrmd        Executor connection to use
+ * \param[in]     alert_list  List of alert agents to execute
+ * \param[in]     node        Name of node that executed operation
+ * \param[in]     op          Resource operation
  *
  * \retval pcmk_ok on success
  * \retval -1 if some alert agents failed
  * \retval -2 if all alert agents failed
  */
 int
-lrmd_send_resource_alert(lrmd_t *lrmd, GList *alert_list,
-                         const char *node, lrmd_event_data_t *op)
+lrmd_send_resource_alert(lrmd_t *lrmd, const GList *alert_list,
+                         const char *node, const lrmd_event_data_t *op)
 {
     int rc = pcmk_ok;
     int target_rc = pcmk_ok;
@@ -378,7 +377,7 @@ lrmd_send_resource_alert(lrmd_t *lrmd, GList *alert_list,
     /* Reoccurring operations do not set exec_time, so on timeout, set it
      * to the operation timeout since that's closer to the actual value.
      */
-    if (op->op_status == PCMK_LRM_OP_TIMEOUT && op->exec_time == 0) {
+    if ((op->op_status == PCMK_EXEC_TIMEOUT) && (op->exec_time == 0)) {
         params = alert_key2param_int(params, PCMK__alert_key_exec_time,
                                      op->timeout);
     } else {
@@ -386,12 +385,12 @@ lrmd_send_resource_alert(lrmd_t *lrmd, GList *alert_list,
                                      op->exec_time);
     }
 
-    if (op->op_status == PCMK_LRM_OP_DONE) {
+    if (op->op_status == PCMK_EXEC_DONE) {
         params = alert_key2param(params, PCMK__alert_key_desc,
                                  services_ocf_exitcode_str(op->rc));
     } else {
         params = alert_key2param(params, PCMK__alert_key_desc,
-                                 services_lrm_status_str(op->op_status));
+                                 pcmk_exec_status_str(op->op_status));
     }
 
     rc = exec_alert_list(lrmd, alert_list, pcmk__alert_resource, NULL, params);

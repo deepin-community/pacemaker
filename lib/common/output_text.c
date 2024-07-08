@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2021 the Pacemaker project contributors
+ * Copyright 2019-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -8,6 +8,7 @@
  */
 
 #include <crm_internal.h>
+#include <crm/common/cmdline_internal.h>
 
 #include <stdarg.h>
 #include <stdlib.h>
@@ -36,11 +37,13 @@ typedef struct private_data_s {
 
 static void
 text_free_priv(pcmk__output_t *out) {
-    private_data_t *priv = out->priv;
+    private_data_t *priv = NULL;
 
-    if (priv == NULL) {
+    if (out == NULL || out->priv == NULL) {
         return;
     }
+
+    priv = out->priv;
 
     g_queue_free(priv->parent_q);
     free(priv);
@@ -50,6 +53,8 @@ text_free_priv(pcmk__output_t *out) {
 static bool
 text_init(pcmk__output_t *out) {
     private_data_t *priv = NULL;
+
+    CRM_ASSERT(out != NULL);
 
     /* If text_init was previously called on this output struct, just return. */
     if (out->priv != NULL) {
@@ -69,6 +74,7 @@ text_init(pcmk__output_t *out) {
 
 static void
 text_finish(pcmk__output_t *out, crm_exit_t exit_status, bool print, void **copy_dest) {
+    CRM_ASSERT(out != NULL && out->dest != NULL);
     fflush(out->dest);
 }
 
@@ -102,13 +108,14 @@ text_subprocess_output(pcmk__output_t *out, int exit_status,
 
 static void
 text_version(pcmk__output_t *out, bool extended) {
-    CRM_ASSERT(out != NULL);
+    CRM_ASSERT(out != NULL && out->dest != NULL);
 
     if (extended) {
         fprintf(out->dest, "Pacemaker %s (Build: %s): %s\n", PACEMAKER_VERSION, BUILD_VERSION, CRM_FEATURES);
     } else {
         fprintf(out->dest, "Pacemaker %s\n", PACEMAKER_VERSION);
-        fprintf(out->dest, "Written by Andrew Beekhof\n");
+        fprintf(out->dest, "Written by Andrew Beekhof and "
+                           "the Pacemaker project contributors\n");
     }
 }
 
@@ -159,6 +166,13 @@ text_info(pcmk__output_t *out, const char *format, ...) {
     return pcmk_rc_ok;
 }
 
+G_GNUC_PRINTF(2, 3)
+static int
+text_transient(pcmk__output_t *out, const char *format, ...)
+{
+    return pcmk_rc_no_output;
+}
+
 static void
 text_output_xml(pcmk__output_t *out, const char *name, const char *buf) {
     CRM_ASSERT(out != NULL);
@@ -187,8 +201,8 @@ text_begin_list(pcmk__output_t *out, const char *singular_noun, const char *plur
 
     new_list = calloc(1, sizeof(text_list_data_t));
     new_list->len = 0;
-    new_list->singular_noun = singular_noun == NULL ? NULL : strdup(singular_noun);
-    new_list->plural_noun = plural_noun == NULL ? NULL : strdup(plural_noun);
+    pcmk__str_update(&new_list->singular_noun, singular_noun);
+    pcmk__str_update(&new_list->plural_noun, plural_noun);
 
     g_queue_push_tail(priv->parent_q, new_list);
 }
@@ -292,7 +306,7 @@ pcmk__mk_text_output(char **argv) {
     }
 
     retval->fmt_name = "text";
-    retval->request = argv == NULL ? NULL : g_strjoinv(" ", argv);
+    retval->request = pcmk__quote_cmdline(argv);
 
     retval->init = text_init;
     retval->free_priv = text_free_priv;
@@ -305,6 +319,7 @@ pcmk__mk_text_output(char **argv) {
     retval->subprocess_output = text_subprocess_output;
     retval->version = text_version;
     retval->info = text_info;
+    retval->transient = text_transient;
     retval->err = text_err;
     retval->output_xml = text_output_xml;
 
@@ -327,6 +342,7 @@ pcmk__formatted_vprintf(pcmk__output_t *out, const char *format, va_list args) {
     int len = 0;
 
     CRM_ASSERT(out != NULL);
+    CRM_CHECK(pcmk__str_eq(out->fmt_name, "text", pcmk__str_none), return);
 
     len = vfprintf(out->dest, format, args);
     CRM_ASSERT(len >= 0);
@@ -348,10 +364,7 @@ G_GNUC_PRINTF(2, 0)
 void
 pcmk__indented_vprintf(pcmk__output_t *out, const char *format, va_list args) {
     CRM_ASSERT(out != NULL);
-
-    if (!pcmk__str_eq(out->fmt_name, "text", pcmk__str_none)) {
-        return;
-    }
+    CRM_CHECK(pcmk__str_eq(out->fmt_name, "text", pcmk__str_none), return);
 
     if (fancy) {
         int level = 0;
@@ -412,7 +425,7 @@ pcmk__text_prompt(const char *prompt, bool echo, char **dest)
             *dest = NULL;
         }
 
-#if SSCANF_HAS_M
+#if HAVE_SSCANF_M
         rc = scanf("%ms", dest);
 #else
         *dest = calloc(1, 1024);

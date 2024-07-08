@@ -1,0 +1,3 @@
+usr/lib/python*/site-packages/pacemaker/__init__.py
+usr/lib/python*/site-packages/pacemaker/buildoptions.py
+usr/lib/python*/site-packages/pacemaker/exitstatus.py

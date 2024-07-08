@@ -1,0 +1,5 @@
+usr/lib/python*/site-packages/cts
+usr/lib/python*/site-packages/pacemaker/_cts
+usr/lib/pacemaker/cts-log-watcher
+usr/lib/pacemaker/cts-support
+usr/share/pacemaker/tests

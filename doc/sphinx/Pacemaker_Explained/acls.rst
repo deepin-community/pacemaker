@@ -21,9 +21,8 @@ ACL Prerequisites
    
 In order to use ACLs:
 
-* The Pacemaker software must have been built with ACL support. If the output
-  of the command ``pacemakerd --features`` contains ``acls``, your installation
-  supports ACLs.
+* The ``enable-acl`` :ref:`cluster option <cluster_options>` must be set to
+  true.
 
 * Desired users must have user accounts in the ``haclient`` group on all
   cluster nodes in the cluster.
@@ -32,8 +31,10 @@ In order to use ACLs:
   to the current schema (using ``cibadmin --upgrade`` or a higher-level tool
   equivalent) in order to use the syntax documented here.
 
-* The ``enable-acl`` :ref:`cluster option <cluster_options>` must be set to
-  true.
+* Prior to the 2.1.0 release, the Pacemaker software had to have been built
+  with ACL support. If you are using an older release, your installation
+  supports ACLs only if the output of the command ``pacemakerd --features``
+  contains ``acls``. In newer versions, ACLs are always enabled.
    
 
 .. index::
@@ -60,6 +61,7 @@ particular portions of the CIB. A role is configured with an ``acl_role``
 element in the CIB ``acls`` section.
    
 .. table:: **Properties of an acl_role element**
+   :widths: 1 3
 
    +------------------+-----------------------------------------------------------+
    | Attribute        | Description                                               |
@@ -86,6 +88,7 @@ An ``acl_role`` element may contain any number of ``acl_permission`` elements.
    pair: acl_permission; XML element
 
 .. table:: **Properties of an acl_permission element**
+   :widths: 1 3
 
    +------------------+-----------------------------------------------------------+
    | Attribute        | Description                                               |
@@ -186,6 +189,7 @@ ACL targets correspond to user accounts on the system.
    pair: acl_target; XML element
 
 .. table:: **Properties of an acl_target element**
+   :widths: 1 3
 
    +------------------+-----------------------------------------------------------+
    | Attribute        | Description                                               |
@@ -195,17 +199,29 @@ ACL targets correspond to user accounts on the system.
    |                  |    single: id; acl_target attribute                       |
    |                  |    single: attribute; id (acl_target)                     |
    |                  |                                                           |
-   |                  | The name of a user on the system *(required)*             |
+   |                  | A unique identifier for the target (if ``name`` is not    |
+   |                  | specified, this must be the name of the user account)     |
+   |                  | *(required)*                                              |
+   +------------------+-----------------------------------------------------------+
+   | name             | .. index::                                                |
+   |                  |    single: acl_target; name (attribute)                   |
+   |                  |    single: name; acl_target attribute                     |
+   |                  |    single: attribute; name (acl_target)                   |
+   |                  |                                                           |
+   |                  | If specified, the user account name (this allows you to   |
+   |                  | specify a user name that is already used as the ``id``    |
+   |                  | for some other configuration element) *(since 2.1.5)*     |
    +------------------+-----------------------------------------------------------+
 
-ACL groups may be specified, but are not currently used by Pacemaker. This is
-expected to change in a future version.
+ACL groups correspond to groups on the system. Any role configured for these
+groups apply to all users in that group *(since 2.1.5)*.
    
 .. index::
    single: Access Control List (ACL); acl_group
    pair: acl_group; XML element
 
 .. table:: **Properties of an acl_group element**
+   :widths: 1 3
 
    +------------------+-----------------------------------------------------------+
    | Attribute        | Description                                               |
@@ -215,17 +231,35 @@ expected to change in a future version.
    |                  |    single: id; acl_group attribute                        |
    |                  |    single: attribute; id (acl_group)                      |
    |                  |                                                           |
-   |                  | The name of a group on the system *(required)*            |
+   |                  | A unique identifier for the group (if ``name`` is not     |
+   |                  | specified, this must be the group name) *(required)*      |
+   +------------------+-----------------------------------------------------------+
+   | name             | .. index::                                                |
+   |                  |    single: acl_group; name (attribute)                    |
+   |                  |    single: name; acl_group attribute                      |
+   |                  |    single: attribute; name (acl_group)                    |
+   |                  |                                                           |
+   |                  | If specified, the group name (this allows you to specify  |
+   |                  | a group name that is already used as the ``id`` for some  |
+   |                  | other configuration element)                              |
    +------------------+-----------------------------------------------------------+
 
 Each ``acl_target`` and ``acl_group`` element may contain any number of ``role``
 elements.
-   
+
+.. note::
+
+   If the system users and groups are defined by some network service (such as
+   LDAP), the cluster itself will be unaffected by outages in the service, but
+   affected users and groups will not be able to make changes to the CIB.
+
+
 .. index::
    single: Access Control List (ACL); role
    pair: role; XML element
 
 .. table:: **Properties of a role element**
+   :widths: 1 3
 
    +------------------+-----------------------------------------------------------+
    | Attribute        | Description                                               |

@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2020 the Pacemaker project contributors
+ * Copyright 2004-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -37,7 +37,7 @@
  * \note The caller is responsible for freeing the result using free_xml().
  */
 xmlNode *
-create_request_adv(const char *task, xmlNode * msg_data,
+create_request_adv(const char *task, xmlNode *msg_data,
                    const char *host_to, const char *sys_to,
                    const char *sys_from, const char *uuid_from,
                    const char *origin)
@@ -99,7 +99,7 @@ create_request_adv(const char *task, xmlNode * msg_data,
  * \note The caller is responsible for freeing the result using free_xml().
  */
 xmlNode *
-create_reply_adv(xmlNode *original_request, xmlNode *xml_response_data,
+create_reply_adv(const xmlNode *original_request, xmlNode *xml_response_data,
                  const char *origin)
 {
     xmlNode *reply = NULL;
@@ -151,11 +151,9 @@ create_reply_adv(xmlNode *original_request, xmlNode *xml_response_data,
 }
 
 xmlNode *
-get_message_xml(xmlNode *msg, const char *field)
+get_message_xml(const xmlNode *msg, const char *field)
 {
-    xmlNode *tmp = first_named_child(msg, field);
-
-    return pcmk__xml_first_child(tmp);
+    return pcmk__xml_first_child(first_named_child(msg, field));
 }
 
 gboolean
@@ -205,4 +203,89 @@ pcmk__message_name(const char *name)
     } else {
         return name;
     }
+}
+
+/*!
+ * \internal
+ * \brief Register handlers for server commands
+ *
+ * \param[in] handlers  Array of handler functions for supported server commands
+ *                      (the final entry must have a NULL command name, and if
+ *                      it has a handler it will be used as the default handler
+ *                      for unrecognized commands)
+ *
+ * \return Newly created hash table with commands and handlers
+ * \note The caller is responsible for freeing the return value with
+ *       g_hash_table_destroy().
+ */
+GHashTable *
+pcmk__register_handlers(const pcmk__server_command_t handlers[])
+{
+    GHashTable *commands = g_hash_table_new(g_str_hash, g_str_equal);
+
+    if (handlers != NULL) {
+        int i;
+
+        for (i = 0; handlers[i].command != NULL; ++i) {
+            g_hash_table_insert(commands, (gpointer) handlers[i].command,
+                                handlers[i].handler);
+        }
+        if (handlers[i].handler != NULL) {
+            // g_str_hash() can't handle NULL, so use empty string for default
+            g_hash_table_insert(commands, (gpointer) "", handlers[i].handler);
+        }
+    }
+    return commands;
+}
+
+/*!
+ * \internal
+ * \brief Process an incoming request
+ *
+ * \param[in,out] request   Request to process
+ * \param[in]     handlers  Command table created by pcmk__register_handlers()
+ *
+ * \return XML to send as reply (or NULL if no reply is needed)
+ */
+xmlNode *
+pcmk__process_request(pcmk__request_t *request, GHashTable *handlers)
+{
+    xmlNode *(*handler)(pcmk__request_t *request) = NULL;
+
+    CRM_CHECK((request != NULL) && (request->op != NULL) && (handlers != NULL),
+              return NULL);
+
+    if (pcmk_is_set(request->flags, pcmk__request_sync)
+        && (request->ipc_client != NULL)) {
+        CRM_CHECK(request->ipc_client->request_id == request->ipc_id,
+                  return NULL);
+    }
+
+    handler = g_hash_table_lookup(handlers, request->op);
+    if (handler == NULL) {
+        handler = g_hash_table_lookup(handlers, ""); // Default handler
+        if (handler == NULL) {
+            crm_info("Ignoring %s request from %s %s with no handler",
+                     request->op, pcmk__request_origin_type(request),
+                     pcmk__request_origin(request));
+            return NULL;
+        }
+    }
+
+    return (*handler)(request);
+}
+
+/*!
+ * \internal
+ * \brief Free memory used within a request (but not the request itself)
+ *
+ * \param[in,out] request  Request to reset
+ */
+void
+pcmk__reset_request(pcmk__request_t *request)
+{
+    free(request->op);
+    request->op = NULL;
+
+    pcmk__reset_result(&(request->result));
 }

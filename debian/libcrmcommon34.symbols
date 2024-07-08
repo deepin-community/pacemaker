@@ -218,21 +218,30 @@ libcrmcommon.so.34 libcrmcommon34 #MINVER#
  pcmk__add_alert_key_int@Base 2.0.4
  pcmk__add_arg_group@Base 2.0.3
  pcmk__add_logfile@Base 2.1.1
+ pcmk__add_logfiles@Base 2.1.6
  pcmk__add_main_args@Base 2.0.3
  pcmk__add_mainloop_ipc@Base 2.0.5~rc2
+ pcmk__add_scores@Base 2.1.4
  pcmk__add_separated_word@Base 2.0.5~rc2
  pcmk__alert_in_patchset@Base 2.0.4
  pcmk__alert_keys@Base 2.0.4
  pcmk__alert_new@Base 2.0.4
+ pcmk__attrd_api_clear_failures@Base 2.1.5
+ pcmk__attrd_api_delete@Base 2.1.5
+ pcmk__attrd_api_purge@Base 2.1.5
+ pcmk__attrd_api_query@Base 2.1.5
+ pcmk__attrd_api_refresh@Base 2.1.5
+ pcmk__attrd_api_update@Base 2.1.5
+ pcmk__attrd_api_update_list@Base 2.1.5
  pcmk__auto_watchdog_timeout@Base 2.0.4
  pcmk__build_arg_context@Base 2.0.3
  pcmk__build_path@Base 2.0.4
  pcmk__call_message@Base 2.0.2
  pcmk__char_in_any_str@Base 2.0.5~rc2
+ pcmk__check_acl@Base 2.1.4
  pcmk__chown_series_sequence@Base 2.0.4
  pcmk__cli_help@Base 2.0.4
  pcmk__cli_init_logging@Base 2.1.1
- pcmk__cli_option_cleanup@Base 2.0.4
  pcmk__client_cleanup@Base 2.0.4
  pcmk__client_data2xml@Base 2.0.4
  pcmk__client_name@Base 2.0.4
@@ -243,12 +252,17 @@ libcrmcommon.so.34 libcrmcommon34 #MINVER#
  pcmk__cmdline_preproc@Base 2.0.3
  pcmk__compress@Base 2.0.4
  pcmk__connect_remote@Base 2.0.4
+ pcmk__controld_api_reply2str@Base 2.1.6
+ pcmk__copy_result@Base 2.1.4
+ pcmk__copy_timet@Base 2.1.6
  pcmk__crm_ipc_is_authentic_process@Base 2.1.1
  pcmk__daemon_can_write@Base 1.1.19
  pcmk__daemonize@Base 2.0.5~rc2
  pcmk__drop_all_clients@Base 2.0.4
  pcmk__dup_alert@Base 2.0.4
  pcmk__effective_rc@Base 2.0.5~rc2
+ pcmk__element_xpath@Base 2.1.5
+ pcmk__enable_acl@Base 2.1.4
  pcmk__ends_with@Base 2.0.4
  pcmk__ends_with_ext@Base 2.0.4
  pcmk__env_option@Base 2.0.4
@@ -261,13 +275,17 @@ libcrmcommon.so.34 libcrmcommon34 #MINVER#
  pcmk__find_client_by_id@Base 2.0.4
  pcmk__force_args@Base 2.0.3
  pcmk__foreach_ipc_client@Base 2.0.4
- pcmk__format_named_time@Base 2.1.1
  pcmk__format_nvpair@Base 2.1.1
+ pcmk__format_option_metadata@Base 2.1.4
+ pcmk__format_result@Base 2.1.4
  pcmk__formatted_printf@Base 2.1.1
  pcmk__formatted_vprintf@Base 2.1.1
  pcmk__free_alert@Base 2.0.4
  pcmk__free_arg_context@Base 2.0.3
  pcmk__free_client@Base 2.0.4
+ pcmk__free_common_logger@Base 2.1.6
+ pcmk__full_path@Base 2.1.2
+ pcmk__g_strcat@Base 2.1.5
  pcmk__get_sbd_sync_resource_startup@Base 2.0.5~rc2
  pcmk__get_sbd_timeout@Base 2.0.4
  pcmk__get_tmpdir@Base 2.0.4
@@ -278,15 +296,18 @@ libcrmcommon.so.34 libcrmcommon34 #MINVER#
  pcmk__indented_vprintf@Base 2.0.3
  pcmk__init_tls_dh@Base 2.0.1~rc2
  pcmk__ipc_client_count@Base 2.0.4
+ pcmk__ipc_create_ack_as@Base 2.1.4
  pcmk__ipc_is_authentic_process_active@Base 2.0.1-3~
  pcmk__ipc_prepare_iov@Base 2.0.4
  pcmk__ipc_send_ack_as@Base 2.0.4
  pcmk__ipc_send_iov@Base 2.0.4
  pcmk__ipc_send_xml@Base 2.0.4
  pcmk__is_daemon@Base 2.1.1
+ pcmk__is_fencing_action@Base 2.1.4
  pcmk__locate_sbd@Base 2.0.5~rc2
  pcmk__lock_pidfile@Base 2.0.4
  pcmk__log_output_entries@Base 2.0.4
+ pcmk__log_output_new@Base 2.1.5
  pcmk__mainloop_timer_get_period@Base 2.1.1
  pcmk__message_name@Base 2.0.5~rc2
  pcmk__mk_html_output@Base 2.0.3
@@ -294,50 +315,61 @@ libcrmcommon.so.34 libcrmcommon34 #MINVER#
  pcmk__mk_none_output@Base 2.0.3
  pcmk__mk_text_output@Base 2.0.2
  pcmk__mk_xml_output@Base 2.0.2
+ pcmk__n_rc@Base 2.1.5
  pcmk__new_client@Base 2.0.4
  pcmk__new_common_args@Base 2.0.3
  pcmk__new_tls_session@Base 2.0.1~rc2
  pcmk__new_unauth_client@Base 2.0.4
- pcmk__next_cli_option@Base 2.0.4
- pcmk__node_attr_request@Base 2.0.4
- pcmk__node_attr_request_clear@Base 2.0.4
  pcmk__node_attr_target@Base 2.0.4
  pcmk__none_output_entries@Base 2.0.3
  pcmk__notify_key@Base 2.0.4
  pcmk__numeric_strcasecmp@Base 2.1.1
  pcmk__op_key@Base 2.0.4
+ pcmk__our_nodename@Base 2.1.6
  pcmk__output_and_clear_error@Base 2.1.1
  pcmk__output_create_html_node@Base 2.0.3
  pcmk__output_create_xml_node@Base 2.0.3
  pcmk__output_create_xml_text_node@Base 2.0.3
  pcmk__output_free@Base 2.0.2
+ pcmk__output_get_log_level@Base 2.1.6
  pcmk__output_new@Base 2.0.2
  pcmk__output_set_log_level@Base 2.1.1
- pcmk__output_xml_add_node@Base 2.0.3
+ pcmk__output_xml_add_node_copy@Base 2.1.6
  pcmk__output_xml_create_parent@Base 2.0.3
  pcmk__output_xml_peek_parent@Base 2.0.3
  pcmk__output_xml_pop_parent@Base 2.0.3
  pcmk__output_xml_push_parent@Base 2.0.3
  pcmk__panic@Base 2.0.5~rc2
+ pcmk__parse_health_strategy@Base 2.1.4
  pcmk__parse_ll_range@Base 2.0.4
+ pcmk__pcmkd_api_reply2str@Base 2.1.6
+ pcmk__pcmkd_state_enum2friendly@Base 2.1.5
  pcmk__pid_active@Base 2.0.4
  pcmk__pidfile_matches@Base 2.0.4
- pcmk__print_option_metadata@Base 2.0.4
+ pcmk__process_request@Base 2.1.4
+ pcmk__procfs_has_pids@Base 2.1.5
  pcmk__procfs_num_cores@Base 2.0.4
+ pcmk__procfs_pid2path@Base 2.1.5
  pcmk__procfs_pid_of@Base 2.0.4
+ pcmk__quote_cmdline@Base 2.1.5
  pcmk__rc_error_quark@Base 2.0.5~rc2
  pcmk__read_handshake_data@Base 2.0.1~rc2
  pcmk__read_pidfile@Base 2.0.4
  pcmk__read_remote_message@Base 2.0.4
  pcmk__read_series_sequence@Base 2.0.4
+ pcmk__readable_interval@Base 2.1.2
  pcmk__real_path@Base 2.0.4
  pcmk__register_format@Base 2.0.2
  pcmk__register_formats@Base 2.0.3
+ pcmk__register_handlers@Base 2.1.4
  pcmk__register_message@Base 2.0.2
  pcmk__register_messages@Base 2.0.2
  pcmk__remote_message_xml@Base 2.0.4
  pcmk__remote_ready@Base 2.0.4
  pcmk__remote_send_xml@Base 2.0.4
+ pcmk__reset_request@Base 2.1.4
+ pcmk__reset_result@Base 2.1.2
+ pcmk__result_bounds@Base 2.1.5
  pcmk__scan_double@Base 2.0.5~rc2
  pcmk__scan_ll@Base 2.1.1
  pcmk__scan_min_int@Base 2.1.1
@@ -352,10 +384,13 @@ libcrmcommon.so.34 libcrmcommon34 #MINVER#
  pcmk__serve_controld_ipc@Base 2.0.4
  pcmk__serve_fenced_ipc@Base 2.0.4
  pcmk__serve_pacemakerd_ipc@Base 2.1.1
- pcmk__set_cli_options@Base 2.0.4
+ pcmk__serve_schedulerd_ipc@Base 2.1.4
  pcmk__set_client_queue_max@Base 2.0.4
  pcmk__set_env_option@Base 2.0.4
  pcmk__set_nonblocking@Base 2.0.4
+ pcmk__set_result@Base 2.1.2
+ pcmk__set_result_output@Base 2.1.2
+ pcmk__set_xml_doc_flag@Base 2.1.4
  pcmk__sleep_ms@Base 2.1.1
  pcmk__sockaddr2str@Base 2.0.4
  pcmk__starts_with@Base 2.0.4
@@ -363,6 +398,7 @@ libcrmcommon.so.34 libcrmcommon34 #MINVER#
  pcmk__str_any_of@Base 2.0.5~rc2
  pcmk__str_in_list@Base 2.0.4
  pcmk__str_table_dup@Base 2.1.1
+ pcmk__str_update@Base 2.1.4
  pcmk__strcase_any_of@Base 2.0.5~rc2
  pcmk__strcmp@Base 2.0.5~rc2
  pcmk__strikey_table@Base 2.1.1
@@ -372,13 +408,15 @@ libcrmcommon.so.34 libcrmcommon34 #MINVER#
  pcmk__subtract_lists@Base 2.0.5~rc2
  pcmk__sync_directory@Base 2.0.4
  pcmk__text_output_entries@Base 2.0.3
+ pcmk__text_output_new@Base 2.1.6
  pcmk__text_prompt@Base 2.1.1
  pcmk__time_format_hr@Base 2.0.4
  pcmk__time_hr_convert@Base 2.0.4
  pcmk__time_hr_free@Base 2.0.4
  pcmk__time_hr_new@Base 2.0.4
+ pcmk__time_hr_now@Base 2.1.5
  pcmk__time_set_hr_dt@Base 2.0.4
- pcmk__time_timeval_hr_convert@Base 2.0.4
+ pcmk__timespec2str@Base 2.1.6
  pcmk__tls_client_handshake@Base 2.0.4
  pcmk__transition_key@Base 2.0.4
  pcmk__trim@Base 2.1.1
@@ -388,25 +426,37 @@ libcrmcommon.so.34 libcrmcommon34 #MINVER#
  pcmk__valid_boolean@Base 2.0.4
  pcmk__valid_interval_spec@Base 2.0.4
  pcmk__valid_number@Base 2.0.4
+ pcmk__valid_percentage@Base 2.1.4
  pcmk__valid_positive_number@Base 2.0.4
  pcmk__valid_quorum@Base 2.0.4
  pcmk__valid_sbd_timeout@Base 2.0.4
  pcmk__valid_script@Base 2.0.4
- pcmk__valid_utilization@Base 2.0.4
  pcmk__validate_cluster_options@Base 2.0.4
+ pcmk__validate_health_strategy@Base 2.1.4
  pcmk__verify_digest@Base 2.0.4
  pcmk__write_series_sequence@Base 2.0.4
  pcmk__write_sync@Base 2.0.4
  pcmk__xe_add_last_written@Base 2.0.5~rc2
+ pcmk__xe_add_node@Base 2.1.5
+ pcmk__xe_attr_is_true@Base 2.1.4
+ pcmk__xe_foreach_child@Base 2.1.5
+ pcmk__xe_get_bool_attr@Base 2.1.4
  pcmk__xe_match@Base 2.0.5~rc2
  pcmk__xe_remove_matching_attrs@Base 2.1.1
+ pcmk__xe_set_bool_attr@Base 2.1.4
  pcmk__xe_set_props@Base 2.1.1
  pcmk__xe_set_propv@Base 2.1.1
  pcmk__xml_artefact_path@Base 2.0.3
  pcmk__xml_artefact_root@Base 2.0.3
  pcmk__xml_output_entries@Base 2.0.3
+ pcmk__xml_output_finish@Base 2.1.5
+ pcmk__xml_output_new@Base 2.1.5
+ pcmk__xml_show@Base 2.1.6
+ pcmk__xml_show_changes@Base 2.1.6
  pcmk__xpath_node_id@Base 2.1.1
  pcmk_acl_required@Base 1.1.12
+ pcmk_cib_parent_name_for@Base 2.1.4
+ pcmk_cib_xpath_for@Base 2.1.4
  pcmk_connect_ipc@Base 2.0.5~rc2
  pcmk_controld_api_fail@Base 2.0.5~rc2
  pcmk_controld_api_list_nodes@Base 2.0.5~rc2
@@ -423,6 +473,7 @@ libcrmcommon.so.34 libcrmcommon34 #MINVER#
  pcmk_dispatch_ipc@Base 2.0.5~rc2
  pcmk_drain_main_loop@Base 2.0.1~rc2
  pcmk_errorname@Base 1.1.10
+ pcmk_find_cib_element@Base 2.1.4
  pcmk_format_named_time@Base 2.0.3
  pcmk_format_nvpair@Base 2.0.3
  pcmk_free_ipc_api@Base 2.0.5~rc2
@@ -434,7 +485,9 @@ libcrmcommon.so.34 libcrmcommon34 #MINVER#
  pcmk_ipc_is_connected@Base 2.0.5~rc2
  pcmk_ipc_name@Base 2.0.5~rc2
  pcmk_ipc_purge_node@Base 2.0.5~rc2
+ pcmk_is_probe@Base 2.1.4
  pcmk_legacy2rc@Base 2.0.4
+ pcmk_log_xml_impl@Base 2.1.6
  pcmk_new_ipc_api@Base 2.0.5~rc2
  pcmk_numeric_strcasecmp@Base 2.0.5~rc2
  pcmk_nvpairs2xml_attrs@Base 2.0.1~rc5
@@ -448,15 +501,21 @@ libcrmcommon.so.34 libcrmcommon34 #MINVER#
  pcmk_quit_main_loop@Base 2.0.5~rc2
  pcmk_rc2exitc@Base 2.0.4
  pcmk_rc2legacy@Base 2.0.4
+ pcmk_rc2ocf@Base 2.1.2
  pcmk_rc_name@Base 2.0.4
  pcmk_rc_str@Base 2.0.4
+ pcmk_readable_score@Base 2.1.5
  pcmk_register_ipc_callback@Base 2.0.5~rc2
+ pcmk_result_get_strings@Base 2.1.5
  pcmk_scan_nvpair@Base 2.0.2
+ pcmk_schedulerd_api_graph@Base 2.1.4
  pcmk_sort_nvpairs@Base 2.0.1~rc5
  pcmk_stonith_param@Base 2.1.1
  pcmk_str_is_infinity@Base 2.0.4
  pcmk_str_is_minus_infinity@Base 2.0.4
  pcmk_strerror@Base 1.1.9
+ pcmk_xe_is_probe@Base 2.1.4
+ pcmk_xe_mask_probe_failure@Base 2.1.4
  pcmk_xml_attrs2nvpairs@Base 2.0.1~rc5
  purge_diff_markers@Base 1.1.9
  replace_xml_child@Base 1.1.9

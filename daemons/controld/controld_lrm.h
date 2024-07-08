@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -71,7 +71,7 @@ typedef struct lrm_state_s {
     void *remote_ra_data;       // Reserved for controld_remote_ra.c usage
 
     GHashTable *resource_history;
-    GHashTable *pending_ops;
+    GHashTable *active_ops;     // Pending and recurring actions
     GHashTable *deletion_ops;
     GHashTable *rsc_info_cache;
     GHashTable *metadata_cache; // key = class[:provider]:agent, value = ra_metadata_s
@@ -109,11 +109,6 @@ gboolean lrm_state_init_local(void);
 void lrm_state_destroy_all(void);
 
 /*!
- * \brief Create executor connection entry
- */
-lrm_state_t *lrm_state_create(const char *node_name);
-
-/*!
  * \brief Destroy executor connection by node name
  */
 void lrm_state_destroy(const char *node_name);
@@ -137,9 +132,9 @@ lrm_state_t *lrm_state_find_or_create(const char *node_name);
  */
 void lrm_state_disconnect_only(lrm_state_t * lrm_state);
 void lrm_state_disconnect(lrm_state_t * lrm_state);
-int lrm_state_ipc_connect(lrm_state_t * lrm_state);
-int lrm_state_remote_connect_async(lrm_state_t * lrm_state, const char *server, int port,
-                                   int timeout);
+int controld_connect_local_executor(lrm_state_t *lrm_state);
+int controld_connect_remote_executor(lrm_state_t *lrm_state, const char *server,
+                                     int port, int timeout);
 int lrm_state_is_connected(lrm_state_t * lrm_state);
 int lrm_state_poke_connection(lrm_state_t * lrm_state);
 
@@ -149,11 +144,11 @@ int lrm_state_get_metadata(lrm_state_t * lrm_state,
                            const char *agent, char **output, enum lrmd_call_options options);
 int lrm_state_cancel(lrm_state_t *lrm_state, const char *rsc_id,
                      const char *action, guint interval_ms);
-int lrm_state_exec(lrm_state_t *lrm_state, const char *rsc_id,
-                   const char *action, const char *userdata, guint interval_ms,
-                   int timeout, /* ms */
-                   int start_delay,     /* ms */
-                   lrmd_key_value_t * params);
+int controld_execute_resource_agent(lrm_state_t *lrm_state, const char *rsc_id,
+                                    const char *action, const char *userdata,
+                                    guint interval_ms, int timeout_ms,
+                                    int start_delay_ms,
+                                    GHashTable *parameters, int *call_id);
 lrmd_rsc_info_t *lrm_state_get_rsc_info(lrm_state_t * lrm_state,
                                         const char *rsc_id, enum lrmd_call_options options);
 int lrm_state_register_rsc(lrm_state_t * lrm_state,
@@ -169,11 +164,12 @@ gboolean is_remote_lrmd_ra(const char *agent, const char *provider, const char *
 lrmd_rsc_info_t *remote_ra_get_rsc_info(lrm_state_t * lrm_state, const char *rsc_id);
 int remote_ra_cancel(lrm_state_t *lrm_state, const char *rsc_id,
                      const char *action, guint interval_ms);
-int remote_ra_exec(lrm_state_t *lrm_state, const char *rsc_id,
-                   const char *action, const char *userdata, guint interval_ms,
-                   int timeout, /* ms */
-                   int start_delay,     /* ms */
-                   lrmd_key_value_t * params);
+int controld_execute_remote_agent(const lrm_state_t *lrm_state,
+                                  const char *rsc_id, const char *action,
+                                  const char *userdata,
+                                  guint interval_ms, int timeout_ms,
+                                  int start_delay_ms, lrmd_key_value_t *params,
+                                  int *call_id);
 void remote_ra_cleanup(lrm_state_t * lrm_state);
 void remote_ra_fail(const char *node_name);
 void remote_ra_process_pseudo(xmlNode *xml);
@@ -182,10 +178,10 @@ void remote_ra_process_maintenance_nodes(xmlNode *xml);
 gboolean remote_ra_controlling_guest(lrm_state_t * lrm_state);
 
 void process_lrm_event(lrm_state_t *lrm_state, lrmd_event_data_t *op,
-                       active_op_t *pending, xmlNode *action_xml);
+                       active_op_t *pending, const xmlNode *action_xml);
 void controld_ack_event_directly(const char *to_host, const char *to_sys,
-                                 lrmd_rsc_info_t *rsc, lrmd_event_data_t *op,
-                                 const char *rsc_id);
+                                 const lrmd_rsc_info_t *rsc,
+                                 lrmd_event_data_t *op, const char *rsc_id);
 void controld_rc2event(lrmd_event_data_t *event, int rc);
 void controld_trigger_delete_refresh(const char *from_sys, const char *rsc_id);
 

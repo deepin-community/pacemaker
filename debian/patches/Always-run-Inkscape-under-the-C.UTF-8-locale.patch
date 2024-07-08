@@ -7,10 +7,10 @@ Subject: Always run Inkscape under the C.UTF-8 locale
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/doc/sphinx/Makefile.am b/doc/sphinx/Makefile.am
-index 65ec7f0..f43bb72 100644
+index c4ade5c..6ecb9ab 100644
 --- a/doc/sphinx/Makefile.am
 +++ b/doc/sphinx/Makefile.am
-@@ -96,7 +96,7 @@ DEPS_Pacemaker_Remote		= $(PNGS_Pacemaker_Remote)
+@@ -98,7 +98,7 @@ DEPS_Pacemaker_Remote		= $(PNGS_Pacemaker_Remote)
  
  if BUILD_SPHINX_DOCS
  

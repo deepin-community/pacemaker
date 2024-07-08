@@ -1,8 +1,16 @@
-doc/api/html usr/share/doc/pacemaker
+# Do not install *.md5 from the Doxygen output:
+doc/api/html/*.css       usr/share/doc/pacemaker/html
+doc/api/html/*.html      usr/share/doc/pacemaker/html
+doc/api/html/*.js        usr/share/doc/pacemaker/html
+doc/api/html/*.map       usr/share/doc/pacemaker/html
+doc/api/html/*.png       usr/share/doc/pacemaker/html
+doc/api/html/doxygen.svg usr/share/doc/pacemaker/html
+doc/api/html/search      usr/share/doc/pacemaker/html
 usr/share/doc/pacemaker/Clusters_from_Scratch
 usr/share/doc/pacemaker/Pacemaker_Administration
 usr/share/doc/pacemaker/Pacemaker_Development
 usr/share/doc/pacemaker/Pacemaker_Explained
+usr/share/doc/pacemaker/Pacemaker_Python_API
 usr/share/doc/pacemaker/Pacemaker_Remote
 usr/share/doc/pacemaker/crm_fencing.html
 usr/share/doc/pacemaker/crm_fencing.txt

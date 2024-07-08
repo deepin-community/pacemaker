@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -163,17 +163,15 @@ crm_remote_peer_cache_remove(const char *node_name)
  *       backward compatibility with older controllers that don't set it.
  */
 static const char *
-remote_state_from_cib(xmlNode *node_state)
+remote_state_from_cib(const xmlNode *node_state)
 {
-    const char *status;
+    bool status = false;
 
-    status = crm_element_value(node_state, XML_NODE_IN_CLUSTER);
-    if (status && !crm_is_true(status)) {
-        status = CRM_NODE_LOST;
+    if (pcmk__xe_get_bool_attr(node_state, XML_NODE_IN_CLUSTER, &status) == pcmk_rc_ok && !status) {
+        return CRM_NODE_LOST;
     } else {
-        status = CRM_NODE_MEMBER;
+        return CRM_NODE_MEMBER;
     }
-    return status;
 }
 
 /* user data for looping through remote node xpath searches */
@@ -192,7 +190,7 @@ struct refresh_data {
 static void
 remote_cache_refresh_helper(xmlNode *result, void *user_data)
 {
-    struct refresh_data *data = user_data;
+    const struct refresh_data *data = user_data;
     const char *remote = crm_element_value(result, data->field);
     const char *state = NULL;
     crm_node_t *node;
@@ -335,7 +333,7 @@ guint
 reap_crm_member(uint32_t id, const char *name)
 {
     int matches = 0;
-    crm_node_t search;
+    crm_node_t search = { 0, };
 
     if (crm_peer_cache == NULL) {
         crm_trace("Membership cache not initialized, ignoring purge request");
@@ -343,7 +341,7 @@ reap_crm_member(uint32_t id, const char *name)
     }
 
     search.id = id;
-    search.uname = name ? strdup(name) : NULL;
+    pcmk__str_update(&search.uname, name);
     matches = g_hash_table_foreach_remove(crm_peer_cache, crm_reap_dead_member, &search);
     if(matches) {
         crm_notice("Purged %d peer%s with id=%u%s%s from the membership cache",
@@ -394,6 +392,7 @@ destroy_crm_node(gpointer data)
     free(node->state);
     free(node->uuid);
     free(node->expected);
+    free(node->conn_host);
     free(node);
 }
 
@@ -770,8 +769,8 @@ crm_get_peer(unsigned int id, const char *uname)
  * \internal
  * \brief Update a node's uname
  *
- * \param[in] node        Node object to update
- * \param[in] uname       New name to set
+ * \param[in,out] node   Node object to update
+ * \param[in]     uname  New name to set
  *
  * \note This function should not be called within a peer cache iteration,
  *       because in some cases it can remove conflicting cache entries,
@@ -799,9 +798,7 @@ update_peer_uname(crm_node_t *node, const char *uname)
         }
     }
 
-    free(node->uname);
-    node->uname = strdup(uname);
-    CRM_ASSERT(node->uname != NULL);
+    pcmk__str_update(&node->uname, uname);
 
     if (peer_status_callback != NULL) {
         peer_status_callback(crm_status_uname, node, NULL);
@@ -860,10 +857,10 @@ proc2text(enum crm_proc_flag proc)
  * \internal
  * \brief Update a node's process information (and potentially state)
  *
- * \param[in] source      Caller's function name (for log messages)
- * \param[in] node        Node object to update
- * \param[in] flag        Bitmask of new process information
- * \param[in] status      node status (online, offline, etc.)
+ * \param[in]     source  Caller's function name (for log messages)
+ * \param[in,out] node    Node object to update
+ * \param[in]     flag    Bitmask of new process information
+ * \param[in]     status  node status (online, offline, etc.)
  *
  * \return NULL if any node was reaped from peer caches, value of node otherwise
  *
@@ -994,11 +991,11 @@ pcmk__update_peer_expected(const char *source, crm_node_t *node,
  * \internal
  * \brief Update a node's state and membership information
  *
- * \param[in] source      Caller's function name (for log messages)
- * \param[in] node        Node object to update
- * \param[in] state       Node's new state
- * \param[in] membership  Node's new membership ID
- * \param[in] iter        If not NULL, pointer to node's peer cache iterator
+ * \param[in]     source      Caller's function name (for log messages)
+ * \param[in,out] node        Node object to update
+ * \param[in]     state       Node's new state
+ * \param[in]     membership  Node's new membership ID
+ * \param[in,out] iter        If not NULL, pointer to node's peer cache iterator
  *
  * \return NULL if any node was reaped, value of node otherwise
  *
@@ -1063,10 +1060,10 @@ update_peer_state_iter(const char *source, crm_node_t *node, const char *state,
 /*!
  * \brief Update a node's state and membership information
  *
- * \param[in] source      Caller's function name (for log messages)
- * \param[in] node        Node object to update
- * \param[in] state       Node's new state
- * \param[in] membership  Node's new membership ID
+ * \param[in]     source      Caller's function name (for log messages)
+ * \param[in,out] node        Node object to update
+ * \param[in]     state       Node's new state
+ * \param[in]     membership  Node's new membership ID
  *
  * \return NULL if any node was reaped, value of node otherwise
  *
@@ -1218,11 +1215,7 @@ known_node_cache_refresh_helper(xmlNode *xml_node, void *user_data)
         g_hash_table_replace(known_node_cache, uniqueid, node);
 
     } else if (pcmk_is_set(node->flags, crm_node_dirty)) {
-        if (!pcmk__str_eq(uname, node->uname, pcmk__str_casei)) {
-            free(node->uname);
-            node->uname = strdup(uname);
-            CRM_ASSERT(node->uname != NULL);
-        }
+        pcmk__str_update(&node->uname, uname);
 
         /* Node is in cache and hasn't been updated already, so mark it clean */
         clear_peer_flags(node, crm_node_dirty);
@@ -1288,6 +1281,7 @@ pcmk__search_known_node_cache(unsigned int id, const char *uname,
 
 
 // Deprecated functions kept only for backward API compatibility
+// LCOV_EXCL_START
 
 #include <crm/cluster/compat.h>
 
@@ -1303,4 +1297,5 @@ crm_terminate_member_no_mainloop(int nodeid, const char *uname, int *connection)
     return stonith_api_kick(nodeid, uname, 120, TRUE);
 }
 
+// LCOV_EXCL_STOP
 // End deprecated API

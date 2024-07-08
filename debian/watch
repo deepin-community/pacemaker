@@ -1,4 +1,7 @@
 version=4
 
-opts=uversionmangle=s/(\d)[_\.\-\+]?((RC|rc|pre|dev|beta|alpha)\d*)$/$1~$2/ \
-  https://github.com/ClusterLabs/pacemaker/releases .*/Pacemaker-(\d\S*)\.tar\.gz
+opts=\
+  downloadurlmangle=s|/releases/tag/(Pacemaker-@ANY_VERSION@)$|/archive/refs/tags/$1.tar.gz|,\
+  filenamemangle=s|.*/Pacemaker-@ANY_VERSION@|@PACKAGE@-$1.tar.gz|,\
+  uversionmangle=s/(\d)[_\.\-\+]?((RC|rc|pre|dev|beta|alpha)\d*)$/$1~$2/ \
+  https://github.com/ClusterLabs/pacemaker/releases/ /ClusterLabs/@PACKAGE@/releases/tag/Pacemaker-(.*)
