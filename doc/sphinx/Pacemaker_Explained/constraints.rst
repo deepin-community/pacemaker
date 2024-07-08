@@ -82,6 +82,8 @@ Location Properties
 ___________________
 
 .. table:: **Attributes of a rsc_location Element**
+   :class: longtable
+   :widths: 1 1 4
 
    +--------------------+---------+----------------------------------------------------------------------------------------------+
    | Attribute          | Default | Description                                                                                  |
@@ -112,14 +114,15 @@ ___________________
    |                    |         | this constraint applies.  The syntax is the same as                                          |
    |                    |         | `POSIX <http://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap09.html#tag_09_04>`_ |
    |                    |         | extended regular expressions, with the addition of an                                        |
-   |                    |         | initial *!* indicating that resources *not* matching                                         |
+   |                    |         | initial ``!`` indicating that resources *not* matching                                       |
    |                    |         | the pattern are selected. If the regular expression                                          |
    |                    |         | contains submatches, and the constraint is governed by                                       |
    |                    |         | a :ref:`rule <rules>`, the submatches can be                                                 |
-   |                    |         | referenced as **%1** through **%9** in the rule's                                            |
-   |                    |         | ``score-attribute`` or a rule expression's ``attribute``.                                    |
-   |                    |         | A location constraint must either have a ``rsc``, have a                                     |
-   |                    |         | ``rsc-pattern``, or contain at least one resource set.                                       |
+   |                    |         | referenced as ``%1`` through ``%9`` in the rule's                                            |
+   |                    |         | ``score-attribute`` or a rule expression's ``attribute``                                     |
+   |                    |         | (see :ref:`s-rsc-pattern-rules`). A location constraint                                      |
+   |                    |         | must either have a ``rsc``, have a ``rsc-pattern``, or                                       |
+   |                    |         | contain at least one resource set.                                                           |
    +--------------------+---------+----------------------------------------------------------------------------------------------+
    | node               |         | .. index::                                                                                   |
    |                    |         |    single: rsc_location; attribute, node                                                     |
@@ -275,9 +278,28 @@ uname and **Database** based on the desire to spread the resource load
 evenly across the cluster.  However other factors can also be involved
 in more complex configurations.
 
+.. _s-rsc-pattern:
+
+Specifying locations using pattern matching
+___________________________________________
+
+A location constraint can affect all resources whose IDs match a given pattern.
+The following example bans resources named **ip-httpd**, **ip-asterisk**,
+**ip-gateway**, etc., from **node1**.
+
+.. topic:: Location constraint banning all resources matching a pattern from one node
+
+   .. code-block:: xml
+
+      <constraints>
+          <rsc_location id="ban-ips-from-node1" rsc-pattern="ip-.*" node="node1" score="-INFINITY"/>
+      </constraints>
+
+
 .. index::
    single: constraint; ordering
    single: resource; start order
+
 
 .. _s-resource-ordering:
 
@@ -304,6 +326,8 @@ Ordering Properties
 ___________________
 
 .. table:: **Attributes of a rsc_order Element**
+   :class: longtable
+   :widths: 1 2 4
 
    +--------------+----------------------------+-------------------------------------------------------------------+
    | Field        | Default                    | Description                                                       |
@@ -446,6 +470,8 @@ Colocation Properties
 _____________________
 
 .. table:: **Attributes of a rsc_colocation Constraint**
+   :class: longtable
+   :widths: 2 2 5
 
    +----------------+----------------+--------------------------------------------------------+
    | Field          | Default        | Description                                            |
@@ -579,15 +605,13 @@ Advisory Placement
 __________________
 
 If mandatory placement is about "must" and "must not", then advisory
-placement is the "I'd prefer if" alternative.  For constraints with
-scores greater than **-INFINITY** and less than **INFINITY**, the cluster
-will try to accommodate your wishes but may ignore them if the
-alternative is to stop some of the cluster resources.
+placement is the "I'd prefer if" alternative.
 
-As in life, where if enough people prefer something it effectively
-becomes mandatory, advisory colocation constraints can combine with
-other elements of the configuration to behave as if they were
-mandatory.
+For colocation constraints with scores greater than **-INFINITY** and less than
+**INFINITY**, the cluster will try to accommodate your wishes, but may ignore
+them if other factors outweigh the colocation score. Those factors might
+include other constraints, resource stickiness, failure thresholds, whether
+other resources would be prevented from being active, etc.
 
 .. topic:: Advisory colocation constraint for two resources
 
@@ -678,7 +702,9 @@ have an effect in all contexts.
 .. index::
    pair: XML element; resource_set
 
-.. topic:: **Attributes of a resource_set Element**
+.. table:: **Attributes of a resource_set Element**
+   :class: longtable
+   :widths: 2 2 5
 
    +-------------+------------------+--------------------------------------------------------+
    | Field       | Default          | Description                                            |
@@ -1053,6 +1079,25 @@ resources that are in a specific role, using the set's ``role`` property.
 .. note::
 
    Unlike ordered sets, colocated sets do not use the ``require-all`` option.
+
+
+External Resource Dependencies
+##############################
+
+Sometimes, a resource will depend on services that are not managed by the
+cluster. An example might be a resource that requires a file system that is
+not managed by the cluster but mounted by systemd at boot time.
+
+To accommodate this, the pacemaker systemd service depends on a normally empty
+target called ``resource-agents-deps.target``. The system administrator may
+create a unit drop-in for that target specifying the dependencies, to ensure
+that the services are started before Pacemaker starts and stopped after
+Pacemaker stops.
+
+Typically, this is accomplished by placing a unit file in the
+``/etc/systemd/system/resource-agents-deps.target.d`` directory, with directives
+such as ``Requires`` and ``After`` specifying the dependencies as needed.
+
 
 .. [#] While the human brain is sophisticated enough to read the constraint
        in any order and choose the correct one depending on the situation,

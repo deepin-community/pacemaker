@@ -156,6 +156,8 @@ The table below lists special resource meta-attributes that may be set for any
 fencing resource.
 
 .. table:: **Additional Properties of Fencing Resources**
+   :widths: 2 1 2 4
+
 
    +----------------------+---------+--------------------+----------------------------------------+
    | Field                | Type    | Default            | Description                            |
@@ -189,6 +191,8 @@ for ``pacemaker-fenced``.
    +----------------------+---------+--------------------+----------------------------------------+
 
 .. table:: **Additional Properties of Fencing Resources**
+   :class: longtable
+   :widths: 2 1 2 4
 
    +----------------------+---------+--------------------+----------------------------------------+
    | Field                | Type    | Default            | Description                            |
@@ -205,9 +209,9 @@ for ``pacemaker-fenced``.
    | pcmk_host_map        | string  |                    | .. index::                             |
    |                      |         |                    |    single: pcmk_host_map               |
    |                      |         |                    |                                        |
-   |                      |         |                    | A mapping of host names to ports       |
-   |                      |         |                    | numbers for devices that do not        |
-   |                      |         |                    | support host names.                    |
+   |                      |         |                    | A mapping of node names to ports       |
+   |                      |         |                    | for devices that do not understand     |
+   |                      |         |                    | the node names.                        |
    |                      |         |                    |                                        |
    |                      |         |                    | Example: ``node1:1;node2:2,3`` tells   |
    |                      |         |                    | the cluster to use port 1 for          |
@@ -215,7 +219,10 @@ for ``pacemaker-fenced``.
    |                      |         |                    | ``node2``. If ``pcmk_host_check`` is   |
    |                      |         |                    | explicitly set to ``static-list``,     |
    |                      |         |                    | either this or ``pcmk_host_list`` must |
-   |                      |         |                    | be set.                                |
+   |                      |         |                    | be set. The port portion of the map    |
+   |                      |         |                    | may contain special characters such as |
+   |                      |         |                    | spaces if preceded by a backslash      |
+   |                      |         |                    | *(since 2.1.2)*.                       |
    +----------------------+---------+--------------------+----------------------------------------+
    | pcmk_host_list       | string  |                    | .. index::                             |
    |                      |         |                    |    single: pcmk_host_list              |
@@ -271,7 +278,10 @@ for ``pacemaker-fenced``.
    |                      |         |                    | overall delay introduced by pacemaker  |
    |                      |         |                    | is derived from this value plus a      |
    |                      |         |                    | random delay such that the sum is kept |
-   |                      |         |                    | below the maximum delay.               |
+   |                      |         |                    | below the maximum delay. A single      |
+   |                      |         |                    | device can have different delays per   |
+   |                      |         |                    | node using a host map *(since 2.1.2)*, |
+   |                      |         |                    | for example ``node1:0s;node2:5s.``     |
    +----------------------+---------+--------------------+----------------------------------------+
    | pcmk_action_limit    | integer | 1                  | .. index::                             |
    |                      |         |                    |    single: pcmk_action_limit           |
@@ -689,7 +699,7 @@ Pacemaker command-line tools, this is how you could configure a fence device.
    to set the special ``pcmk_host_list`` and/or ``pcmk_host_check``
    parameters.  See :ref:`fencing-attributes` for details.
 
-#. If the device does not expect the victim to be specified with the
+#. If the device does not expect the target to be specified with the
    ``port`` parameter, you may also need to set the special
    ``pcmk_host_argument`` parameter. See :ref:`fencing-attributes` for details.
 
@@ -1083,6 +1093,8 @@ Some possible uses of topologies include:
   the node
 
 .. table:: **Attributes of a fencing-level Element**
+   :class: longtable
+   :widths: 1 4
 
    +------------------+-----------------------------------------------------------------------------------------+
    | Attribute        | Description                                                                             |

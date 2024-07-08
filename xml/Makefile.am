@@ -1,5 +1,5 @@
 #
-# Copyright 2004-2021 the Pacemaker project contributors
+# Copyright 2004-2022 the Pacemaker project contributors
 #
 # The version control history for this file may have further details.
 #
@@ -22,12 +22,16 @@ APIdir	= $(CRM_SCHEMA_DIRECTORY)/api
 CIBdir	= $(CRM_SCHEMA_DIRECTORY)
 MONdir	= $(CRM_SCHEMA_DIRECTORY)
 
+basexsltdir		= $(CRM_SCHEMA_DIRECTORY)/base
+dist_basexslt_DATA	= $(srcdir)/base/access-render-2.xsl
+
 # Extract a sorted list of available numeric schema versions
 # from filenames like NAME-MAJOR[.MINOR][.MINOR-MINOR].rng
 numeric_versions = $(shell ls -1 $(1) \
 			  | sed -n -e 's/^.*-\([0-9][0-9.]*\).rng$$/\1/p' \
 			  | sort -u -t. -k 1,1n -k 2,2n -k 3,3n)
 
+# @COMPAT: pacemaker-next is deprecated since 2.1.5
 version_pairs = $(join \
 			    $(1),$(addprefix \
 			      -,$(wordlist \
@@ -51,8 +55,12 @@ version_pairs_last = $(wordlist \
 
 # Names of API schemas that form the choices for pacemaker-result content
 API_request_base	= command-output	\
+			  crm_attribute 	\
+			  crm_error 	\
 			  crm_mon		\
 			  crm_resource		\
+			  crm_rule \
+			  crm_shadow		\
 			  crm_simulate		\
 			  crmadmin		\
 			  digests		\
@@ -64,7 +72,20 @@ API_request_base	= command-output	\
 CIB_cfg_base		= options nodes resources constraints fencing acls tags alerts
 
 # Names of all schemas (including top level and those included by others)
-API_base		= $(API_request_base) fence-event failure generic-list item node-attrs node-history nodes resources status
+API_base		= $(API_request_base)	\
+			  any-element		\
+			  failure		\
+			  fence-event 		\
+			  generic-list		\
+			  instruction		\
+			  item			\
+			  node-attrs		\
+			  node-history		\
+			  nodes			\
+			  patchset		\
+			  resources		\
+			  status		\
+			  subprocess-output
 CIB_base		= cib $(CIB_cfg_base) status score rule nvset
 
 # Static schema files and transforms (only CIB has transforms)
@@ -98,6 +119,7 @@ CIB_max			?= $(lastword $(CIB_numeric_versions))
 MON_max 			?= $(lastword $(MON_numeric_versions))
 
 # Sorted lists of all schema versions (including "next")
+# @COMPAT: pacemaker-next is deprecated since 2.1.5
 API_versions		= next $(API_numeric_versions)
 CIB_versions		= next $(CIB_numeric_versions)
 
@@ -207,7 +229,7 @@ pacemaker-%.rng: $(CIB_build_copies) best-match.sh Makefile.am
 	$(AM_V_SCHEMA)echo '</grammar>' >> $@
 
 # Dynamically generated CIB schema listing all pacemaker versions
-versions.rng: Makefile.am
+versions.rng: pacemaker-$(CIB_max).rng Makefile.am
 	$(AM_V_at)echo '<?xml version="1.0" encoding="UTF-8"?>' > $@
 	$(AM_V_at)echo '<grammar xmlns="http://relaxng.org/ns/structure/1.0" datatypeLibrary="http://www.w3.org/2001/XMLSchema-datatypes">' >> $@
 	$(AM_V_at)echo '  <start>' >> $@

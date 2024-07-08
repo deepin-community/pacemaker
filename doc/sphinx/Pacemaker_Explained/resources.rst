@@ -11,24 +11,18 @@ What is a Cluster Resource?
 .. index::
    single: resource
 
-A resource is a service made highly available by a cluster.
-The simplest type of resource, a *primitive* resource, is described
-in this chapter. More complex forms, such as groups and clones,
-are described in later chapters.
+A *resource* is a service managed by Pacemaker. The simplest type of resource,
+a *primitive*, is described in this chapter. More complex forms, such as groups
+and clones, are described in later chapters.
 
-Every primitive resource has a *resource agent*. A resource agent is an
-external program that abstracts the service it provides and present a
-consistent view to the cluster.
+Every primitive has a *resource agent* that provides Pacemaker a standardized
+interface for managing the service. This allows Pacemaker to be agnostic about
+the services it manages. Pacemaker doesn't need to understand how the service
+works because it relies on the resource agent to do the right thing when asked.
 
-This allows the cluster to be agnostic about the resources it manages.
-The cluster doesn't need to understand how the resource works because
-it relies on the resource agent to do the right thing when given a
-**start**, **stop** or **monitor** command. For this reason, it is crucial
-that resource agents are well-tested.
+Every resource has a *class* specifying the standard that its resource agent
+follows, and a *type* identifying the specific service being managed.
 
-Typically, resource agents come in the form of shell scripts. However,
-they can be written using any technology (such as C, Python or Perl)
-that the author is comfortable with.
 
 .. _s-resource-supported:
 
@@ -38,15 +32,16 @@ that the author is comfortable with.
 Resource Classes
 ################
 
-Pacemaker supports several classes of agents:
+Pacemaker supports several classes, or standards, of resource agents:
 
 * OCF
 * LSB
 * Systemd
-* Upstart (deprecated)
 * Service
 * Fencing
-* Nagios Plugins
+* Nagios *(deprecated since 2.1.6)*
+* Upstart *(deprecated since 2.1.0)*
+
 
 .. index::
    single: resource; OCF
@@ -56,68 +51,21 @@ Pacemaker supports several classes of agents:
 Open Cluster Framework
 ______________________
 
-The OCF standard [#]_ is basically an extension of the Linux Standard
-Base conventions for init scripts to:
+The Open Cluster Framework (OCF) Resource Agent API is a ClusterLabs
+standard for managing services. It is the most preferred since it is
+specifically designed for use in a Pacemaker cluster.
 
-* support parameters,
-* make them self-describing, and
-* make them extensible
+OCF agents are scripts that support a variety of actions including ``start``,
+``stop``, and ``monitor``. They may accept parameters, making them more
+flexible than other classes. The number and purpose of parameters is left to
+the agent, which advertises them via the ``meta-data`` action.
 
-OCF specs have strict definitions of the exit codes that actions must return [#]_.
+Unlike other classes, OCF agents have a *provider* as well as a class and type.
 
-The cluster follows these specifications exactly, and giving the wrong
-exit code will cause the cluster to behave in ways you will likely
-find puzzling and annoying.  In particular, the cluster needs to
-distinguish a completely stopped resource from one which is in some
-erroneous and indeterminate state.
+For more information, see the "Resource Agents" chapter of *Pacemaker
+Administration* and the `OCF standard
+<https://github.com/ClusterLabs/OCF-spec/tree/main/ra>`_.
 
-Parameters are passed to the resource agent as environment variables, with the
-special prefix ``OCF_RESKEY_``.  So, a parameter which the user thinks
-of as ``ip`` will be passed to the resource agent as ``OCF_RESKEY_ip``.  The
-number and purpose of the parameters is left to the resource agent; however,
-the resource agent should use the **meta-data** command to advertise any that it
-supports.
-
-The OCF class is the most preferred as it is an industry standard,
-highly flexible (allowing parameters to be passed to agents in a
-non-positional manner) and self-describing.
-
-For more information, see the
-`reference <http://www.linux-ha.org/wiki/OCF_Resource_Agents>`_ and
-the *Resource Agents* chapter of *Pacemaker Administration*.
-
-.. index::
-   single: resource; LSB
-   single: LSB; resources
-   single: Linux Standard Base; resources
-
-Linux Standard Base
-___________________
-
-*LSB* resource agents are more commonly known as *init scripts*. If a full path
-is not given, they are assumed to be located in ``/etc/init.d``.
-
-Commonly, they are provided by the OS distribution. In order to be used
-with a Pacemaker cluster, they must conform to the LSB specification [#]_.
-
-.. warning::
-
-   Many distributions or particular software packages claim LSB compliance
-   but ship with broken init scripts.  For details on how to check whether
-   your init script is LSB-compatible, see the `Resource Agents` chapter of
-   `Pacemaker Administration`. Common problematic violations of the LSB
-   standard include:
-
-   * Not implementing the ``status`` operation at all
-   * Not observing the correct exit status codes for
-     ``start``/``stop``/``status`` actions
-   * Starting a started resource returns an error
-   * Stopping a stopped resource returns an error
-
-.. important::
-
-   Remember to make sure the computer is `not` configured to start any
-   services at boot time -- that should be controlled by the cluster.
 
 .. _s-resource-supported-systemd:
 
@@ -128,50 +76,56 @@ with a Pacemaker cluster, they must conform to the LSB specification [#]_.
 Systemd
 _______
 
-Most Linux distributions have replaced the old
-`SysV <http://en.wikipedia.org/wiki/Init#SysV-style>`_ style of
-initialization daemons and scripts with
-`Systemd <http://www.freedesktop.org/wiki/Software/systemd>`_.
+Most Linux distributions use `Systemd
+<http://www.freedesktop.org/wiki/Software/systemd>`_ for system initialization
+and service management. *Unit files* specify how to manage services and are
+usually provided by the distribution.
 
-Pacemaker is able to manage these services `if they are present`.
-
-Instead of init scripts, systemd has `unit files`.  Generally, the
-services (unit files) are provided by the OS distribution, but there
-are online guides for converting from init scripts [#]_.
+Pacemaker can manage systemd services. Simply create a resource with
+``systemd`` as the resource class and the unit file name as the resource type.
+Do *not* run ``systemctl enable`` on the unit.
 
 .. important::
 
-   Remember to make sure the computer is `not` configured to start any
-   services at boot time -- that should be controlled by the cluster.
+   Make sure that any systemd services to be controlled by the cluster are
+   *not* enabled to start at boot.
+
 
 .. index::
-   single: Resource; Upstart
-   single: Upstart; resources
+   single: resource; LSB
+   single: LSB; resources
+   single: Linux Standard Base; resources
 
-Upstart
-_______
+Linux Standard Base
+___________________
 
-Some distributions replaced the old
-`SysV <http://en.wikipedia.org/wiki/Init#SysV-style>`_ style of
-initialization daemons (and scripts) with
-`Upstart <http://upstart.ubuntu.com/>`_.
+*LSB* resource agents, also known as `SysV-style
+<https://en.wikipedia.org/wiki/Init#SysV-style init scripts>`_, are scripts that
+provide start, stop, and status actions for a service.
 
-Pacemaker is able to manage these services `if they are present`.
+They are provided by some operating system distributions. If a full path is not
+given, they are assumed to be located in a directory specified when your
+Pacemaker software was built (usually ``/etc/init.d``).
 
-Instead of init scripts, Upstart has `jobs`.  Generally, the
-services (jobs) are provided by the OS distribution.
-
-.. important::
-
-   Remember to make sure the computer is `not` configured to start any
-   services at boot time -- that should be controlled by the cluster.
+In order to be used with Pacemaker, they must conform to the `LSB specification
+<http://refspecs.linux-foundation.org/LSB_5.0.0/LSB-Core-generic/LSB-Core-generic/iniscrptact.html>`_
+as it relates to init scripts.
 
 .. warning::
 
-   Upstart support is deprecated in Pacemaker. Upstart is no longer an actively
-   maintained project, and test platforms for it are no longer readily usable.
-   Support will likely be dropped entirely at the next major release of
-   Pacemaker.
+   Some LSB scripts do not fully comply with the standard. For details on how
+   to check whether your script is LSB-compatible, see the "Resource Agents"
+   chapter of `Pacemaker Administration`. Common problems include:
+
+   * Not implementing the ``status`` action
+   * Not observing the correct exit status codes
+   * Starting a started resource returns an error
+   * Stopping a stopped resource returns an error
+
+.. important::
+
+   Make sure the host is *not* configured to start any LSB services at boot
+   that will be controlled by the cluster.
 
 
 .. index::
@@ -191,10 +145,9 @@ This is particularly useful when the cluster contains a mix of
 In order, Pacemaker will try to find the named service as:
 
 * an LSB init script
-
 * a Systemd unit file
-
 * an Upstart job
+
 
 .. index::
    single: Resource; STONITH
@@ -203,8 +156,9 @@ In order, Pacemaker will try to find the named service as:
 STONITH
 _______
 
-The STONITH class is used exclusively for fencing-related resources.  This is
-discussed later in :ref:`fencing`.
+The ``stonith`` class is used for managing fencing devices, discussed later in
+:ref:`fencing`.
+
 
 .. index::
    single: Resource; Nagios Plugins
@@ -213,17 +167,79 @@ discussed later in :ref:`fencing`.
 Nagios Plugins
 ______________
 
-Nagios Plugins [#]_ allow us to monitor services on remote hosts.
+Nagios Plugins are a way to monitor services. Pacemaker can use these as
+resources, to react to a change in the service's status.
 
-Pacemaker is able to do remote monitoring with the plugins `if they are
-present`.
+To use plugins as resources, Pacemaker must have been built with support, and
+OCF-style meta-data for the plugins must be installed on nodes that can run
+them. Meta-data for several common plugins is provided by the
+`nagios-agents-metadata <https://github.com/ClusterLabs/nagios-agents-metadata>`_
+project.
 
-A common use case is to configure them as resources belonging to a resource
-container (usually a virtual machine), and the container will be restarted
-if any of them has failed. Another use is to configure them as ordinary
-resources to be used for monitoring hosts or services via the network.
+The supported parameters for such a resource are same as the long options of
+the plugin.
 
-The supported parameters are same as the long options of the plugin.
+Start and monitor actions for plugin resources are implemented as invoking the
+plugin. A plugin result of "OK" (0) is treated as success, a result of "WARN"
+(1) is treated as a successful but degraded service, and any other result is
+considered a failure.
+
+A plugin resource is not going to change its status after recovery by
+restarting the plugin, so using them alone does not make sense with ``on-fail``
+set (or left to default) to ``restart``. Another value could make sense, for
+example, if you want to fence or standby nodes that cannot reach some external
+service.
+
+A more common use case for plugin resources is to configure them with a
+``container`` meta-attribute set to the name of another resource that actually
+makes the service available, such as a virtual machine or container.
+
+With ``container`` set, the plugin resource will automatically be colocated
+with the containing resource and ordered after it, and the containing resource
+will be considered failed if the plugin resource fails. This allows monitoring
+of a service inside a virtual machine or container, with recovery of the
+virtual machine or container if the service fails.
+
+.. warning::
+
+   Nagios support is deprecated in Pacemaker. Support will be dropped entirely
+   at the next major release of Pacemaker.
+
+   For monitoring a service inside a virtual machine or container, the
+   recommended alternative is to configure the virtual machine as a guest node
+   or the container as a :ref:`bundle <s-resource-bundle>`. For other use
+   cases, or when the virtual machine or container image cannot be modified,
+   the recommended alternative is to write a custom OCF agent for the service
+   (which may even call the Nagios plugin as part of its status action).
+
+
+.. index::
+   single: Resource; Upstart
+   single: Upstart; resources
+
+Upstart
+_______
+
+Some Linux distributions previously used `Upstart
+<https://upstart.ubuntu.com/>`_ for system initialization and service
+management. Pacemaker is able to manage services using Upstart if the local
+system supports them and support was enabled when your Pacemaker software was
+built.
+
+The *jobs* that specify how services are managed are usually provided by the
+operating system distribution.
+
+.. important::
+
+   Make sure the host is *not* configured to start any Upstart services at boot
+   that will be controlled by the cluster.
+
+.. warning::
+
+   Upstart support is deprecated in Pacemaker. Upstart is no longer actively
+   maintained, and test platforms for it are no longer readily usable. Support
+   will be dropped entirely at the next major release of Pacemaker.
+
 
 .. _primitive-resource:
 
@@ -234,39 +250,48 @@ These values tell the cluster which resource agent to use for the resource,
 where to find that resource agent and what standards it conforms to.
 
 .. table:: **Properties of a Primitive Resource**
+   :widths: 1 4
 
-   +----------+------------------------------------------------------------------+
-   | Field    | Description                                                      |
-   +==========+==================================================================+
-   | id       | .. index::                                                       |
-   |          |    single: id; resource                                          |
-   |          |    single: resource; property, id                                |
-   |          |                                                                  |
-   |          | Your name for the resource                                       |
-   +----------+------------------------------------------------------------------+
-   | class    | .. index::                                                       |
-   |          |    single: class; resource                                       |
-   |          |    single: resource; property, class                             |
-   |          |                                                                  |
-   |          | The standard the resource agent conforms to. Allowed values:     |
-   |          | ``lsb``, ``nagios``, ``ocf``, ``service``, ``stonith``,          |
-   |          | ``systemd``, ``upstart``                                         |
-   +----------+------------------------------------------------------------------+
-   | type     | .. index::                                                       |
-   |          |    single: type; resource                                        |
-   |          |    single: resource; property, type                              |
-   |          |                                                                  |
-   |          | The name of the Resource Agent you wish to use. E.g.             |
-   |          | ``IPaddr`` or ``Filesystem``                                     |
-   +----------+------------------------------------------------------------------+
-   | provider | .. index::                                                       |
-   |          |    single: provider; resource                                    |
-   |          |    single: resource; property, provider                          |
-   |          |                                                                  |
-   |          | The OCF spec allows multiple vendors to supply the same resource |
-   |          | agent. To use the OCF resource agents supplied by the Heartbeat  |
-   |          | project, you would specify ``heartbeat`` here.                   |
-   +----------+------------------------------------------------------------------+
+   +-------------+------------------------------------------------------------------+
+   | Field       | Description                                                      |
+   +=============+==================================================================+
+   | id          | .. index::                                                       |
+   |             |    single: id; resource                                          |
+   |             |    single: resource; property, id                                |
+   |             |                                                                  |
+   |             | Your name for the resource                                       |
+   +-------------+------------------------------------------------------------------+
+   | class       | .. index::                                                       |
+   |             |    single: class; resource                                       |
+   |             |    single: resource; property, class                             |
+   |             |                                                                  |
+   |             | The standard the resource agent conforms to. Allowed values:     |
+   |             | ``lsb``, ``ocf``, ``service``, ``stonith``, ``systemd``,         |
+   |             | ``nagios`` *(deprecated since 2.1.6)*, and ``upstart``           |
+   |             | *(deprecated since 2.1.0)*                                       |
+   +-------------+------------------------------------------------------------------+
+   | description | .. index::                                                       |
+   |             |    single: description; resource                                 |
+   |             |    single: resource; property, description                       |
+   |             |                                                                  |
+   |             | A description of the Resource Agent, intended for local use.     |
+   |             | E.g. ``IP address for website``                                  |
+   +-------------+------------------------------------------------------------------+
+   | type        | .. index::                                                       |
+   |             |    single: type; resource                                        |
+   |             |    single: resource; property, type                              |
+   |             |                                                                  |
+   |             | The name of the Resource Agent you wish to use. E.g.             |
+   |             | ``IPaddr`` or ``Filesystem``                                     |
+   +-------------+------------------------------------------------------------------+
+   | provider    | .. index::                                                       |
+   |             |    single: provider; resource                                    |
+   |             |    single: resource; property, provider                          |
+   |             |                                                                  |
+   |             | The OCF spec allows multiple vendors to supply the same resource |
+   |             | agent. To use the OCF resource agents supplied by the Heartbeat  |
+   |             | project, you would specify ``heartbeat`` here.                   |
+   +-------------+------------------------------------------------------------------+
 
 The XML definition of a resource can be queried with the **crm_resource** tool.
 For example:
@@ -315,6 +340,8 @@ behave and can be easily set using the ``--meta`` option of the
 **crm_resource** command.
 
 .. table:: **Meta-attributes of a Primitive Resource**
+   :class: longtable
+   :widths: 2 2 3
 
    +----------------------------+----------------------------------+------------------------------------------------------+
    | Field                      | Default                          | Description                                          |
@@ -448,10 +475,22 @@ behave and can be easily set using the ``--meta`` option of the
    |                            |                                  |   leave them that way                                |
    |                            |                                  | * ``stop_start``: stop all active instances and      |
    |                            |                                  |   start the resource in one location only            |
+   |                            |                                  | * ``stop_unexpected``: stop all active instances     |
+   |                            |                                  |   except where the resource should be active (this   |
+   |                            |                                  |   should be used only when extra instances are not   |
+   |                            |                                  |   expected to disrupt existing instances, and the    |
+   |                            |                                  |   resource agent's monitor of an existing instance   |
+   |                            |                                  |   is capable of detecting any problems that could be |
+   |                            |                                  |   caused; note that any resources ordered after this |
+   |                            |                                  |   will still need to be restarted) *(since 2.1.3)*   |
    +----------------------------+----------------------------------+------------------------------------------------------+
    | allow-migrate              | TRUE for ocf:pacemaker:remote    | Whether the cluster should try to "live migrate"     |
    |                            | resources, FALSE otherwise       | this resource when it needs to be moved (see         |
    |                            |                                  | :ref:`live-migration`)                               |
+   +----------------------------+----------------------------------+------------------------------------------------------+
+   | allow-unhealthy-nodes      | FALSE                            | Whether the resource should be able to run on a node |
+   |                            |                                  | even if the node's health score would otherwise      |
+   |                            |                                  | prevent it (see :ref:`node-health`) *(since 2.1.3)*  |
    +----------------------------+----------------------------------+------------------------------------------------------+
    | container-attribute-target |                                  | Specific to bundle resources; see                    |
    |                            |                                  | :ref:`s-bundle-attributes`                           |
@@ -693,6 +732,8 @@ XML attributes, or in a separate ``meta_attributes`` block as ``nvpair`` element
 XML attributes take precedence over ``nvpair`` elements if both are specified.
 
 .. table:: **Properties of an Operation**
+   :class: longtable
+   :widths: 1 2 3
 
    +----------------+-----------------------------------+-----------------------------------------------------+
    | Field          | Default                           | Description                                         |
@@ -889,17 +930,30 @@ settings:
   may require the resource's ``target-role`` to be set to ``Stopped`` then
   ``Started`` to be recovered.
 
+* When a resource is put into maintenance mode (by setting
+  ``maintenance=true``): The resource will be marked as unmanaged. (This
+  overrides ``is-managed=true``.)
+
+  Additionally, all monitor operations will be stopped, except those specifying
+  ``role`` as ``Stopped`` (which will be newly initiated if appropriate). As
+  with unmanaged resources in general, starting a resource on a node other than
+  where the cluster expects it to be will cause problems.
+
 * When a node is put into standby: All resources will be moved away from the
   node, and all ``monitor`` operations will be stopped on the node, except those
   specifying ``role`` as ``Stopped`` (which will be newly initiated if
   appropriate).
 
-* When the cluster is put into maintenance mode: All resources will be marked
-  as unmanaged. All monitor operations will be stopped, except those
-  specifying ``role`` as ``Stopped`` (which will be newly initiated if
-  appropriate). As with single unmanaged resources, starting
-  a resource on a node other than where the cluster expects it to be will
-  cause problems.
+* When a node is put into maintenance mode: All resources that are active on the
+  node will be marked as in maintenance mode. See above for more details.
+
+* When the cluster is put into maintenance mode: All resources in the cluster
+  will be marked as in maintenance mode. See above for more details.
+
+A resource is in maintenance mode if the cluster, the node where the resource
+is active, or the resource itself is configured to be in maintenance mode. If a
+resource is in maintenance mode, then it is also unmanaged. However, if a
+resource is unmanaged, it is not necessarily in maintenance mode.
 
 .. _s-operation-defaults:
 
@@ -1015,22 +1069,6 @@ Once you've done whatever you needed to do, you can then re-enable it with
 .. code-block:: none
 
    # cibadmin --modify --xml-text '<op id="public-ip-check" enabled="true"/>'
-
-.. [#] See https://github.com/ClusterLabs/OCF-spec/tree/master/ra. The
-       Pacemaker implementation has been somewhat extended from the OCF specs.
-
-.. [#] The resource-agents source code includes the **ocf-tester** script,
-       which can be useful in this regard.
-
-.. [#] See http://refspecs.linux-foundation.org/LSB_3.0.0/LSB-Core-generic/LSB-Core-generic/iniscrptact.html
-       for the LSB Spec as it relates to init scripts.
-
-.. [#] For example, http://0pointer.de/blog/projects/systemd-for-admins-3.html
-
-.. [#] The project has two independent forks, hosted at
-       https://www.nagios-plugins.org/ and https://www.monitoring-plugins.org/. Output
-       from both projects' plugins is similar, so plugins from either project can be
-       used with pacemaker.
 
 .. [#] Currently, anyway. Automatic monitoring operations may be added in a future
        version of Pacemaker.

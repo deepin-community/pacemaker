@@ -1,5 +1,5 @@
 #
-# Copyright 2001-2021 the Pacemaker project contributors
+# Copyright 2001-2023 the Pacemaker project contributors
 #
 # The version control history for this file may have further details.
 #
@@ -12,8 +12,8 @@ MAINTAINERCLEANFILES    = Makefile.in
 # Test commands and globally applicable test files should be in $(testdir),
 # and command-specific test data should be in a command-specific subdirectory.
 testdir			= $(datadir)/$(PACKAGE)/tests
-test_SCRIPTS		= cts-cli		\
-			  cts-coverage		\
+test_SCRIPTS		= cts-attrd \
+			  cts-cli		\
 			  cts-exec		\
 			  cts-fencing		\
 			  cts-regression	\
@@ -25,21 +25,28 @@ ctsdir		= 	$(testdir)/cts
 cts_SCRIPTS		= lxc_autogen.sh
 
 clidir		= $(testdir)/cli
-dist_cli_DATA	= cli/constraints.xml \
-		  cli/crmadmin-cluster-remote-guest-nodes.xml \
-		  cli/crm_diff_new.xml		\
-		  cli/crm_diff_old.xml		\
-		  cli/crm_mon.xml		\
-		  cli/crm_mon-partial.xml	\
-		  cli/crm_mon-unmanaged.xml	\
-		  cli/crm_resource_digests.xml	\
-		  cli/regression.acls.exp	\
-		  cli/regression.crm_mon.exp	\
-		  cli/regression.dates.exp	\
-		  cli/regression.rules.exp	\
-		  cli/regression.tools.exp	\
-		  cli/regression.upgrade.exp	\
-		  cli/regression.validity.exp
+dist_cli_DATA	= cli/constraints.xml 				\
+		  cli/crmadmin-cluster-remote-guest-nodes.xml	\
+		  cli/crm_diff_new.xml				\
+		  cli/crm_diff_old.xml				\
+		  cli/crm_mon.xml				\
+		  cli/crm_mon-feature_set.xml			\
+		  cli/crm_mon-partial.xml			\
+		  cli/crm_mon-rsc-maint.xml			\
+		  cli/crm_mon-T180.xml				\
+		  cli/crm_mon-unmanaged.xml			\
+		  cli/crm_resource_digests.xml			\
+		  cli/regression.acls.exp			\
+		  cli/regression.crm_mon.exp			\
+		  cli/regression.daemons.exp			\
+		  cli/regression.dates.exp			\
+		  cli/regression.error_codes.exp		\
+		  cli/regression.feature_set.exp		\
+		  cli/regression.rules.exp			\
+		  cli/regression.tools.exp			\
+		  cli/regression.upgrade.exp			\
+		  cli/regression.validity.exp			\
+		  cli/regression.access_render.exp
 
 scheduler-list:
 	@for T in "$(srcdir)"/scheduler/xml/*.xml; do       \

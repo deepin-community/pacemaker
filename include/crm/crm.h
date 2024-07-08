@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -7,8 +7,17 @@
  * version 2.1 or later (LGPLv2.1+) WITHOUT ANY WARRANTY.
  */
 
-#ifndef CRM__H
-#  define CRM__H
+#ifndef PCMK__CRM_CRM__H
+#  define PCMK__CRM_CRM__H
+
+#  include <crm_config.h>
+#  include <stdlib.h>
+#  include <glib.h>
+#  include <stdbool.h>
+
+#  include <string.h>
+
+#  include <libxml/tree.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,15 +28,6 @@ extern "C" {
  * \brief A dumping ground
  * \ingroup core
  */
-
-#  include <crm_config.h>
-#  include <stdlib.h>
-#  include <glib.h>
-#  include <stdbool.h>
-
-#  include <string.h>
-
-#  include <libxml/tree.h>
 
 #ifndef PCMK_ALLOW_DEPRECATED
 /*!
@@ -64,9 +64,9 @@ extern "C" {
  * >=3.0.9:  DC will send its own shutdown request to all peers
  *           XML v2 patchsets are created by default
  * >=3.0.13: Fail counts include operation name and interval
- * >=3.2.0:  DC supports PCMK_LRM_OP_INVALID and PCMK_LRM_OP_NOT_CONNECTED
+ * >=3.2.0:  DC supports PCMK_EXEC_INVALID and PCMK_EXEC_NOT_CONNECTED
  */
-#  define CRM_FEATURE_SET		"3.10.2"
+#  define CRM_FEATURE_SET		"3.17.4"
 
 /* Pacemaker's CPG protocols use fixed-width binary fields for the sender and
  * recipient of a CPG message. This imposes an arbitrary limit on cluster node
@@ -100,8 +100,7 @@ extern char *crm_system_name;
 
 /* Sub-systems */
 #  define CRM_SYSTEM_DC		"dc"
-#  define CRM_SYSTEM_DCIB		"dcib"
-                                        /*  The master CIB */
+#define CRM_SYSTEM_DCIB         "dcib" // Primary instance of CIB manager
 #  define CRM_SYSTEM_CIB		"cib"
 #  define CRM_SYSTEM_CRMD		"crmd"
 #  define CRM_SYSTEM_LRMD		"lrmd"
@@ -121,8 +120,8 @@ extern char *crm_system_name;
 #  define CRM_ATTR_UNFENCED         "#node-unfenced"
 #  define CRM_ATTR_DIGESTS_ALL      "#digests-all"
 #  define CRM_ATTR_DIGESTS_SECURE   "#digests-secure"
-#  define CRM_ATTR_RA_VERSION       "#ra-version"
 #  define CRM_ATTR_PROTOCOL         "#attrd-protocol"
+#  define CRM_ATTR_FEATURE_SET      "#feature-set"
 
 /* Valid operations */
 #  define CRM_OP_NOOP		"noop"
@@ -146,8 +145,7 @@ extern char *crm_system_name;
 #  define CRM_OP_REGISTER		"register"
 #  define CRM_OP_IPC_FWD		"ipc_fwd"
 #  define CRM_OP_INVOKE_LRM	"lrm_invoke"
-#  define CRM_OP_LRM_REFRESH	"lrm_refresh" /* Deprecated */
-#  define CRM_OP_LRM_QUERY	"lrm_query"
+#  define CRM_OP_LRM_REFRESH "lrm_refresh" //!< Deprecated since 1.1.10
 #  define CRM_OP_LRM_DELETE	"lrm_delete"
 #  define CRM_OP_LRM_FAIL		"lrm_fail"
 #  define CRM_OP_PROBED		"probe_complete"
@@ -216,6 +214,7 @@ extern char *crm_system_name;
 #  define RSC_METADATA	CRMD_ACTION_METADATA
 /* *INDENT-ON* */
 
+#  include <crm/common/cib.h>
 #  include <crm/common/logging.h>
 #  include <crm/common/util.h>
 

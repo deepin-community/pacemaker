@@ -1,5 +1,5 @@
 #
-# Copyright 2004-2019 the Pacemaker project contributors
+# Copyright 2004-2021 the Pacemaker project contributors
 #
 # The version control history for this file may have further details.
 #
@@ -8,6 +8,7 @@
 #
 
 include $(top_srcdir)/mk/common.mk
+include $(top_srcdir)/mk/man.mk
 
 AM_CPPFLAGS	+= -I$(top_builddir) -I$(top_srcdir)
 
@@ -23,6 +24,8 @@ endif
 
 ## SOURCES
 
+noinst_HEADERS 	= pacemaker-schedulerd.h
+
 pacemaker_schedulerd_CFLAGS	= $(CFLAGS_HARDENED_EXE)
 pacemaker_schedulerd_LDFLAGS	= $(LDFLAGS_HARDENED_EXE)
 pacemaker_schedulerd_LDADD	= $(top_builddir)/lib/common/libcrmcommon.la \
@@ -30,6 +33,7 @@ pacemaker_schedulerd_LDADD	= $(top_builddir)/lib/common/libcrmcommon.la \
 							  $(top_builddir)/lib/pacemaker/libpacemaker.la
 # libcib for get_object_root()
 pacemaker_schedulerd_SOURCES	= pacemaker-schedulerd.c
+pacemaker_schedulerd_SOURCES	+= schedulerd_messages.c
 
 install-exec-local:
 	$(INSTALL) -d -m 750 $(DESTDIR)/$(PE_STATE_DIR)

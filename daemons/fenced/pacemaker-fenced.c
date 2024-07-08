@@ -1,5 +1,5 @@
 /*
- * Copyright 2009-2021 the Pacemaker project contributors
+ * Copyright 2009-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -23,8 +23,10 @@
 
 #include <crm/crm.h>
 #include <crm/msg_xml.h>
+#include <crm/common/cmdline_internal.h>
 #include <crm/common/ipc.h>
 #include <crm/common/ipc_internal.h>
+#include <crm/common/output_internal.h>
 #include <crm/cluster/internal.h>
 
 #include <crm/stonith-ng.h>
@@ -40,29 +42,42 @@
 
 #include <pacemaker-fenced.h>
 
+#define SUMMARY "daemon for executing fencing devices in a Pacemaker cluster"
+
 char *stonith_our_uname = NULL;
 long stonith_watchdog_timeout_ms = 0;
+GList *stonith_watchdog_targets = NULL;
 
 static GMainLoop *mainloop = NULL;
 
 gboolean stand_alone = FALSE;
-static gboolean no_cib_connect = FALSE;
 static gboolean stonith_shutdown_flag = FALSE;
 
 static qb_ipcs_service_t *ipcs = NULL;
 static xmlNode *local_cib = NULL;
 static pe_working_set_t *fenced_data_set = NULL;
+static const unsigned long long data_set_flags = pe_flag_quick_location
+                                                 | pe_flag_no_compat
+                                                 | pe_flag_no_counts;
 
 static cib_t *cib_api = NULL;
 
+static pcmk__output_t *logger_out = NULL;
 static pcmk__output_t *out = NULL;
 
 pcmk__supported_format_t formats[] = {
-    PCMK__SUPPORTED_FORMAT_LOG,
     PCMK__SUPPORTED_FORMAT_NONE,
     PCMK__SUPPORTED_FORMAT_TEXT,
+    PCMK__SUPPORTED_FORMAT_XML,
     { NULL, NULL, NULL }
 };
+
+static struct {
+    bool no_cib_connect;
+    gchar **log_files;
+} options;
+
+static crm_exit_t exit_code = CRM_EX_OK;
 
 static void stonith_shutdown(int nsig);
 static void stonith_cleanup(void);
@@ -100,7 +115,7 @@ st_ipc_dispatch(qb_ipcs_connection_t * qbc, void *data, size_t size)
 
     request = pcmk__client_data2xml(c, data, &id, &flags);
     if (request == NULL) {
-        pcmk__ipc_send_ack(c, id, flags, "nack", CRM_EX_PROTOCOL);
+        pcmk__ipc_send_ack(c, id, flags, "nack", NULL, CRM_EX_PROTOCOL);
         return 0;
     }
 
@@ -128,7 +143,7 @@ st_ipc_dispatch(qb_ipcs_connection_t * qbc, void *data, size_t size)
     }
 
     crm_element_value_int(request, F_STONITH_CALLOPTS, &call_options);
-    crm_trace("Flags 0x%08" PRIx32 "/0x%08x for command %" PRIu32
+    crm_trace("Flags %#08" PRIx32 "/%#08x for command %" PRIu32
               " from client %s", flags, call_options, id, pcmk__client_name(c));
 
     if (pcmk_is_set(call_options, st_opt_sync_call)) {
@@ -141,6 +156,7 @@ st_ipc_dispatch(qb_ipcs_connection_t * qbc, void *data, size_t size)
     crm_xml_add(request, F_STONITH_CLIENTNAME, pcmk__client_name(c));
     crm_xml_add(request, F_STONITH_CLIENTNODE, stonith_our_uname);
 
+    crm_log_xml_trace(request, "ipc-received");
     stonith_command(c, id, flags, request, NULL);
 
     free_xml(request);
@@ -225,48 +241,28 @@ stonith_peer_cs_destroy(gpointer user_data)
 #endif
 
 void
-do_local_reply(xmlNode * notify_src, const char *client_id, gboolean sync_reply, gboolean from_peer)
+do_local_reply(xmlNode *notify_src, pcmk__client_t *client, int call_options)
 {
     /* send callback to originating child */
-    pcmk__client_t *client_obj = NULL;
     int local_rc = pcmk_rc_ok;
+    int rid = 0;
+    uint32_t ipc_flags = crm_ipc_server_event;
 
-    crm_trace("Sending response");
-    client_obj = pcmk__find_client_by_id(client_id);
-
-    crm_trace("Sending callback to request originator");
-    if (client_obj == NULL) {
-        local_rc = EPROTO;
-        crm_trace("No client to sent the response to.  F_STONITH_CLIENTID not set.");
-
-    } else {
-        int rid = 0;
-
-        if (sync_reply) {
-            CRM_LOG_ASSERT(client_obj->request_id);
-
-            rid = client_obj->request_id;
-            client_obj->request_id = 0;
-
-            crm_trace("Sending response %d to client %s%s",
-                      rid, pcmk__client_name(client_obj),
-                      (from_peer? " (originator of delegated request)" : ""));
-
-        } else {
-            crm_trace("Sending an event to client %s%s",
-                      pcmk__client_name(client_obj),
-                      (from_peer? " (originator of delegated request)" : ""));
-        }
-
-        local_rc = pcmk__ipc_send_xml(client_obj, rid, notify_src,
-                                      (sync_reply? crm_ipc_flags_none
-                                       : crm_ipc_server_event));
+    if (pcmk_is_set(call_options, st_opt_sync_call)) {
+        CRM_LOG_ASSERT(client->request_id);
+        rid = client->request_id;
+        client->request_id = 0;
+        ipc_flags = crm_ipc_flags_none;
     }
 
-    if ((local_rc != pcmk_rc_ok) && (client_obj != NULL)) {
-        crm_warn("%s reply to client %s failed: %s",
-                 (sync_reply? "Synchronous" : "Asynchronous"),
-                 pcmk__client_name(client_obj), pcmk_rc_str(local_rc));
+    local_rc = pcmk__ipc_send_xml(client, rid, notify_src, ipc_flags);
+    if (local_rc == pcmk_rc_ok) {
+        crm_trace("Sent response %d to client %s",
+                  rid, pcmk__client_name(client));
+    } else {
+        crm_warn("%synchronous reply to client %s failed: %s",
+                 (pcmk_is_set(call_options, st_opt_sync_call)? "S" : "As"),
+                 pcmk__client_name(client), pcmk_rc_str(local_rc));
     }
 }
 
@@ -313,7 +309,7 @@ stonith_notify_client(gpointer key, gpointer value, gpointer user_data)
 
     if (pcmk_is_set(client->flags, get_stonith_flag(type))) {
         int rc = pcmk__ipc_send_xml(client, 0, update_msg,
-                                    crm_ipc_server_event|crm_ipc_server_error);
+                                    crm_ipc_server_event);
 
         if (rc != pcmk_rc_ok) {
             crm_warn("%s notification of client %s failed: %s "
@@ -355,18 +351,27 @@ do_stonith_async_timeout_update(const char *client_id, const char *call_id, int 
     free_xml(notify_data);
 }
 
+/*!
+ * \internal
+ * \brief Notify relevant IPC clients of a fencing operation result
+ *
+ * \param[in] type     Notification type
+ * \param[in] result   Result of fencing operation (assume success if NULL)
+ * \param[in] data     If not NULL, add to notification as call data
+ */
 void
-do_stonith_notify(int options, const char *type, int result, xmlNode * data)
+fenced_send_notification(const char *type, const pcmk__action_result_t *result,
+                         xmlNode *data)
 {
     /* TODO: Standardize the contents of data */
     xmlNode *update_msg = create_xml_node(NULL, "notify");
 
-    CRM_CHECK(type != NULL,;);
+    CRM_LOG_ASSERT(type != NULL);
 
     crm_xml_add(update_msg, F_TYPE, T_STONITH_NOTIFY);
     crm_xml_add(update_msg, F_SUBTYPE, type);
     crm_xml_add(update_msg, F_STONITH_OPERATION, type);
-    crm_xml_add_int(update_msg, F_STONITH_RC, result);
+    stonith__xe_set_result(update_msg, result);
 
     if (data != NULL) {
         add_message_xml(update_msg, F_STONITH_CALLDATA, data);
@@ -378,8 +383,19 @@ do_stonith_notify(int options, const char *type, int result, xmlNode * data)
     crm_trace("Notify complete");
 }
 
+/*!
+ * \internal
+ * \brief Send notifications for a configuration change to subscribed clients
+ *
+ * \param[in] op      Notification type (STONITH_OP_DEVICE_ADD,
+ *                    STONITH_OP_DEVICE_DEL, STONITH_OP_LEVEL_ADD, or
+ *                    STONITH_OP_LEVEL_DEL)
+ * \param[in] result  Operation result
+ * \param[in] desc    Description of what changed
+ * \param[in] active  Current number of devices or topologies in use
+ */
 static void
-do_stonith_notify_config(int options, const char *op, int rc,
+send_config_notification(const char *op, const pcmk__action_result_t *result,
                          const char *desc, int active)
 {
     xmlNode *notify_data = create_xml_node(NULL, op);
@@ -389,36 +405,58 @@ do_stonith_notify_config(int options, const char *op, int rc,
     crm_xml_add(notify_data, F_STONITH_DEVICE, desc);
     crm_xml_add_int(notify_data, F_STONITH_ACTIVE, active);
 
-    do_stonith_notify(options, op, rc, notify_data);
+    fenced_send_notification(op, result, notify_data);
     free_xml(notify_data);
 }
 
+/*!
+ * \internal
+ * \brief Send notifications for a device change to subscribed clients
+ *
+ * \param[in] op      Notification type (STONITH_OP_DEVICE_ADD or
+ *                    STONITH_OP_DEVICE_DEL)
+ * \param[in] result  Operation result
+ * \param[in] desc    ID of device that changed
+ */
 void
-do_stonith_notify_device(int options, const char *op, int rc, const char *desc)
+fenced_send_device_notification(const char *op,
+                                const pcmk__action_result_t *result,
+                                const char *desc)
 {
-    do_stonith_notify_config(options, op, rc, desc, g_hash_table_size(device_list));
+    send_config_notification(op, result, desc, g_hash_table_size(device_list));
 }
 
+/*!
+ * \internal
+ * \brief Send notifications for a topology level change to subscribed clients
+ *
+ * \param[in] op      Notification type (STONITH_OP_LEVEL_ADD or
+ *                    STONITH_OP_LEVEL_DEL)
+ * \param[in] result  Operation result
+ * \param[in] desc    String representation of level (<target>[<level_index>])
+ */
 void
-do_stonith_notify_level(int options, const char *op, int rc, const char *desc)
+fenced_send_level_notification(const char *op,
+                               const pcmk__action_result_t *result,
+                               const char *desc)
 {
-    do_stonith_notify_config(options, op, rc, desc, g_hash_table_size(topology));
+    send_config_notification(op, result, desc, g_hash_table_size(topology));
 }
 
 static void
 topology_remove_helper(const char *node, int level)
 {
-    int rc;
     char *desc = NULL;
+    pcmk__action_result_t result = PCMK__UNKNOWN_RESULT;
     xmlNode *data = create_xml_node(NULL, XML_TAG_FENCING_LEVEL);
 
     crm_xml_add(data, F_STONITH_ORIGIN, __func__);
     crm_xml_add_int(data, XML_ATTR_STONITH_INDEX, level);
     crm_xml_add(data, XML_ATTR_STONITH_TARGET, node);
 
-    rc = stonith_level_remove(data, &desc);
-    do_stonith_notify_level(0, STONITH_OP_LEVEL_DEL, rc, desc);
-
+    fenced_unregister_level(data, &desc, &result);
+    fenced_send_level_notification(STONITH_OP_LEVEL_DEL, &result, desc);
+    pcmk__reset_result(&result);
     free_xml(data);
     free(desc);
 }
@@ -444,31 +482,35 @@ remove_cib_device(xmlXPathObjectPtr xpathObj)
 
         rsc_id = crm_element_value(match, XML_ATTR_ID);
 
-        stonith_device_remove(rsc_id, TRUE);
+        stonith_device_remove(rsc_id, true);
     }
 }
 
 static void
-handle_topology_change(xmlNode *match, bool remove) 
+remove_topology_level(xmlNode *match)
 {
-    int rc;
-    char *desc = NULL;
+    int index = 0;
+    char *key = NULL;
 
     CRM_CHECK(match != NULL, return);
-    crm_trace("Updating %s", ID(match));
 
-    if(remove) {
-        int index = 0;
-        char *key = stonith_level_key(match, -1);
+    key = stonith_level_key(match, fenced_target_by_unknown);
+    crm_element_value_int(match, XML_ATTR_STONITH_INDEX, &index);
+    topology_remove_helper(key, index);
+    free(key);
+}
 
-        crm_element_value_int(match, XML_ATTR_STONITH_INDEX, &index);
-        topology_remove_helper(key, index);
-        free(key);
-    }
+static void
+add_topology_level(xmlNode *match)
+{
+    char *desc = NULL;
+    pcmk__action_result_t result = PCMK__UNKNOWN_RESULT;
 
-    rc = stonith_level_register(match, &desc);
-    do_stonith_notify_level(0, STONITH_OP_LEVEL_ADD, rc, desc);
+    CRM_CHECK(match != NULL, return);
 
+    fenced_register_level(match, &desc, &result);
+    fenced_send_level_notification(STONITH_OP_LEVEL_ADD, &result, desc);
+    pcmk__reset_result(&result);
     free(desc);
 }
 
@@ -484,7 +526,7 @@ remove_fencing_topology(xmlXPathObjectPtr xpathObj)
         if (match && crm_element_value(match, XML_DIFF_MARKER)) {
             /* Deletion */
             int index = 0;
-            char *target = stonith_level_key(match, -1);
+            char *target = stonith_level_key(match, fenced_target_by_unknown);
 
             crm_element_value_int(match, XML_ATTR_STONITH_INDEX, &index);
             if (target == NULL) {
@@ -509,7 +551,8 @@ register_fencing_topology(xmlXPathObjectPtr xpathObj)
     for (lpc = 0; lpc < max; lpc++) {
         xmlNode *match = getXpathResult(xpathObj, lpc);
 
-        handle_topology_change(match, TRUE);
+        remove_topology_level(match);
+        add_topology_level(match);
     }
 }
 
@@ -560,7 +603,7 @@ fencing_topology_init(void)
  * \return Pointer to node object if found, NULL otherwise
  */
 static pe_node_t *
-our_node_allowed_for(pe_resource_t *rsc)
+our_node_allowed_for(const pe_resource_t *rsc)
 {
     GHashTableIter iter;
     pe_node_t *node = NULL;
@@ -578,63 +621,64 @@ our_node_allowed_for(pe_resource_t *rsc)
 }
 
 static void
-watchdog_device_update(xmlNode *cib)
+watchdog_device_update(void)
 {
-    xmlNode *stonith_enabled_xml = NULL;
-    const char *stonith_enabled_s = NULL;
-    long timeout_ms = 0;
-
-    stonith_enabled_xml = get_xpath_object("//nvpair[@name='stonith-enabled']",
-                                           cib, LOG_NEVER);
-    if (stonith_enabled_xml) {
-        stonith_enabled_s = crm_element_value(stonith_enabled_xml, XML_NVPAIR_ATTR_VALUE);
-    }
-
-    if (stonith_enabled_s == NULL || crm_is_true(stonith_enabled_s)) {
-        xmlNode *stonith_watchdog_xml = NULL;
-        const char *value = NULL;
-
-        stonith_watchdog_xml = get_xpath_object("//nvpair[@name='stonith-watchdog-timeout']",
-                                                cib, LOG_NEVER);
-        if (stonith_watchdog_xml) {
-            value = crm_element_value(stonith_watchdog_xml, XML_NVPAIR_ATTR_VALUE);
-        }
-        if (value) {
-            timeout_ms = crm_get_msec(value);
-        }
-
-        if (timeout_ms < 0) {
-            timeout_ms = pcmk__auto_watchdog_timeout();
-        }
-    }
-
-    if (timeout_ms != stonith_watchdog_timeout_ms) {
-        crm_notice("New watchdog timeout %lds (was %lds)", timeout_ms/1000, stonith_watchdog_timeout_ms/1000);
-        stonith_watchdog_timeout_ms = timeout_ms;
-
-        if (stonith_watchdog_timeout_ms > 0) {
+    if (stonith_watchdog_timeout_ms > 0) {
+        if (!g_hash_table_lookup(device_list, STONITH_WATCHDOG_ID) &&
+            !stonith_watchdog_targets) {
+            /* getting here watchdog-fencing enabled, no device there yet
+               and reason isn't stonith_watchdog_targets preventing that
+             */
             int rc;
             xmlNode *xml;
-            stonith_key_value_t *params = NULL;
 
-            params = stonith_key_value_add(params, PCMK_STONITH_HOST_LIST,
-                                           stonith_our_uname);
-
-            xml = create_device_registration_xml("watchdog", st_namespace_internal,
-                                                 STONITH_WATCHDOG_AGENT, params,
-                                                 NULL);
-            stonith_key_value_freeall(params, 1, 1);
-            rc = stonith_device_register(xml, NULL, FALSE);
+            xml = create_device_registration_xml(
+                    STONITH_WATCHDOG_ID,
+                    st_namespace_internal,
+                    STONITH_WATCHDOG_AGENT,
+                    NULL, /* stonith_device_register will add our
+                             own name as PCMK_STONITH_HOST_LIST param
+                             so we can skip that here
+                           */
+                    NULL);
+            rc = stonith_device_register(xml, TRUE);
             free_xml(xml);
             if (rc != pcmk_ok) {
-                crm_crit("Cannot register watchdog pseudo fence agent");
-                crm_exit(CRM_EX_FATAL);
+                rc = pcmk_legacy2rc(rc);
+                exit_code = CRM_EX_FATAL;
+                crm_crit("Cannot register watchdog pseudo fence agent: %s",
+                         pcmk_rc_str(rc));
+                stonith_shutdown(0);
             }
-
-        } else {
-            stonith_device_remove("watchdog", FALSE);
         }
+
+    } else if (g_hash_table_lookup(device_list, STONITH_WATCHDOG_ID) != NULL) {
+        /* be silent if no device - todo parameter to stonith_device_remove */
+        stonith_device_remove(STONITH_WATCHDOG_ID, true);
     }
+}
+
+static void
+update_stonith_watchdog_timeout_ms(xmlNode *cib)
+{
+    long timeout_ms = 0;
+    xmlNode *stonith_watchdog_xml = NULL;
+    const char *value = NULL;
+
+    stonith_watchdog_xml = get_xpath_object("//nvpair[@name='stonith-watchdog-timeout']",
+					    cib, LOG_NEVER);
+    if (stonith_watchdog_xml) {
+        value = crm_element_value(stonith_watchdog_xml, XML_NVPAIR_ATTR_VALUE);
+    }
+    if (value) {
+        timeout_ms = crm_get_msec(value);
+    }
+
+    if (timeout_ms < 0) {
+        timeout_ms = pcmk__auto_watchdog_timeout();
+    }
+
+    stonith_watchdog_timeout_ms = timeout_ms;
 }
 
 /*!
@@ -642,10 +686,11 @@ watchdog_device_update(xmlNode *cib)
  * \brief If a resource or any of its children are STONITH devices, update their
  *        definitions given a cluster working set.
  *
- * \param[in] rsc       Resource to check
- * \param[in] data_set  Cluster working set with device information
+ * \param[in,out] rsc       Resource to check
+ * \param[in,out] data_set  Cluster working set with device information
  */
-static void cib_device_update(pe_resource_t *rsc, pe_working_set_t *data_set)
+static void
+cib_device_update(pe_resource_t *rsc, pe_working_set_t *data_set)
 {
     pe_node_t *node = NULL;
     const char *value = NULL;
@@ -677,6 +722,16 @@ static void cib_device_update(pe_resource_t *rsc, pe_working_set_t *data_set)
         return;
     }
 
+    /* if watchdog-fencing is disabled handle any watchdog-fence
+       resource as if it was disabled
+     */
+    if ((stonith_watchdog_timeout_ms <= 0) &&
+        pcmk__str_eq(rsc->id, STONITH_WATCHDOG_ID, pcmk__str_none)) {
+        crm_info("Watchdog-fencing disabled thus handling "
+                 "device %s as disabled", rsc->id);
+        return;
+    }
+
     /* Check whether our node is allowed for this resource (and its parent if in a group) */
     node = our_node_allowed_for(rsc);
     if (rsc->parent && (rsc->parent->variant == pe_group)) {
@@ -690,18 +745,17 @@ static void cib_device_update(pe_resource_t *rsc, pe_working_set_t *data_set)
         crm_info("Device %s has been disabled on %s: unknown", rsc->id, stonith_our_uname);
         g_hash_table_iter_init(&iter, rsc->allowed_nodes);
         while (g_hash_table_iter_next(&iter, NULL, (void **)&node)) {
-            crm_trace("Available: %s = %d", node->details->uname, node->weight);
+            crm_trace("Available: %s = %d", pe__node_name(node), node->weight);
         }
 
         return;
 
     } else if(node->weight < 0 || (parent && parent->weight < 0)) {
         /* Our node (or its group) is disallowed by score, so remove the device */
-        char *score = score2char((node->weight < 0) ? node->weight : parent->weight);
+        int score = (node->weight < 0)? node->weight : parent->weight;
 
-        crm_info("Device %s has been disabled on %s: score=%s", rsc->id, stonith_our_uname, score);
-        free(score);
-
+        crm_info("Device %s has been disabled on %s: score=%s",
+                 rsc->id, stonith_our_uname, pcmk_readable_score(score));
         return;
 
     } else {
@@ -734,7 +788,7 @@ static void cib_device_update(pe_resource_t *rsc, pe_working_set_t *data_set)
         data = create_device_registration_xml(rsc_name(rsc), st_namespace_any,
                                               agent, params, rsc_provides);
         stonith_key_value_freeall(params, 1, 1);
-        rc = stonith_device_register(data, NULL, TRUE);
+        rc = stonith_device_register(data, TRUE);
         CRM_ASSERT(rc == pcmk_ok);
         free_xml(data);
     }
@@ -747,7 +801,6 @@ static void cib_device_update(pe_resource_t *rsc, pe_working_set_t *data_set)
 static void
 cib_devices_update(void)
 {
-    GList *gIter = NULL;
     GHashTableIter iter;
     stonith_device_t *device = NULL;
 
@@ -756,14 +809,12 @@ cib_devices_update(void)
              crm_element_value(local_cib, XML_ATTR_GENERATION),
              crm_element_value(local_cib, XML_ATTR_NUMUPDATES));
 
-    CRM_ASSERT(fenced_data_set != NULL);
-    fenced_data_set->input = local_cib;
-    fenced_data_set->now = crm_time_new(NULL);
+    if (fenced_data_set->now != NULL) {
+        crm_time_free(fenced_data_set->now);
+        fenced_data_set->now = NULL;
+    }
     fenced_data_set->localhost = stonith_our_uname;
-    pe__set_working_set_flags(fenced_data_set, pe_flag_quick_location);
-
-    cluster_status(fenced_data_set);
-    pcmk__schedule_actions(fenced_data_set, NULL, NULL);
+    pcmk__schedule_actions(local_cib, data_set_flags, fenced_data_set);
 
     g_hash_table_iter_init(&iter, device_list);
     while (g_hash_table_iter_next(&iter, NULL, (void **)&device)) {
@@ -772,9 +823,12 @@ cib_devices_update(void)
         }
     }
 
-    for (gIter = fenced_data_set->resources; gIter != NULL; gIter = gIter->next) {
-        cib_device_update(gIter->data, fenced_data_set);
-    }
+    /* have list repopulated if cib has a watchdog-fencing-resource
+       TODO: keep a cached list for queries happening while we are refreshing
+     */
+    g_list_free_full(stonith_watchdog_targets, free);
+    stonith_watchdog_targets = NULL;
+    g_list_foreach(fenced_data_set->resources, (GFunc) cib_device_update, fenced_data_set);
 
     g_hash_table_iter_init(&iter, device_list);
     while (g_hash_table_iter_next(&iter, NULL, (void **)&device)) {
@@ -813,18 +867,21 @@ update_cib_stonith_devices_v2(const char *event, xmlNode * msg)
             if (strstr(xpath, XML_TAG_ATTR_SETS) ||
                 strstr(xpath, XML_TAG_META_SETS)) {
                 needs_update = TRUE;
-                reason = strdup("(meta) attribute deleted from resource");
+                pcmk__str_update(&reason,
+                                 "(meta) attribute deleted from resource");
                 break;
-            } 
-            mutable = strdup(xpath);
-            rsc_id = strstr(mutable, "primitive[@id=\'");
+            }
+            pcmk__str_update(&mutable, xpath);
+            rsc_id = strstr(mutable, "primitive[@" XML_ATTR_ID "=\'");
             if (rsc_id != NULL) {
-                rsc_id += strlen("primitive[@id=\'");
+                rsc_id += strlen("primitive[@" XML_ATTR_ID "=\'");
                 search = strchr(rsc_id, '\'');
             }
             if (search != NULL) {
                 *search = 0;
-                stonith_device_remove(rsc_id, TRUE);
+                stonith_device_remove(rsc_id, true);
+                /* watchdog_device_update called afterwards
+                   to fall back to implicit definition if needed */
             } else {
                 crm_warn("Ignoring malformed CIB update (resource deletion)");
             }
@@ -931,9 +988,6 @@ update_cib_stonith_devices(const char *event, xmlNode * msg)
     }
 }
 
-/* Needs to hold node name + attribute name + attribute value + 75 */
-#define XPATH_MAX 512
-
 /*!
  * \internal
  * \brief Check whether a node has a specific attribute name/value
@@ -947,26 +1001,48 @@ update_cib_stonith_devices(const char *event, xmlNode * msg)
 gboolean
 node_has_attr(const char *node, const char *name, const char *value)
 {
-    char xpath[XPATH_MAX];
+    GString *xpath = NULL;
     xmlNode *match;
-    int n;
 
-    CRM_CHECK(local_cib != NULL, return FALSE);
+    CRM_CHECK((local_cib != NULL) && (node != NULL) && (name != NULL)
+              && (value != NULL), return FALSE);
 
     /* Search for the node's attributes in the CIB. While the schema allows
      * multiple sets of instance attributes, and allows instance attributes to
      * use id-ref to reference values elsewhere, that is intended for resources,
      * so we ignore that here.
      */
-    n = snprintf(xpath, XPATH_MAX, "//" XML_CIB_TAG_NODES
-                 "/" XML_CIB_TAG_NODE "[@uname='%s']/" XML_TAG_ATTR_SETS
-                 "/" XML_CIB_TAG_NVPAIR "[@name='%s' and @value='%s']",
-                 node, name, value);
-    match = get_xpath_object(xpath, local_cib, LOG_NEVER);
+    xpath = g_string_sized_new(256);
+    pcmk__g_strcat(xpath,
+                   "//" XML_CIB_TAG_NODES "/" XML_CIB_TAG_NODE
+                   "[@" XML_ATTR_UNAME "='", node, "']/" XML_TAG_ATTR_SETS
+                   "/" XML_CIB_TAG_NVPAIR
+                   "[@" XML_NVPAIR_ATTR_NAME "='", name, "' "
+                   "and @" XML_NVPAIR_ATTR_VALUE "='", value, "']", NULL);
 
-    CRM_CHECK(n < XPATH_MAX, return FALSE);
+    match = get_xpath_object((const char *) xpath->str, local_cib, LOG_NEVER);
+
+    g_string_free(xpath, TRUE);
     return (match != NULL);
 }
+
+/*!
+ * \internal
+ * \brief Check whether a node does watchdog-fencing
+ *
+ * \param[in] node    Name of node to check
+ *
+ * \return TRUE if node found in stonith_watchdog_targets
+ *         or stonith_watchdog_targets is empty indicating
+ *         all nodes are doing watchdog-fencing
+ */
+gboolean
+node_does_watchdog_fencing(const char *node)
+{
+    return ((stonith_watchdog_targets == NULL) ||
+            pcmk__str_in_list(node, stonith_watchdog_targets, pcmk__str_casei));
+}
+
 
 static void
 update_fencing_topology(const char *event, xmlNode * msg)
@@ -1017,13 +1093,14 @@ update_fencing_topology(const char *event, xmlNode * msg)
                     continue;
 
                 } else if(strcmp(op, "create") == 0) {
-                    handle_topology_change(change->children, FALSE);
+                    add_topology_level(change->children);
 
                 } else if(strcmp(op, "modify") == 0) {
                     xmlNode *match = first_named_child(change, XML_DIFF_RESULT);
 
                     if(match) {
-                        handle_topology_change(match->children, TRUE);
+                        remove_topology_level(match->children);
+                        add_topology_level(match->children);
                     }
 
                 } else if(strcmp(op, "delete") == 0) {
@@ -1070,9 +1147,8 @@ static void
 update_cib_cache_cb(const char *event, xmlNode * msg)
 {
     int rc = pcmk_ok;
-    xmlNode *stonith_enabled_xml = NULL;
-    const char *stonith_enabled_s = NULL;
-    static gboolean stonith_enabled_saved = TRUE;
+    long timeout_ms_saved = stonith_watchdog_timeout_ms;
+    bool need_full_refresh = false;
 
     if(!have_cib_devices) {
         crm_trace("Skipping updates until we get a full dump");
@@ -1096,7 +1172,8 @@ update_cib_cache_cb(const char *event, xmlNode * msg)
         }
 
         patchset = get_message_xml(msg, F_CIB_UPDATE_RESULT);
-        xml_log_patchset(LOG_TRACE, "Config update", patchset);
+        pcmk__output_set_log_level(logger_out, LOG_TRACE);
+        out->message(out, "xml-patchset", patchset);
         rc = xml_apply_patchset(local_cib, patchset, TRUE);
         switch (rc) {
             case pcmk_ok:
@@ -1123,35 +1200,26 @@ update_cib_cache_cb(const char *event, xmlNode * msg)
             return;
         }
         CRM_ASSERT(local_cib != NULL);
-        stonith_enabled_saved = FALSE; /* Trigger a full refresh below */
+        need_full_refresh = true;
     }
 
     pcmk__refresh_node_caches_from_cib(local_cib);
+    update_stonith_watchdog_timeout_ms(local_cib);
 
-    stonith_enabled_xml = get_xpath_object("//nvpair[@name='stonith-enabled']",
-                                           local_cib, LOG_NEVER);
-    if (stonith_enabled_xml) {
-        stonith_enabled_s = crm_element_value(stonith_enabled_xml, XML_NVPAIR_ATTR_VALUE);
+    if (timeout_ms_saved != stonith_watchdog_timeout_ms) {
+        need_full_refresh = true;
     }
 
-    watchdog_device_update(local_cib);
-
-    if (stonith_enabled_s && crm_is_true(stonith_enabled_s) == FALSE) {
-        crm_trace("Ignoring CIB updates while fencing is disabled");
-        stonith_enabled_saved = FALSE;
-        return;
-
-    } else if (stonith_enabled_saved == FALSE) {
-        crm_info("Updating fencing device and topology lists "
-                 "now that fencing is enabled");
-        stonith_enabled_saved = TRUE;
+    if (need_full_refresh) {
         fencing_topology_init();
         cib_devices_update();
-
     } else {
+        // Partial refresh
         update_fencing_topology(event, msg);
         update_cib_stonith_devices(event, msg);
     }
+
+    watchdog_device_update();
 }
 
 static void
@@ -1162,10 +1230,11 @@ init_cib_cache_cb(xmlNode * msg, int call_id, int rc, xmlNode * output, void *us
     local_cib = copy_xml(output);
 
     pcmk__refresh_node_caches_from_cib(local_cib);
+    update_stonith_watchdog_timeout_ms(local_cib);
 
     fencing_topology_init();
-    watchdog_device_update(local_cib);
     cib_devices_update();
+    watchdog_device_update();
 }
 
 static void
@@ -1175,9 +1244,6 @@ stonith_shutdown(int nsig)
     stonith_shutdown_flag = TRUE;
     if (mainloop != NULL && g_main_loop_is_running(mainloop)) {
         g_main_loop_quit(mainloop);
-    } else {
-        stonith_cleanup();
-        crm_exit(CRM_EX_OK);
     }
 }
 
@@ -1214,6 +1280,7 @@ stonith_cleanup(void)
     free_topology_list();
     free_device_list();
     free_metadata_cache();
+    fenced_unregister_handlers();
 
     free(stonith_our_uname);
     stonith_our_uname = NULL;
@@ -1222,34 +1289,14 @@ stonith_cleanup(void)
     local_cib = NULL;
 }
 
-static pcmk__cli_option_t long_options[] = {
-    // long option, argument type, storage, short option, description, flags
-    {
-        "stand-alone", no_argument, 0, 's',
-        NULL, pcmk__option_default
-    },
-    {
-        "stand-alone-w-cpg", no_argument, 0, 'c',
-        NULL, pcmk__option_default
-    },
-    {
-        "logfile", required_argument, 0, 'l',
-        NULL, pcmk__option_default
-    },
-    {
-        "verbose", no_argument, 0, 'V',
-        NULL, pcmk__option_default
-    },
-    {
-        "version", no_argument, 0, '$',
-        NULL, pcmk__option_default
-    },
-    {
-        "help", no_argument, 0, '?',
-        NULL, pcmk__option_default
-    },
-    { 0, 0, 0, 0 }
-};
+static gboolean
+stand_alone_cpg_cb(const gchar *option_name, const gchar *optarg, gpointer data,
+                   GError **error)
+{
+    stand_alone = FALSE;
+    options.no_cib_connect = true;
+    return TRUE;
+}
 
 static void
 setup_cib(void)
@@ -1321,221 +1368,295 @@ st_peer_update_callback(enum crm_status_type type, crm_node_t * node, const void
     }
 }
 
+static pcmk__cluster_option_t fencer_options[] = {
+    /* name, old name, type, allowed values,
+     * default value, validator,
+     * short description,
+     * long description
+     */
+    {
+        PCMK_STONITH_HOST_ARGUMENT, NULL, "string", NULL, "port", NULL,
+        N_("Advanced use only: An alternate parameter to supply instead of 'port'"),
+        N_("some devices do not support the "
+           "standard 'port' parameter or may provide additional ones. Use "
+           "this to specify an alternate, device-specific, parameter "
+           "that should indicate the machine to be fenced. A value of "
+           "none can be used to tell the cluster not to supply any "
+           "additional parameters.")
+    },
+    {
+        PCMK_STONITH_HOST_MAP,NULL, "string", NULL, "", NULL,
+        N_("A mapping of host names to ports numbers for devices that do not support host names."),
+        N_("Eg. node1:1;node2:2,3 would tell the cluster to use port 1 for node1 and ports 2 and 3 for node2")
+    },
+    {
+        PCMK_STONITH_HOST_LIST,NULL, "string", NULL, "", NULL,
+        N_("Eg. node1,node2,node3"),
+        N_("A list of machines controlled by "
+               "this device (Optional unless pcmk_host_list=static-list)")
+    },
+    {
+        PCMK_STONITH_HOST_CHECK,NULL, "string", NULL, "dynamic-list", NULL,
+        N_("How to determine which machines are controlled by the device."),
+        N_("Allowed values: dynamic-list "
+               "(query the device via the 'list' command), static-list "
+               "(check the pcmk_host_list attribute), status "
+               "(query the device via the 'status' command), "
+               "none (assume every device can fence every "
+               "machine)")
+    },
+    {
+        PCMK_STONITH_DELAY_MAX,NULL, "time", NULL, "0s", NULL,
+        N_("Enable a base delay for fencing actions and specify base delay value."),
+        N_("Enable a delay of no more than the "
+               "time specified before executing fencing actions. Pacemaker "
+               "derives the overall delay by taking the value of "
+               "pcmk_delay_base and adding a random delay value such "
+               "that the sum is kept below this maximum.")
+    },
+    {
+        PCMK_STONITH_DELAY_BASE,NULL, "string", NULL, "0s", NULL,
+        N_("Enable a base delay for "
+               "fencing actions and specify base delay value."),
+        N_("This enables a static delay for "
+               "fencing actions, which can help avoid \"death matches\" where "
+               "two nodes try to fence each other at the same time. If "
+               "pcmk_delay_max  is also used, a random delay will be "
+               "added such that the total delay is kept below that value."
+               "This can be set to a single time value to apply to any node "
+               "targeted by this device (useful if a separate device is "
+               "configured for each target), or to a node map (for example, "
+               "\"node1:1s;node2:5\") to set a different value per target.")
+    },
+    {
+        PCMK_STONITH_ACTION_LIMIT,NULL, "integer", NULL, "1", NULL,
+        N_("The maximum number of actions can be performed in parallel on this device"),
+        N_("Cluster property concurrent-fencing=true needs to be configured first."
+             "Then use this to specify the maximum number of actions can be performed in parallel on this device. -1 is unlimited.")
+    },
+    {
+	"pcmk_reboot_action",NULL, "string", NULL, "reboot", NULL,
+	N_("Advanced use only: An alternate command to run instead of 'reboot'"),
+        N_("Some devices do not support the standard commands or may provide additional ones.\n"
+                 "Use this to specify an alternate, device-specific, command that implements the \'reboot\' action.")
+    },
+    {
+	"pcmk_reboot_timeout",NULL, "time", NULL, "60s", NULL,
+	N_("Advanced use only: Specify an alternate timeout to use for reboot actions instead of stonith-timeout"),
+        N_("Some devices need much more/less time to complete than normal."
+	   "Use this to specify an alternate, device-specific, timeout for \'reboot\' actions.")
+    },
+    {
+	"pcmk_reboot_retries",NULL, "integer", NULL, "2", NULL,
+	N_("Advanced use only: The maximum number of times to retry the 'reboot' command within the timeout period"),
+        N_("Some devices do not support multiple connections."
+           " Operations may 'fail' if the device is busy with another task so Pacemaker will automatically retry the operation,      if there is time remaining."
+           " Use this option to alter the number of times Pacemaker retries \'reboot\' actions before giving up.")
+    },
+    {
+	"pcmk_off_action",NULL, "string", NULL, "off", NULL,
+	N_("Advanced use only: An alternate command to run instead of \'off\'"),
+        N_("Some devices do not support the standard commands or may provide additional ones."
+                 "Use this to specify an alternate, device-specific, command that implements the \'off\' action.")
+    },
+    {
+	"pcmk_off_timeout",NULL, "time", NULL, "60s", NULL,
+	N_("Advanced use only: Specify an alternate timeout to use for off actions instead of stonith-timeout"),
+        N_("Some devices need much more/less time to complete than normal."
+	   "Use this to specify an alternate, device-specific, timeout for \'off\' actions.")
+    },
+    {
+	"pcmk_off_retries",NULL, "integer", NULL, "2", NULL,
+	N_("Advanced use only: The maximum number of times to retry the 'off' command within the timeout period"),
+        N_("Some devices do not support multiple connections."
+           " Operations may 'fail' if the device is busy with another task so Pacemaker will automatically retry the operation,      if there is time remaining."
+           " Use this option to alter the number of times Pacemaker retries \'off\' actions before giving up.")
+    },
+    {
+	"pcmk_on_action",NULL, "string", NULL, "on", NULL,
+	N_("Advanced use only: An alternate command to run instead of 'on'"),
+        N_("Some devices do not support the standard commands or may provide additional ones."
+                 "Use this to specify an alternate, device-specific, command that implements the \'on\' action.")
+    },
+    {
+	"pcmk_on_timeout",NULL, "time", NULL, "60s", NULL,
+	N_("Advanced use only: Specify an alternate timeout to use for on actions instead of stonith-timeout"),
+        N_("Some devices need much more/less time to complete than normal."
+	   "Use this to specify an alternate, device-specific, timeout for \'on\' actions.")
+    },
+    {
+	"pcmk_on_retries",NULL, "integer", NULL, "2", NULL,
+	N_("Advanced use only: The maximum number of times to retry the 'on' command within the timeout period"),
+        N_("Some devices do not support multiple connections."
+           " Operations may 'fail' if the device is busy with another task so Pacemaker will automatically retry the operation,      if there is time remaining."
+           " Use this option to alter the number of times Pacemaker retries \'on\' actions before giving up.")
+    },
+    {
+	"pcmk_list_action",NULL, "string", NULL, "list", NULL,
+	N_("Advanced use only: An alternate command to run instead of \'list\'"),
+        N_("Some devices do not support the standard commands or may provide additional ones."
+                 "Use this to specify an alternate, device-specific, command that implements the \'list\' action.")
+    },
+    {
+	"pcmk_list_timeout",NULL, "time", NULL, "60s", NULL,
+	N_("Advanced use only: Specify an alternate timeout to use for list actions instead of stonith-timeout"),
+        N_("Some devices need much more/less time to complete than normal."
+	   "Use this to specify an alternate, device-specific, timeout for \'list\' actions.")
+    },
+    {
+	"pcmk_list_retries",NULL, "integer", NULL, "2", NULL,
+	N_("Advanced use only: The maximum number of times to retry the \'list\' command within the timeout period"),
+        N_("Some devices do not support multiple connections."
+           " Operations may 'fail' if the device is busy with another task so Pacemaker will automatically retry the operation,      if there is time remaining."
+           " Use this option to alter the number of times Pacemaker retries \'list\' actions before giving up.")
+    },
+    {
+	"pcmk_monitor_action",NULL, "string", NULL, "monitor", NULL,
+	N_("Advanced use only: An alternate command to run instead of \'monitor\'"),
+        N_("Some devices do not support the standard commands or may provide additional ones."
+                 "Use this to specify an alternate, device-specific, command that implements the \'monitor\' action.")
+    },
+    {
+	"pcmk_monitor_timeout",NULL, "time", NULL, "60s", NULL,
+	N_("Advanced use only: Specify an alternate timeout to use for monitor actions instead of stonith-timeout"),
+        N_("Some devices need much more/less time to complete than normal.\n"
+	   "Use this to specify an alternate, device-specific, timeout for \'monitor\' actions.")
+    },
+    {
+	"pcmk_monitor_retries",NULL, "integer", NULL, "2", NULL,
+	N_("Advanced use only: The maximum number of times to retry the \'monitor\' command within the timeout period"),
+        N_("Some devices do not support multiple connections."
+           " Operations may 'fail' if the device is busy with another task so Pacemaker will automatically retry the operation,      if there is time remaining."
+           " Use this option to alter the number of times Pacemaker retries \'monitor\' actions before giving up.")
+    },
+    {
+	"pcmk_status_action",NULL, "string", NULL, "status", NULL,
+	N_("Advanced use only: An alternate command to run instead of \'status\'"),
+        N_("Some devices do not support the standard commands or may provide additional ones."
+                 "Use this to specify an alternate, device-specific, command that implements the \'status\' action.")
+    },
+    {
+	"pcmk_status_timeout",NULL, "time", NULL, "60s", NULL,
+	N_("Advanced use only: Specify an alternate timeout to use for status actions instead of stonith-timeout"),
+        N_("Some devices need much more/less time to complete than normal."
+	   "Use this to specify an alternate, device-specific, timeout for \'status\' actions.")
+    },
+    {
+	"pcmk_status_retries",NULL, "integer", NULL, "2", NULL,
+	N_("Advanced use only: The maximum number of times to retry the \'status\' command within the timeout period"),
+        N_("Some devices do not support multiple connections."
+           " Operations may 'fail' if the device is busy with another task so Pacemaker will automatically retry the operation,      if there is time remaining."
+           " Use this option to alter the number of times Pacemaker retries \'status\' actions before giving up.")
+    },
+};
+
+void
+fencer_metadata(void)
+{
+    const char *desc_short = N_("Instance attributes available for all "
+                             "\"stonith\"-class resources");
+    const char *desc_long = N_("Instance attributes available for all \"stonith\"-"
+                            "class resources and used by Pacemaker's fence "
+                            "daemon, formerly known as stonithd");
+
+    gchar *s = pcmk__format_option_metadata("pacemaker-fenced", desc_short,
+                                            desc_long, fencer_options,
+                                            PCMK__NELEM(fencer_options));
+    printf("%s", s);
+    g_free(s);
+}
+
+static GOptionEntry entries[] = {
+    { "stand-alone", 's', G_OPTION_FLAG_NONE, G_OPTION_ARG_NONE, &stand_alone,
+      "Deprecated (will be removed in a future release)", NULL },
+
+    { "stand-alone-w-cpg", 'c', G_OPTION_FLAG_NO_ARG, G_OPTION_ARG_CALLBACK,
+      stand_alone_cpg_cb, "Intended for use in regression testing only", NULL },
+
+    { "logfile", 'l', G_OPTION_FLAG_NONE, G_OPTION_ARG_FILENAME_ARRAY,
+      &options.log_files, "Send logs to the additional named logfile", NULL },
+
+    { NULL }
+};
+
+static GOptionContext *
+build_arg_context(pcmk__common_args_t *args, GOptionGroup **group)
+{
+    GOptionContext *context = NULL;
+
+    context = pcmk__build_arg_context(args, "text (default), xml", group,
+                                      "[metadata]");
+    pcmk__add_main_args(context, entries);
+    return context;
+}
+
 int
 main(int argc, char **argv)
 {
-    int flag;
-    int lpc = 0;
-    int argerr = 0;
-    int option_index = 0;
-    crm_cluster_t *cluster = NULL;
-    const char *actions[] = { "reboot", "off", "on", "list", "monitor", "status" };
-    crm_ipc_t *old_instance = NULL;
     int rc = pcmk_rc_ok;
+    crm_cluster_t *cluster = NULL;
+    crm_ipc_t *old_instance = NULL;
+
+    GError *error = NULL;
+
+    GOptionGroup *output_group = NULL;
+    pcmk__common_args_t *args = pcmk__new_common_args(SUMMARY);
+    gchar **processed_args = pcmk__cmdline_preproc(argv, "l");
+    GOptionContext *context = build_arg_context(args, &output_group);
 
     crm_log_preinit(NULL, argc, argv);
-    pcmk__set_cli_options(NULL, "[options]", long_options,
-                          "daemon for executing fencing devices in a "
-                          "Pacemaker cluster");
 
-    while (1) {
-        flag = pcmk__next_cli_option(argc, argv, &option_index, NULL);
-        if (flag == -1) {
-            break;
-        }
-
-        switch (flag) {
-            case 'V':
-                crm_bump_log_level(argc, argv);
-                break;
-            case 'l':
-                {
-                    int rc = pcmk__add_logfile(optarg);
-
-                    if (rc != pcmk_rc_ok) {
-                        /* Logging has not yet been initialized, so stderr is
-                         * the only way to get information out
-                         */
-                        fprintf(stderr, "Logging to %s is disabled: %s\n",
-                                optarg, pcmk_rc_str(rc));
-                    }
-                }
-                break;
-            case 's':
-                stand_alone = TRUE;
-                break;
-            case 'c':
-                stand_alone = FALSE;
-                no_cib_connect = TRUE;
-                break;
-            case '$':
-            case '?':
-                pcmk__cli_help(flag, CRM_EX_OK);
-                break;
-            default:
-                ++argerr;
-                break;
-        }
+    pcmk__register_formats(output_group, formats);
+    if (!g_option_context_parse_strv(context, &processed_args, &error)) {
+        exit_code = CRM_EX_USAGE;
+        goto done;
     }
 
-    if (argc - optind == 1 && pcmk__str_eq("metadata", argv[optind], pcmk__str_casei)) {
-        printf("<?xml version=\"1.0\"?><!DOCTYPE resource-agent SYSTEM \"ra-api-1.dtd\">\n");
-        printf("<resource-agent name=\"pacemaker-fenced\">\n");
-        printf(" <version>1.0</version>\n");
-        printf(" <longdesc lang=\"en\">Instance attributes available for all \"stonith\"-class resources"
-                                       " and used by Pacemaker's fence daemon, formerly known as stonithd</longdesc>\n");
-        printf(" <shortdesc lang=\"en\">Instance attributes available for all \"stonith\"-class resources</shortdesc>\n");
-        printf(" <parameters>\n");
-
-#if 0
-        // priority is not implemented yet
-        printf("  <parameter name=\"priority\" unique=\"0\">\n");
-        printf("    <shortdesc lang=\"en\">Devices that are not in a topology "
-               "are tried in order of highest to lowest integer priority</shortdesc>\n");
-        printf("    <content type=\"integer\" default=\"0\"/>\n");
-        printf("  </parameter>\n");
-#endif
-
-        printf("  <parameter name=\"%s\" unique=\"0\">\n",
-               PCMK_STONITH_HOST_ARGUMENT);
-        printf
-            ("    <shortdesc lang=\"en\">Advanced use only: An alternate parameter to supply instead of 'port'</shortdesc>\n");
-        printf
-            ("    <longdesc lang=\"en\">Some devices do not support the standard 'port' parameter or may provide additional ones.\n"
-             "Use this to specify an alternate, device-specific, parameter that should indicate the machine to be fenced.\n"
-             "A value of 'none' can be used to tell the cluster not to supply any additional parameters.\n"
-             "     </longdesc>\n");
-        printf("    <content type=\"string\" default=\"port\"/>\n");
-        printf("  </parameter>\n");
-
-        printf("  <parameter name=\"%s\" unique=\"0\">\n",
-               PCMK_STONITH_HOST_MAP);
-        printf
-            ("    <shortdesc lang=\"en\">A mapping of host names to ports numbers for devices that do not support host names.</shortdesc>\n");
-        printf
-            ("    <longdesc lang=\"en\">Eg. node1:1;node2:2,3 would tell the cluster to use port 1 for node1 and ports 2 and 3 for node2</longdesc>\n");
-        printf("    <content type=\"string\" default=\"\"/>\n");
-        printf("  </parameter>\n");
-
-        printf("  <parameter name=\"%s\" unique=\"0\">\n",
-               PCMK_STONITH_HOST_LIST);
-        printf("    <shortdesc lang=\"en\">A list of machines controlled by "
-               "this device (Optional unless %s=static-list).</shortdesc>\n",
-               PCMK_STONITH_HOST_CHECK);
-        printf("    <content type=\"string\" default=\"\"/>\n");
-        printf("  </parameter>\n");
-
-        printf("  <parameter name=\"%s\" unique=\"0\">\n",
-               PCMK_STONITH_HOST_CHECK);
-        printf
-            ("    <shortdesc lang=\"en\">How to determine which machines are controlled by the device.</shortdesc>\n");
-        printf("    <longdesc lang=\"en\">Allowed values: dynamic-list "
-               "(query the device via the 'list' command), static-list "
-               "(check the " PCMK_STONITH_HOST_LIST " attribute), status "
-               "(query the device via the 'status' command), none (assume "
-               "every device can fence every machine)</longdesc>\n");
-        printf("    <content type=\"string\" default=\"dynamic-list\"/>\n");
-        printf("  </parameter>\n");
-
-        printf("  <parameter name=\"%s\" unique=\"0\">\n",
-               PCMK_STONITH_DELAY_MAX);
-        printf("    <shortdesc lang=\"en\">Enable a delay of no more than the "
-               "time specified before executing fencing actions. Pacemaker "
-               "derives the overall delay by taking the value of "
-               PCMK_STONITH_DELAY_BASE " and adding a random delay value such "
-               "that the sum is kept below this maximum.</shortdesc>\n");
-        printf("    <longdesc lang=\"en\">This prevents double fencing when "
-               "using slow devices such as sbd.\nUse this to enable a random "
-               "delay for fencing actions.\nThe overall delay is derived from "
-               "this random delay value adding a static delay so that the sum "
-               "is kept below the maximum delay.</longdesc>\n");
-        printf("    <content type=\"time\" default=\"0s\"/>\n");
-        printf("  </parameter>\n");
-
-        printf("  <parameter name=\"%s\" unique=\"0\">\n",
-               PCMK_STONITH_DELAY_BASE);
-        printf("    <shortdesc lang=\"en\">Enable a base delay for "
-               "fencing actions and specify base delay value.</shortdesc>\n");
-        printf("    <longdesc lang=\"en\">This prevents double fencing when "
-               "different delays are configured on the nodes.\nUse this to "
-               "enable a static delay for fencing actions.\nThe overall delay "
-               "is derived from a random delay value adding this static delay "
-               "so that the sum is kept below the maximum delay.</longdesc>\n");
-        printf("    <content type=\"time\" default=\"0s\"/>\n");
-        printf("  </parameter>\n");
-
-        printf("  <parameter name=\"%s\" unique=\"0\">\n",
-               PCMK_STONITH_ACTION_LIMIT);
-        printf
-            ("    <shortdesc lang=\"en\">The maximum number of actions can be performed in parallel on this device</shortdesc>\n");
-        printf
-            ("    <longdesc lang=\"en\">Cluster property concurrent-fencing=true needs to be configured first.\n"
-             "Then use this to specify the maximum number of actions can be performed in parallel on this device. -1 is unlimited.</longdesc>\n");
-        printf("    <content type=\"integer\" default=\"1\"/>\n");
-        printf("  </parameter>\n");
-
-
-        for (lpc = 0; lpc < PCMK__NELEM(actions); lpc++) {
-            printf("  <parameter name=\"pcmk_%s_action\" unique=\"0\">\n", actions[lpc]);
-            printf
-                ("    <shortdesc lang=\"en\">Advanced use only: An alternate command to run instead of '%s'</shortdesc>\n",
-                 actions[lpc]);
-            printf
-                ("    <longdesc lang=\"en\">Some devices do not support the standard commands or may provide additional ones.\n"
-                 "Use this to specify an alternate, device-specific, command that implements the '%s' action.</longdesc>\n",
-                 actions[lpc]);
-            printf("    <content type=\"string\" default=\"%s\"/>\n", actions[lpc]);
-            printf("  </parameter>\n");
-
-            printf("  <parameter name=\"pcmk_%s_timeout\" unique=\"0\">\n", actions[lpc]);
-            printf
-                ("    <shortdesc lang=\"en\">Advanced use only: Specify an alternate timeout to use for %s actions instead of stonith-timeout</shortdesc>\n",
-                 actions[lpc]);
-            printf
-                ("    <longdesc lang=\"en\">Some devices need much more/less time to complete than normal.\n"
-                 "Use this to specify an alternate, device-specific, timeout for '%s' actions.</longdesc>\n",
-                 actions[lpc]);
-            printf("    <content type=\"time\" default=\"60s\"/>\n");
-            printf("  </parameter>\n");
-
-            printf("  <parameter name=\"pcmk_%s_retries\" unique=\"0\">\n", actions[lpc]);
-            printf
-                ("    <shortdesc lang=\"en\">Advanced use only: The maximum number of times to retry the '%s' command within the timeout period</shortdesc>\n",
-                 actions[lpc]);
-            printf("    <longdesc lang=\"en\">Some devices do not support multiple connections."
-                   " Operations may 'fail' if the device is busy with another task so Pacemaker will automatically retry the operation, if there is time remaining."
-                   " Use this option to alter the number of times Pacemaker retries '%s' actions before giving up."
-                   "</longdesc>\n", actions[lpc]);
-            printf("    <content type=\"integer\" default=\"2\"/>\n");
-            printf("  </parameter>\n");
-        }
-
-        printf(" </parameters>\n");
-        printf("</resource-agent>\n");
-        return CRM_EX_OK;
+    rc = pcmk__output_new(&out, args->output_ty, args->output_dest, argv);
+    if (rc != pcmk_rc_ok) {
+        exit_code = CRM_EX_ERROR;
+        g_set_error(&error, PCMK__EXITC_ERROR, exit_code,
+                    "Error creating output format %s: %s",
+                    args->output_ty, pcmk_rc_str(rc));
+        goto done;
     }
 
-    if (optind != argc) {
-        ++argerr;
+    if (args->version) {
+        out->version(out, false);
+        goto done;
     }
 
-    if (argerr) {
-        pcmk__cli_help('?', CRM_EX_USAGE);
+    if ((g_strv_length(processed_args) >= 2)
+        && pcmk__str_eq(processed_args[1], "metadata", pcmk__str_none)) {
+        fencer_metadata();
+        goto done;
     }
 
-    crm_log_init(NULL, LOG_INFO, TRUE, FALSE, argc, argv, FALSE);
+    // Open additional log files
+    pcmk__add_logfiles(options.log_files, out);
+
+    crm_log_init(NULL, LOG_INFO + args->verbosity, TRUE,
+                 (args->verbosity > 0), argc, argv, FALSE);
 
     crm_notice("Starting Pacemaker fencer");
 
     old_instance = crm_ipc_new("stonith-ng", 0);
+    if (old_instance == NULL) {
+        /* crm_ipc_new() will have already logged an error message with
+         * crm_err()
+         */
+        exit_code = CRM_EX_FATAL;
+        goto done;
+    }
+
     if (crm_ipc_connect(old_instance)) {
-        /* IPC end-point already up */
+        // IPC endpoint already up
         crm_ipc_close(old_instance);
         crm_ipc_destroy(old_instance);
         crm_err("pacemaker-fenced is already active, aborting startup");
-        crm_exit(CRM_EX_OK);
+        goto done;
     } else {
-        /* not up or not authentic, we'll proceed either way */
+        // Not up or not authentic, we'll proceed either way
         crm_ipc_destroy(old_instance);
         old_instance = NULL;
     }
@@ -1546,37 +1667,51 @@ main(int argc, char **argv)
 
     fenced_data_set = pe_new_working_set();
     CRM_ASSERT(fenced_data_set != NULL);
-    pe__set_working_set_flags(fenced_data_set,
-                              pe_flag_no_counts|pe_flag_no_compat);
-    pe__set_working_set_flags(fenced_data_set, pe_flag_show_utilization);
 
-    cluster = calloc(1, sizeof(crm_cluster_t));
-    CRM_ASSERT(cluster != NULL);
+    cluster = pcmk_cluster_new();
 
-    if (stand_alone == FALSE) {
+    /* Initialize the logger prior to setup_cib(). update_cib_cache_cb() may
+     * call the "xml-patchset" message function, which needs the logger, after
+     * setup_cib() has run.
+     */
+    rc = pcmk__log_output_new(&logger_out) != pcmk_rc_ok;
+    if (rc != pcmk_rc_ok) {
+        exit_code = CRM_EX_FATAL;
+        g_set_error(&error, PCMK__EXITC_ERROR, exit_code,
+                    "Error creating output format log: %s", pcmk_rc_str(rc));
+        goto done;
+    }
+    pe__register_messages(logger_out);
+    pcmk__register_lib_messages(logger_out);
+    pcmk__output_set_log_level(logger_out, LOG_TRACE);
+    fenced_data_set->priv = logger_out;
 
-        if (is_corosync_cluster()) {
+    if (!stand_alone) {
 #if SUPPORT_COROSYNC
+        if (is_corosync_cluster()) {
             cluster->destroy = stonith_peer_cs_destroy;
             cluster->cpg.cpg_deliver_fn = stonith_peer_ais_callback;
             cluster->cpg.cpg_confchg_fn = pcmk_cpg_membership;
-#endif
         }
+#endif // SUPPORT_COROSYNC
 
         crm_set_status_callback(&st_peer_update_callback);
 
         if (crm_cluster_connect(cluster) == FALSE) {
+            exit_code = CRM_EX_FATAL;
             crm_crit("Cannot sign in to the cluster... terminating");
-            crm_exit(CRM_EX_FATAL);
+            goto done;
         }
-        stonith_our_uname = strdup(cluster->uname);
+        pcmk__str_update(&stonith_our_uname, cluster->uname);
 
-        if (no_cib_connect == FALSE) {
+        if (!options.no_cib_connect) {
             setup_cib();
         }
 
     } else {
-        stonith_our_uname = strdup("localhost");
+        pcmk__str_update(&stonith_our_uname, "localhost");
+        crm_warn("Stand-alone mode is deprecated and will be removed "
+                 "in a future release");
     }
 
     init_device_list();
@@ -1584,34 +1719,33 @@ main(int argc, char **argv)
 
     pcmk__serve_fenced_ipc(&ipcs, &ipc_callbacks);
 
-    pcmk__register_formats(NULL, formats);
-    rc = pcmk__output_new(&out, "log", NULL, argv);
-    if ((rc != pcmk_rc_ok) || (out == NULL)) {
-        crm_err("Can't log resource details due to internal error: %s\n",
-                pcmk_rc_str(rc));
-        crm_exit(CRM_EX_FATAL);
-    }
-
-    pe__register_messages(out);
-    pcmk__register_lib_messages(out);
-
-    pcmk__output_set_log_level(out, LOG_TRACE);
-    fenced_data_set->priv = out;
-
-    /* Create the mainloop and run it... */
+    // Create the mainloop and run it...
     mainloop = g_main_loop_new(NULL, FALSE);
     crm_notice("Pacemaker fencer successfully started and accepting connections");
     g_main_loop_run(mainloop);
 
+done:
+    g_strfreev(processed_args);
+    pcmk__free_arg_context(context);
+
+    g_strfreev(options.log_files);
+
     stonith_cleanup();
-    free(cluster->uuid);
-    free(cluster->uname);
-    free(cluster);
+    pcmk_cluster_free(cluster);
     pe_free_working_set(fenced_data_set);
 
-    pcmk__unregister_formats();
-    out->finish(out, CRM_EX_OK, true, NULL);
-    pcmk__output_free(out);
+    pcmk__output_and_clear_error(&error, out);
 
-    crm_exit(CRM_EX_OK);
+    if (logger_out != NULL) {
+        logger_out->finish(logger_out, exit_code, true, NULL);
+        pcmk__output_free(logger_out);
+    }
+
+    if (out != NULL) {
+        out->finish(out, exit_code, true, NULL);
+        pcmk__output_free(out);
+    }
+
+    pcmk__unregister_formats();
+    crm_exit(exit_code);
 }

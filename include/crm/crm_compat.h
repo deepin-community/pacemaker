@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -7,8 +7,10 @@
  * version 2.1 or later (LGPLv2.1+) WITHOUT ANY WARRANTY.
  */
 
-#ifndef PCMK__CRM_COMPAT__H
-#  define PCMK__CRM_COMPAT__H
+#ifndef PCMK__CRM_CRM_COMPAT__H
+#  define PCMK__CRM_CRM_COMPAT__H
+
+#include <glib.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,6 +30,12 @@ extern "C" {
 
 //! \deprecated This defined constant will be removed in a future release
 #define MAX_IPC_DELAY 120
+
+//! \deprecated This defined constant will be removed in a future release
+#define CRM_OP_LRM_QUERY "lrm_query"
+
+//! \deprecated This defined constant will be removed in a future release
+#define CRM_ATTR_RA_VERSION "#ra-version"
 
 //!@{
 //! \deprecated This macro will be removed in a future release
@@ -50,4 +58,4 @@ typedef GList *GListPtr;
 }
 #endif
 
-#endif // PCMK__CRM_COMPAT__H
+#endif // PCMK__CRM_CRM_COMPAT__H

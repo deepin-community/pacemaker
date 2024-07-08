@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2020 the Pacemaker project contributors
+ * Copyright 2004-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -13,7 +13,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-#include <inttypes.h>  /* U64T ~ PRIu64 */
+#include <inttypes.h>   // PRIu64
 
 #include <bzlib.h>
 
@@ -52,13 +52,13 @@ static gboolean (*quorum_app_callback)(unsigned long long seq,
  * \note It is the caller's responsibility to free the result with free().
  */
 char *
-pcmk__corosync_uuid(crm_node_t *node)
+pcmk__corosync_uuid(const crm_node_t *node)
 {
     if ((node != NULL) && is_corosync_cluster()) {
         if (node->id > 0) {
             return crm_strdup_printf("%u", node->id);
         } else {
-            crm_info("Node %s is not yet known by corosync", node->uname);
+            crm_info("Node %s is not yet known by Corosync", node->uname);
         }
     }
     return NULL;
@@ -178,17 +178,17 @@ pcmk__corosync_name(uint64_t /*cmap_handle_t */ cmap_handle, uint32_t nodeid)
 
         if (nodeid == id) {
             crm_trace("Searching for node name for %u in nodelist.node.%d %s",
-                      nodeid, lpc, crm_str(name));
+                      nodeid, lpc, pcmk__s(name, "<null>"));
             if (name == NULL) {
                 key = crm_strdup_printf("nodelist.node.%d.name", lpc);
                 cmap_get_string(cmap_handle, key, &name);
-                crm_trace("%s = %s", key, crm_str(name));
+                crm_trace("%s = %s", key, pcmk__s(name, "<null>"));
                 free(key);
             }
             if (name == NULL) {
                 key = crm_strdup_printf("nodelist.node.%d.ring0_addr", lpc);
                 cmap_get_string(cmap_handle, key, &name);
-                crm_trace("%s = %s", key, crm_str(name));
+                crm_trace("%s = %s", key, pcmk__s(name, "<null>"));
 
                 if (!node_name_is_valid(key, name)) {
                     free(name);
@@ -217,7 +217,7 @@ bail:
  * \internal
  * \brief Disconnect from Corosync cluster
  *
- * \param[in] cluster  Cluster connection to disconnect
+ * \param[in,out] cluster  Cluster connection to disconnect
  */
 void
 pcmk__corosync_disconnect(crm_cluster_t *cluster)
@@ -274,16 +274,16 @@ quorum_notification_cb(quorum_handle_t handle, uint32_t quorate,
 
     if (quorate != crm_have_quorum) {
         if (quorate) {
-            crm_notice("Quorum acquired " CRM_XS " membership=%" U64T " members=%lu",
+            crm_notice("Quorum acquired " CRM_XS " membership=%" PRIu64 " members=%lu",
                        ring_id, (long unsigned int)view_list_entries);
         } else {
-            crm_warn("Quorum lost " CRM_XS " membership=%" U64T " members=%lu",
+            crm_warn("Quorum lost " CRM_XS " membership=%" PRIu64 " members=%lu",
                      ring_id, (long unsigned int)view_list_entries);
         }
         crm_have_quorum = quorate;
 
     } else {
-        crm_info("Quorum %s " CRM_XS " membership=%" U64T " members=%lu",
+        crm_info("Quorum %s " CRM_XS " membership=%" PRIu64 " members=%lu",
                  (quorate? "retained" : "still lost"), ring_id,
                  (long unsigned int)view_list_entries);
     }
@@ -420,7 +420,7 @@ pcmk__corosync_quorum_connect(gboolean (*dispatch)(unsigned long long,
     if (quorate) {
         crm_notice("Quorum acquired");
     } else {
-        crm_warn("Quorum lost");
+        crm_warn("No quorum");
     }
     quorum_app_callback = dispatch;
     crm_have_quorum = quorate;
@@ -445,7 +445,7 @@ pcmk__corosync_quorum_connect(gboolean (*dispatch)(unsigned long long,
  * \internal
  * \brief Connect to Corosync cluster layer
  *
- * \param[in] cluster   Initialized cluster object to connect
+ * \param[in,out] cluster   Initialized cluster object to connect
  */
 gboolean
 pcmk__corosync_connect(crm_cluster_t *cluster)
@@ -551,7 +551,7 @@ crm_is_corosync_peer_active(const crm_node_t *node)
  * \internal
  * \brief Load Corosync node list (via CMAP) into peer cache and optionally XML
  *
- * \param[in] xml_parent  If not NULL, add a <node> entry to this for each node
+ * \param[in,out] xml_parent  If not NULL, add <node> entry here for each node
  *
  * \return true if any nodes were found, false otherwise
  */
@@ -607,7 +607,7 @@ pcmk__corosync_add_nodes(xmlNode *xml_parent)
     }
 
     crm_peer_init();
-    crm_trace("Initializing corosync nodelist");
+    crm_trace("Initializing Corosync node list");
     for (lpc = 0; TRUE; lpc++) {
         uint32_t nodeid = 0;
         char *name = NULL;

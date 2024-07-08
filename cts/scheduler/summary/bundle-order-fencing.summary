@@ -3,7 +3,7 @@ Current cluster status:
   * Node List:
     * Node controller-0: UNCLEAN (offline)
     * Online: [ controller-1 controller-2 ]
-    * GuestOnline: [ galera-bundle-1@controller-1 galera-bundle-2@controller-2 rabbitmq-bundle-1@controller-1 rabbitmq-bundle-2@controller-2 redis-bundle-1@controller-1 redis-bundle-2@controller-2 ]
+    * GuestOnline: [ galera-bundle-1 galera-bundle-2 rabbitmq-bundle-1 rabbitmq-bundle-2 redis-bundle-1 redis-bundle-2 ]
 
   * Full List of Resources:
     * Container bundle set: rabbitmq-bundle [192.168.24.1:8787/rhosp12/openstack-rabbitmq-docker:pcmklatest]:
@@ -38,22 +38,22 @@ Transition Summary:
   * Fence (off) rabbitmq-bundle-0 (resource: rabbitmq-bundle-docker-0) 'guest is unclean'
   * Fence (off) galera-bundle-0 (resource: galera-bundle-docker-0) 'guest is unclean'
   * Fence (reboot) controller-0 'peer is no longer part of the cluster'
-  * Stop       rabbitmq-bundle-docker-0               (                   controller-0 )  due to node availability
-  * Stop       rabbitmq-bundle-0                      (                   controller-0 )  due to unrunnable rabbitmq-bundle-docker-0 start
-  * Stop       rabbitmq:0                             (              rabbitmq-bundle-0 )  due to unrunnable rabbitmq-bundle-docker-0 start
-  * Stop       galera-bundle-docker-0                 (                   controller-0 )  due to node availability
-  * Stop       galera-bundle-0                        (                   controller-0 )  due to unrunnable galera-bundle-docker-0 start
-  * Stop       galera:0                               (         Promoted galera-bundle-0 )  due to unrunnable galera-bundle-docker-0 start
-  * Stop       redis-bundle-docker-0                  (                   controller-0 )  due to node availability
-  * Stop       redis-bundle-0                         (                   controller-0 )  due to unrunnable redis-bundle-docker-0 start
-  * Stop       redis:0                                (          Promoted redis-bundle-0 )  due to unrunnable redis-bundle-docker-0 start
+  * Stop       rabbitmq-bundle-docker-0               (                          controller-0 )  due to node availability
+  * Stop       rabbitmq-bundle-0                      (                          controller-0 )  due to unrunnable rabbitmq-bundle-docker-0 start
+  * Stop       rabbitmq:0                             (                     rabbitmq-bundle-0 )  due to unrunnable rabbitmq-bundle-docker-0 start
+  * Stop       galera-bundle-docker-0                 (                          controller-0 )  due to node availability
+  * Stop       galera-bundle-0                        (                          controller-0 )  due to unrunnable galera-bundle-docker-0 start
+  * Stop       galera:0                               (              Promoted galera-bundle-0 )  due to unrunnable galera-bundle-docker-0 start
+  * Stop       redis-bundle-docker-0                  (                          controller-0 )  due to node availability
+  * Stop       redis-bundle-0                         (                          controller-0 )  due to unrunnable redis-bundle-docker-0 start
+  * Stop       redis:0                                (               Promoted redis-bundle-0 )  due to unrunnable redis-bundle-docker-0 start
   * Promote    redis:1                                ( Unpromoted -> Promoted redis-bundle-1 )
-  * Move       ip-192.168.24.7                        (   controller-0 -> controller-2 )
-  * Move       ip-10.0.0.109                          (   controller-0 -> controller-1 )
-  * Move       ip-172.17.4.11                         (   controller-0 -> controller-1 )
-  * Stop       haproxy-bundle-docker-0                (                   controller-0 )  due to node availability
-  * Move       stonith-fence_ipmilan-5254003e8e97     (   controller-0 -> controller-1 )
-  * Move       stonith-fence_ipmilan-5254000dcb3f     (   controller-0 -> controller-2 )
+  * Move       ip-192.168.24.7                        (          controller-0 -> controller-2 )
+  * Move       ip-10.0.0.109                          (          controller-0 -> controller-1 )
+  * Move       ip-172.17.4.11                         (          controller-0 -> controller-1 )
+  * Stop       haproxy-bundle-docker-0                (                          controller-0 )  due to node availability
+  * Move       stonith-fence_ipmilan-5254003e8e97     (          controller-0 -> controller-1 )
+  * Move       stonith-fence_ipmilan-5254000dcb3f     (          controller-0 -> controller-2 )
 
 Executing Cluster Transition:
   * Pseudo action:   rabbitmq-bundle-clone_pre_notify_stop_0
@@ -86,12 +86,16 @@ Executing Cluster Transition:
   * Resource action: rabbitmq        notify on rabbitmq-bundle-1
   * Resource action: rabbitmq        notify on rabbitmq-bundle-2
   * Pseudo action:   rabbitmq-bundle-clone_confirmed-pre_notify_stop_0
+  * Pseudo action:   rabbitmq-bundle-docker-0_post_notify_stonith_0
   * Pseudo action:   rabbitmq-bundle-docker-0_stop_0
+  * Pseudo action:   rabbitmq-bundle-0_post_notify_stonith_0
   * Pseudo action:   galera-bundle-master_demote_0
   * Resource action: redis           notify on redis-bundle-1
   * Resource action: redis           notify on redis-bundle-2
   * Pseudo action:   redis-bundle-master_confirmed-pre_notify_demote_0
   * Pseudo action:   redis-bundle-master_demote_0
+  * Pseudo action:   redis-bundle-docker-0_post_notify_stonith_0
+  * Pseudo action:   redis-bundle-0_post_notify_stonith_0
   * Pseudo action:   haproxy-bundle-docker-0_stop_0
   * Resource action: stonith-fence_ipmilan-5254003e8e97 start on controller-1
   * Resource action: stonith-fence_ipmilan-5254000dcb3f start on controller-2
@@ -101,11 +105,15 @@ Executing Cluster Transition:
   * Pseudo action:   haproxy-bundle_stopped_0
   * Pseudo action:   rabbitmq_post_notify_stop_0
   * Pseudo action:   rabbitmq-bundle-clone_stop_0
+  * Pseudo action:   rabbitmq-bundle-docker-0_confirmed-post_notify_stonith_0
+  * Pseudo action:   rabbitmq-bundle-0_confirmed-post_notify_stonith_0
   * Pseudo action:   galera_demote_0
   * Pseudo action:   galera-bundle-master_demoted_0
   * Pseudo action:   redis_post_notify_stop_0
   * Pseudo action:   redis_demote_0
   * Pseudo action:   redis-bundle-master_demoted_0
+  * Pseudo action:   redis-bundle-docker-0_confirmed-post_notify_stonith_0
+  * Pseudo action:   redis-bundle-0_confirmed-post_notify_stonith_0
   * Pseudo action:   ip-192.168.24.7_stop_0
   * Pseudo action:   ip-10.0.0.109_stop_0
   * Pseudo action:   ip-172.17.4.11_stop_0
@@ -189,7 +197,7 @@ Revised Cluster Status:
   * Node List:
     * Online: [ controller-1 controller-2 ]
     * OFFLINE: [ controller-0 ]
-    * GuestOnline: [ galera-bundle-1@controller-1 galera-bundle-2@controller-2 rabbitmq-bundle-1@controller-1 rabbitmq-bundle-2@controller-2 redis-bundle-1@controller-1 redis-bundle-2@controller-2 ]
+    * GuestOnline: [ galera-bundle-1 galera-bundle-2 rabbitmq-bundle-1 rabbitmq-bundle-2 redis-bundle-1 redis-bundle-2 ]
 
   * Full List of Resources:
     * Container bundle set: rabbitmq-bundle [192.168.24.1:8787/rhosp12/openstack-rabbitmq-docker:pcmklatest]:

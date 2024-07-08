@@ -92,14 +92,18 @@ char *
 crm_generate_ra_key(const char *standard, const char *provider,
                     const char *type)
 {
-    if (!standard && !provider && !type) {
+    bool std_empty = pcmk__str_empty(standard);
+    bool prov_empty = pcmk__str_empty(provider);
+    bool ty_empty = pcmk__str_empty(type);
+
+    if (std_empty || ty_empty) {
         return NULL;
     }
 
     return crm_strdup_printf("%s%s%s:%s",
-                             (standard? standard : ""),
-                             (provider? ":" : ""), (provider? provider : ""),
-                             (type? type : ""));
+                             standard,
+                             (prov_empty ? "" : ":"), (prov_empty ? "" : provider),
+                             type);
 }
 
 /*!
@@ -195,6 +199,7 @@ pcmk_stonith_param(const char *param)
 }
 
 // Deprecated functions kept only for backward API compatibility
+// LCOV_EXCL_START
 
 #include <crm/common/agents_compat.h>
 
@@ -204,4 +209,5 @@ crm_provider_required(const char *standard)
     return pcmk_is_set(pcmk_get_ra_caps(standard), pcmk_ra_cap_provider);
 }
 
+// LCOV_EXCL_STOP
 // End deprecated API

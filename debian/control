@@ -7,9 +7,9 @@ Uploaders:
  Adrian Vondendriesch <adrian.vondendriesch@credativ.de>,
 Build-Depends:
  cluster-glue-dev,
- debhelper-compat (= 12),
+ debhelper-compat (= 13),
  dh-exec,
- dh-python,
+ dh-sequence-python3,
 # resource agent man pages are generated via:
  docbook-xsl,
  help2man,
@@ -17,6 +17,8 @@ Build-Depends:
  libcfg-dev (>= 1.99),
  libcmap-dev (>= 1.99),
  libcpg-dev (>= 1.99),
+# for unit tests:
+ libcmocka-dev,
  libdbus-1-dev,
  libglib2.0-dev,
  libgnutls28-dev,
@@ -29,20 +31,21 @@ Build-Depends:
  libxml2-utils,
  libxslt1-dev,
  pkg-config,
- python3,
-# not in Build-Depends-Indep because we always load the sphinxdoc dh addon:
- python3-sphinx,
+# 'pacemaker' is a pure Python package:
+ python3-all,
  systemd [linux-any],
  uuid-dev,
 # detecting docbook-xsl needs:
  xsltproc,
 Build-Depends-Indep:
  asciidoc,
+ dh-sequence-sphinxdoc,
  doxygen,
  graphviz,
  inkscape,
+ python3-sphinx,
 Rules-Requires-Root: no
-Standards-Version: 4.6.0
+Standards-Version: 4.6.2
 Homepage: https://www.clusterlabs.org/
 Vcs-Git: https://salsa.debian.org/ha-team/pacemaker.git
 Vcs-Browser: https://salsa.debian.org/ha-team/pacemaker
@@ -74,6 +77,9 @@ Depends:
  procps,
  resource-agents,
  ${misc:Depends},
+Recommends:
+# the ClusterMon and Stateful agents use crm_* utilities:
+ pacemaker-cli-utils,
 Description: cluster resource manager general resource agents
  ${S:X-Common-Description}
  .
@@ -87,16 +93,17 @@ Pre-Depends:
 Depends:
  corosync (>= 1.99),
  dbus,
-# the init script sources /lib/lsb/init-functions:
- lsb-base (>= 3.0-6),
  pacemaker-common,
  pacemaker-resource-agents,
  ${misc:Depends},
- ${python3:Depends},
  ${shlibs:Depends},
 Recommends:
  fence-agents,
  pacemaker-cli-utils,
+# trigger dh_python3 for fence_legacy and fence_watchdog:
+ ${python3:Depends},
+# fence_legacy also needs:
+ python3-pacemaker (= ${source:Version}),
 Suggests:
 # the fence_legacy helper uses /usr/sbin/stonith from cluster-glue:
  cluster-glue,
@@ -120,8 +127,11 @@ Depends:
 Breaks:
 # took over cibsecret from cluster-glue:
  cluster-glue (<< 1.0.12-18~),
+# took over crm_attribute:
+ pacemaker (<< 2.1.4-1~),
 Replaces:
  cluster-glue (<< 1.0.12-18~),
+ pacemaker (<< 2.1.4-1~),
 Description: cluster resource manager command line utilities
  ${S:X-Common-Description}
  .
@@ -133,8 +143,6 @@ Architecture: any
 Pre-Depends:
  ${misc:Pre-Depends},
 Depends:
-# the init script sources /lib/lsb/init-functions:
- lsb-base (>= 3.0-6),
  pacemaker-common,
  pacemaker-resource-agents,
  ${misc:Depends},
@@ -158,6 +166,8 @@ Multi-Arch: foreign
 Depends:
  ${misc:Depends},
  ${sphinxdoc:Depends},
+Built-Using:
+ ${sphinxdoc:Built-Using},
 Description: cluster resource manager HTML documentation
  ${S:X-Common-Description}
  .
@@ -278,6 +288,23 @@ Description: cluster resource manager STONITH daemon library
  .
  This package contains the STONITH daemon library.
 
+Package: pacemaker-cts
+Section: python
+Architecture: all
+Depends:
+ ${misc:Depends},
+ ${python3:Depends},
+ pacemaker-cli-utils (>= ${source:Version}),
+ procps,
+ psmisc,
+ python3-pacemaker (= ${source:Version}),
+ python3-psutil,
+ python3-systemd,
+Description: test framework for cluster-related technologies like Pacemaker
+ ${S:X-Common-Description}
+ .
+ This package contains the Cluster Test Framework.
+
 Package: pacemaker-dev
 Architecture: any
 Multi-Arch: same
@@ -313,3 +340,14 @@ Description: cluster resource manager development
  .
  This package contains the headers and other necessary files to build
  applications or libraries that use the Pacemaker libraries.
+
+Package: python3-pacemaker
+Section: python
+Architecture: all
+Depends:
+ ${misc:Depends},
+ ${python3:Depends},
+Description: Pacemaker API for Python3
+ ${S:X-Common-Description}
+ .
+ This package contains the Python 3 API.

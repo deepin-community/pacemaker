@@ -8,6 +8,11 @@ libcrmservice.so.28 libcrmservice28 #MINVER#
  resources_list_providers@Base 1.1.13
  resources_list_standards@Base 1.1.13
  services__create_resource_action@Base 2.1.1
+ services__exit_reason@Base 2.1.2
+ services__format_result@Base 2.1.4
+ services__grab_stderr@Base 2.1.2
+ services__grab_stdout@Base 2.1.2
+ services__set_result@Base 2.1.2
  services_action_async@Base 1.1.13
  services_action_async_fork_notify@Base 2.0.2
  services_action_cancel@Base 1.1.13
@@ -21,4 +26,4 @@ libcrmservice.so.28 libcrmservice28 #MINVER#
  services_alert_async@Base 1.1.18~rc3
  services_alert_create@Base 1.1.18~rc3
  services_list@Base 1.1.13
- (arch=linux-any)systemd_unit_exec_with_unit@Base 1.1.13
+ services_result2ocf@Base 2.1.2

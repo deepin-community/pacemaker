@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -7,17 +7,16 @@
  * version 2.1 or later (LGPLv2.1+) WITHOUT ANY WARRANTY.
  */
 
-#ifndef PE_COMMON__H
-#  define PE_COMMON__H
+#ifndef PCMK__CRM_PENGINE_COMMON__H
+#  define PCMK__CRM_PENGINE_COMMON__H
+
+#  include <glib.h>
+#  include <regex.h>
+#  include <crm/common/iso8601.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#  include <glib.h>
-#  include <regex.h>
-
-#  include <crm/common/iso8601.h>
 
 extern gboolean was_processing_error;
 extern gboolean was_processing_warning;
@@ -79,7 +78,8 @@ enum action_tasks {
 enum rsc_recovery_type {
     recovery_stop_start,
     recovery_stop_only,
-    recovery_block
+    recovery_block,
+    recovery_stop_unexpected,
 };
 
 enum rsc_start_requirement {
@@ -142,8 +142,14 @@ const char *role2text(enum rsc_role_e role);
 const char *fail2text(enum action_fail_response fail);
 
 const char *pe_pref(GHashTable * options, const char *name);
-void calculate_active_ops(GList * sorted_op_list, int *start_index, int *stop_index);
 
+/*!
+ * \brief Get readable description of a recovery type
+ *
+ * \param[in] type  Recovery type
+ *
+ * \return Static string describing \p type
+ */
 static inline const char *
 recovery2text(enum rsc_recovery_type type)
 {
@@ -154,6 +160,8 @@ recovery2text(enum rsc_recovery_type type)
             return "attempting recovery";
         case recovery_block:
             return "waiting for an administrator";
+        case recovery_stop_unexpected:
+            return "stopping unexpected instances";
     }
     return "Unknown";
 }
@@ -182,12 +190,12 @@ typedef struct pe_op_eval_data {
 } pe_op_eval_data_t;
 
 typedef struct pe_rule_eval_data {
-    GHashTable *node_hash;
+    GHashTable *node_hash;          // Only used with g_hash_table_lookup()
     enum rsc_role_e role;
-    crm_time_t *now;
-    pe_match_data_t *match_data;
-    pe_rsc_eval_data_t *rsc_data;
-    pe_op_eval_data_t *op_data;
+    crm_time_t *now;                // @COMPAT could be const
+    pe_match_data_t *match_data;    // @COMPAT could be const
+    pe_rsc_eval_data_t *rsc_data;   // @COMPAT could be const
+    pe_op_eval_data_t *op_data;     // @COMPAT could be const
 } pe_rule_eval_data_t;
 
 #if !defined(PCMK_ALLOW_DEPRECATED) || (PCMK_ALLOW_DEPRECATED == 1)

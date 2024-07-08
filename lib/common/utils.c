@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -27,6 +27,7 @@
 #include <time.h>
 #include <libgen.h>
 #include <signal.h>
+#include <grp.h>
 
 #include <qb/qbdefs.h>
 
@@ -43,86 +44,42 @@
 
 #include "crmcommon_private.h"
 
-#ifndef PW_BUFFER_LEN
-#  define PW_BUFFER_LEN		500
-#endif
-
 CRM_TRACE_INIT_DATA(common);
 
 gboolean crm_config_error = FALSE;
 gboolean crm_config_warning = FALSE;
 char *crm_system_name = NULL;
 
-int pcmk__score_red = 0;
-int pcmk__score_green = 0;
-int pcmk__score_yellow = 0;
-
-int
-char2score(const char *score)
+bool
+pcmk__is_user_in_group(const char *user, const char *group)
 {
-    int score_f = 0;
+    struct group *grent;
+    char **gr_mem;
 
-    if (score == NULL) {
+    if (user == NULL || group == NULL) {
+        return false;
+    }
+    
+    setgrent();
+    while ((grent = getgrent()) != NULL) {
+        if (grent->gr_mem == NULL) {
+            continue;
+        }
 
-    } else if (pcmk_str_is_minus_infinity(score)) {
-        score_f = -CRM_SCORE_INFINITY;
+        if(strcmp(group, grent->gr_name) != 0) {
+            continue;
+        }
 
-    } else if (pcmk_str_is_infinity(score)) {
-        score_f = CRM_SCORE_INFINITY;
-
-    } else if (pcmk__str_eq(score, "red", pcmk__str_casei)) {
-        score_f = pcmk__score_red;
-
-    } else if (pcmk__str_eq(score, "yellow", pcmk__str_casei)) {
-        score_f = pcmk__score_yellow;
-
-    } else if (pcmk__str_eq(score, "green", pcmk__str_casei)) {
-        score_f = pcmk__score_green;
-
-    } else {
-        long long score_ll;
-
-        pcmk__scan_ll(score, &score_ll, 0LL);
-        if (score_ll > CRM_SCORE_INFINITY) {
-            score_f = CRM_SCORE_INFINITY;
-
-        } else if (score_ll < -CRM_SCORE_INFINITY) {
-            score_f = -CRM_SCORE_INFINITY;
-
-        } else {
-            score_f = (int) score_ll;
+        gr_mem = grent->gr_mem;
+        while (*gr_mem != NULL) {
+            if (!strcmp(user, *gr_mem++)) {
+                endgrent();
+                return true;
+            }
         }
     }
-
-    return score_f;
-}
-
-char *
-score2char_stack(int score, char *buf, size_t len)
-{
-    CRM_CHECK((buf != NULL) && (len >= sizeof(CRM_MINUS_INFINITY_S)),
-              return NULL);
-
-    if (score >= CRM_SCORE_INFINITY) {
-        strncpy(buf, CRM_INFINITY_S, 9);
-    } else if (score <= -CRM_SCORE_INFINITY) {
-        strncpy(buf, CRM_MINUS_INFINITY_S , 10);
-    } else {
-        snprintf(buf, len, "%d", score);
-    }
-    return buf;
-}
-
-char *
-score2char(int score)
-{
-    if (score >= CRM_SCORE_INFINITY) {
-        return strdup(CRM_INFINITY_S);
-
-    } else if (score <= -CRM_SCORE_INFINITY) {
-        return strdup(CRM_MINUS_INFINITY_S);
-    }
-    return pcmk__itoa(score);
+    endgrent();
+    return false;
 }
 
 int
@@ -133,12 +90,12 @@ crm_user_lookup(const char *name, uid_t * uid, gid_t * gid)
     struct passwd pwd;
     struct passwd *pwentry = NULL;
 
-    buffer = calloc(1, PW_BUFFER_LEN);
+    buffer = calloc(1, PCMK__PW_BUFFER_LEN);
     if (buffer == NULL) {
         return -ENOMEM;
     }
 
-    rc = getpwnam_r(name, &pwd, buffer, PW_BUFFER_LEN, &pwentry);
+    rc = getpwnam_r(name, &pwd, buffer, PCMK__PW_BUFFER_LEN, &pwentry);
     if (pwentry) {
         if (uid) {
             *uid = pwentry->pw_uid;
@@ -554,6 +511,7 @@ crm_generate_uuid(void)
     unsigned char uuid[16];
     char *buffer = malloc(37);  /* Including NUL byte */
 
+    CRM_ASSERT(buffer != NULL);
     uuid_generate(uuid);
     uuid_unparse(uuid, buffer);
     return buffer;
@@ -574,7 +532,7 @@ crm_gnutls_global_init(void)
  * \return Newly allocated string with name, or NULL (and set errno) on error
  */
 char *
-pcmk_hostname()
+pcmk_hostname(void)
 {
     struct utsname hostinfo;
 

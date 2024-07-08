@@ -1,5 +1,5 @@
 /*
- * Copyright 2017-2021 the Pacemaker project contributors
+ * Copyright 2017-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -19,6 +19,7 @@
 #  include <string.h>
 
 #  include <crm/crm.h>  /* transitively imports qblog.h */
+#  include <crm/common/output_internal.h>
 
 
 /*!
@@ -123,6 +124,50 @@ do {                                                                            
     }                                                                           \
 } while (0)
 
+/*
+ * \enum pcmk__xml_fmt_options
+ * \brief Bit flags to control format in XML logs and dumps
+ */
+enum pcmk__xml_fmt_options {
+    //! Exclude certain XML attributes (for calculating digests)
+    pcmk__xml_fmt_filtered   = (1 << 0),
+
+    //! Include indentation and newlines
+    pcmk__xml_fmt_pretty     = (1 << 1),
+
+    //! Include full XML subtree (with any text), using libxml serialization
+    pcmk__xml_fmt_full       = (1 << 2),
+
+    //! Include the opening tag of an XML element, and include XML comments
+    pcmk__xml_fmt_open       = (1 << 3),
+
+    //! Include the children of an XML element
+    pcmk__xml_fmt_children   = (1 << 4),
+
+    //! Include the closing tag of an XML element
+    pcmk__xml_fmt_close      = (1 << 5),
+
+    // @COMPAT Remove when log_data_element() is removed
+    //! Include XML text nodes
+    pcmk__xml_fmt_text       = (1 << 6),
+
+    // @COMPAT Remove when v1 patchsets are removed
+    //! Log a created XML subtree
+    pcmk__xml_fmt_diff_plus  = (1 << 7),
+
+    // @COMPAT Remove when v1 patchsets are removed
+    //! Log a removed XML subtree
+    pcmk__xml_fmt_diff_minus = (1 << 8),
+
+    // @COMPAT Remove when v1 patchsets are removed
+    //! Log a minimal version of an XML diff (only showing the changes)
+    pcmk__xml_fmt_diff_short = (1 << 9),
+};
+
+int pcmk__xml_show(pcmk__output_t *out, const char *prefix, const xmlNode *data,
+                   int depth, uint32_t options);
+int pcmk__xml_show_changes(pcmk__output_t *out, const xmlNode *xml);
+
 /* XML search strings for guest, remote and pacemaker_remote nodes */
 
 /* search string to find CIB resources entries for cluster nodes */
@@ -156,12 +201,14 @@ enum pcmk__xml_artefact_ns {
 void pcmk__strip_xml_text(xmlNode *xml);
 const char *pcmk__xe_add_last_written(xmlNode *xe);
 
-xmlNode *pcmk__xe_match(xmlNode *parent, const char *node_name,
+xmlNode *pcmk__xe_match(const xmlNode *parent, const char *node_name,
                         const char *attr_n, const char *attr_v);
 
 void pcmk__xe_remove_matching_attrs(xmlNode *element,
                                     bool (*match)(xmlAttrPtr, void *),
                                     void *user_data);
+
+GString *pcmk__element_xpath(const xmlNode *xml);
 
 /*!
  * \internal
@@ -266,6 +313,9 @@ pcmk__xe_next(const xmlNode *child)
  * \internal
  * \brief Like pcmk__xe_set_props, but takes a va_list instead of
  *        arguments directly.
+ *
+ * \param[in,out] node   XML to add attributes to
+ * \param[in]     pairs  NULL-terminated list of name/value pairs to add
  */
 void
 pcmk__xe_set_propv(xmlNodePtr node, va_list pairs);
@@ -277,6 +327,8 @@ pcmk__xe_set_propv(xmlNodePtr node, va_list pairs);
  *
  * \param[in,out] node XML node to add properties to
  * \param[in]     ...  NULL-terminated list of name/value pairs
+ *
+ * \note A NULL name terminates the arguments; a NULL value will be skipped.
  */
 void
 pcmk__xe_set_props(xmlNodePtr node, ...)
@@ -307,5 +359,56 @@ pcmk__xe_first_attr(const xmlNode *xe)
  */
 char *
 pcmk__xpath_node_id(const char *xpath, const char *node);
+
+/* internal XML-related utilities */
+
+enum xml_private_flags {
+     pcmk__xf_none        = 0x0000,
+     pcmk__xf_dirty       = 0x0001,
+     pcmk__xf_deleted     = 0x0002,
+     pcmk__xf_created     = 0x0004,
+     pcmk__xf_modified    = 0x0008,
+
+     pcmk__xf_tracking    = 0x0010,
+     pcmk__xf_processed   = 0x0020,
+     pcmk__xf_skip        = 0x0040,
+     pcmk__xf_moved       = 0x0080,
+
+     pcmk__xf_acl_enabled = 0x0100,
+     pcmk__xf_acl_read    = 0x0200,
+     pcmk__xf_acl_write   = 0x0400,
+     pcmk__xf_acl_deny    = 0x0800,
+
+     pcmk__xf_acl_create  = 0x1000,
+     pcmk__xf_acl_denied  = 0x2000,
+     pcmk__xf_lazy        = 0x4000,
+};
+
+void pcmk__set_xml_doc_flag(xmlNode *xml, enum xml_private_flags flag);
+
+/*!
+ * \internal
+ * \brief Iterate over child elements of \p xml
+ *
+ * This function iterates over the children of \p xml, performing the
+ * callback function \p handler on each node.  If the callback returns
+ * a value other than pcmk_rc_ok, the iteration stops and the value is
+ * returned.  It is therefore possible that not all children will be
+ * visited.
+ *
+ * \param[in,out] xml                 The starting XML node.  Can be NULL.
+ * \param[in]     child_element_name  The name that the node must match in order
+ *                                    for \p handler to be run.  If NULL, all
+ *                                    child elements will match.
+ * \param[in]     handler             The callback function.
+ * \param[in,out] userdata            User data to pass to the callback function.
+ *                                    Can be NULL.
+ *
+ * \return Standard Pacemaker return code
+ */
+int
+pcmk__xe_foreach_child(xmlNode *xml, const char *child_element_name,
+                       int (*handler)(xmlNode *xml, void *userdata),
+                       void *userdata);
 
 #endif // PCMK__XML_INTERNAL__H

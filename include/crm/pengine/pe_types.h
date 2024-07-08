@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -7,8 +7,16 @@
  * version 2.1 or later (LGPLv2.1+) WITHOUT ANY WARRANTY.
  */
 
-#ifndef PE_TYPES__H
-#  define PE_TYPES__H
+#ifndef PCMK__CRM_PENGINE_PE_TYPES__H
+#  define PCMK__CRM_PENGINE_PE_TYPES__H
+
+
+#  include <stdbool.h>              // bool
+#  include <sys/types.h>            // time_t
+#  include <libxml/tree.h>          // xmlNode
+#  include <glib.h>                 // gboolean, guint, GList, GHashTable
+#  include <crm/common/iso8601.h>
+#  include <crm/pengine/common.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,13 +27,6 @@ extern "C" {
  * \brief Data types for cluster status
  * \ingroup pengine
  */
-
-#  include <stdbool.h>              // bool
-#  include <sys/types.h>            // time_t
-#  include <libxml/tree.h>          // xmlNode
-#  include <glib.h>                 // gboolean, guint, GList, GHashTable
-#  include <crm/common/iso8601.h>
-#  include <crm/pengine/common.h>
 
 typedef struct pe_node_s pe_node_t;
 typedef struct pe_action_s pe_action_t;
@@ -54,7 +55,23 @@ typedef struct resource_object_functions_s {
     pe_node_t *(*location) (const pe_resource_t*, GList**, int);
     void (*free) (pe_resource_t*);
     void (*count) (pe_resource_t*);
-    gboolean (*is_filtered) (pe_resource_t*, GList *, gboolean);
+    gboolean (*is_filtered) (const pe_resource_t*, GList *, gboolean);
+
+    /*!
+     * \brief
+     * \internal Find a node (and optionally count all) where resource is active
+     *
+     * \param[in]  rsc          Resource to check
+     * \param[out] count_all    If not NULL, set this to count of active nodes
+     * \param[out] count_clean  If not NULL, set this to count of clean nodes
+     *
+     * \return A node where the resource is active, preferring the source node
+     *         if the resource is involved in a partial migration or a clean,
+     *         online node if the resource's "requires" is "quorum" or
+     *         "nothing", or NULL if the resource is inactive.
+     */
+    pe_node_t *(*active_node)(const pe_resource_t *rsc, unsigned int *count_all,
+                              unsigned int *count_clean);
 } resource_object_functions_t;
 
 typedef struct resource_alloc_functions_s resource_alloc_functions_t;
@@ -68,15 +85,15 @@ enum pe_quorum_policy {
 };
 
 enum node_type {
-    node_ping,
+    node_ping,      //! \deprecated Do not use
     node_member,
     node_remote
 };
 
 //! \deprecated will be removed in a future release
 enum pe_restart {
-    pe_restart_restart,
-    pe_restart_ignore
+    pe_restart_restart, //! \deprecated will be removed in a future release
+    pe_restart_ignore   //! \deprecated will be removed in a future release
 };
 
 //! Determine behavior of pe_find_resource_with_flags()
@@ -132,6 +149,12 @@ enum pe_find {
 
 #  define pe_flag_show_scores           0x02000000ULL
 #  define pe_flag_show_utilization      0x04000000ULL
+
+/*!
+ * When scheduling, only unpack the CIB (including constraints), calculate
+ * as much cluster status as possible, and apply node health.
+ */
+#  define pe_flag_check_config          0x08000000ULL
 
 struct pe_working_set_s {
     xmlNode *input;
@@ -235,11 +258,12 @@ struct pe_node_shared_s {
     GHashTable *utilization;
     GHashTable *digest_cache;   //!< cache of calculated resource digests
     int priority; // calculated based on the priority of resources running on the node
+    pe_working_set_t *data_set; //!< Cluster that this node is part of
 };
 
 struct pe_node_s {
     int weight;
-    gboolean fixed;
+    gboolean fixed; //!< \deprecated Will be removed in a future release
     int count;
     struct pe_node_shared_s *details;
     int rsc_discover_mode;
@@ -258,6 +282,7 @@ struct pe_node_s {
 #  define pe_rsc_provisional                0x00000100ULL
 #  define pe_rsc_allocating                 0x00000200ULL
 #  define pe_rsc_merging                    0x00000400ULL
+#  define pe_rsc_restarting                 0x00000800ULL
 
 #  define pe_rsc_stop                       0x00001000ULL
 #  define pe_rsc_reload                     0x00002000ULL
@@ -265,27 +290,27 @@ struct pe_node_s {
 #  define pe_rsc_critical                   0x00008000ULL
 
 #  define pe_rsc_failed                     0x00010000ULL
+#  define pe_rsc_detect_loop                0x00020000ULL
 #  define pe_rsc_runnable                   0x00040000ULL
 #  define pe_rsc_start_pending              0x00080000ULL
 
+//!< \deprecated Do not use
 #  define pe_rsc_starting                   0x00100000ULL
+
+//!< \deprecated Do not use
 #  define pe_rsc_stopping                   0x00200000ULL
+
+#  define pe_rsc_stop_unexpected            0x00400000ULL
 #  define pe_rsc_allow_migrate              0x00800000ULL
 
 #  define pe_rsc_failure_ignored            0x01000000ULL
+#  define pe_rsc_replica_container          0x02000000ULL
 #  define pe_rsc_maintenance                0x04000000ULL
 #  define pe_rsc_is_container               0x08000000ULL
 
 #  define pe_rsc_needs_quorum               0x10000000ULL
 #  define pe_rsc_needs_fencing              0x20000000ULL
 #  define pe_rsc_needs_unfencing            0x40000000ULL
-
-enum pe_graph_flags {
-    pe_graph_none = 0x00000,
-    pe_graph_updated_first = 0x00001,
-    pe_graph_updated_then = 0x00002,
-    pe_graph_disable = 0x00004,
-};
 
 /* *INDENT-OFF* */
 enum pe_action_flags {
@@ -335,7 +360,6 @@ struct pe_resource_s {
 
     enum rsc_recovery_type recovery_type;
 
-    // @TODO only pe_restart_restart is of interest, so merge into flags
     enum pe_restart restart_type; //!< \deprecated will be removed in future release
 
     int priority;
@@ -351,6 +375,13 @@ struct pe_resource_s {
     // @TODO merge these into flags
     gboolean is_remote_node;
     gboolean exclusive_discover;
+
+    /* Pay special attention to whether you want to use rsc_cons_lhs and
+     * rsc_cons directly, which include only colocations explicitly involving
+     * this resource, or call libpacemaker's pcmk__with_this_colocations() and
+     * pcmk__this_with_colocations() functions, which may return relevant
+     * colocations involving the resource's ancestors as well.
+     */
 
     //!@{
     //! This field should be treated as internal to Pacemaker
@@ -381,8 +412,10 @@ struct pe_resource_s {
     pe_resource_t *container;
     GList *fillers;
 
+    // @COMPAT These should be made const at next API compatibility break
     pe_node_t *pending_node;    // Node on which pending_task is happening
     pe_node_t *lock_node;       // Resource is shutdown-locked to this node
+
     time_t lock_time;           // When shutdown lock started
 
     /* Resource parameters may have node-attribute-based rules, which means the
@@ -391,18 +424,7 @@ struct pe_resource_s {
      * for a given node.
      */
     GHashTable *parameter_cache; // Key = node name, value = parameters table
-#if ENABLE_VERSIONED_ATTRS
-    xmlNode *versioned_parameters;
-#endif
 };
-
-#if ENABLE_VERSIONED_ATTRS
-// Used as action->action_details if action->rsc is not NULL
-typedef struct pe_rsc_action_details_s {
-    xmlNode *versioned_parameters;
-    xmlNode *versioned_meta;
-} pe_rsc_action_details_t;
-#endif
 
 struct pe_action_s {
     int id;
@@ -506,7 +528,7 @@ enum pe_ordering {
                                                  */
 
     pe_order_restart               = 0x1000,    /* 'then' is runnable if 'first' is optional or runnable */
-    pe_order_stonith_stop          = 0x2000,    /* only applies if the action is non-pseudo */
+    pe_order_stonith_stop          = 0x2000,    //<! \deprecated Will be removed in future release
     pe_order_serialize_only        = 0x4000,    /* serialize */
     pe_order_same_node             = 0x8000,    /* applies only if 'first' and 'then' are on same node */
 
@@ -543,4 +565,4 @@ typedef struct pe_action_wrapper_s {
 }
 #endif
 
-#endif // PE_TYPES__H
+#endif // PCMK__CRM_PENGINE_PE_TYPES__H

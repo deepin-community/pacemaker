@@ -1,0 +1,9 @@
+Document: pacemaker-python
+Title: Pacemaker Python API
+Section: System/Administration
+
+Format: HTML
+Index: /usr/share/doc/pacemaker/Pacemaker_Python_API/singlehtml/index.html
+Files:
+ /usr/share/doc/pacemaker/Pacemaker_Python_API/singlehtml/*
+ /usr/share/doc/pacemaker/Pacemaker_Python_API/singlehtml/_static/*

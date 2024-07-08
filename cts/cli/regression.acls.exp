@@ -1,7 +1,6 @@
 Created new pacemaker configuration
-Setting up shadow instance
-A new shadow instance was created.  To begin using it paste the following into your shell:
-  CIB_shadow=cts-cli ; export CIB_shadow
+A new shadow instance was created. To begin using it, enter the following into your shell:
+	export CIB_shadow=cts-cli
 =#=#=#= Begin test: Configure some ACLs =#=#=#=
 =#=#=#= Current cib after: Configure some ACLs =#=#=#=
 <cib epoch="2" num_updates="0" admin_epoch="0">
@@ -365,20 +364,22 @@ Call failed: Permission denied
 =#=#=#= End test: unknownguy: Query configuration - Insufficient privileges (4) =#=#=#=
 * Passed: cibadmin       - unknownguy: Query configuration
 =#=#=#= Begin test: unknownguy: Set enable-acl =#=#=#=
-Error performing operation: Permission denied
+crm_attribute: Error performing operation: Permission denied
 =#=#=#= End test: unknownguy: Set enable-acl - Insufficient privileges (4) =#=#=#=
 * Passed: crm_attribute  - unknownguy: Set enable-acl
 =#=#=#= Begin test: unknownguy: Set stonith-enabled =#=#=#=
-Error performing operation: Permission denied
+crm_attribute: Error performing operation: Permission denied
 =#=#=#= End test: unknownguy: Set stonith-enabled - Insufficient privileges (4) =#=#=#=
 * Passed: crm_attribute  - unknownguy: Set stonith-enabled
 =#=#=#= Begin test: unknownguy: Create a resource =#=#=#=
 pcmk__check_acl 	trace: User 'unknownguy' without ACLs denied read/write access to /cib/configuration/resources/primitive[@id]
-pcmk__check_acl 	trace: User 'unknownguy' without ACLs denied read/write access to /cib/configuration/resources/primitive[@class]
-pcmk__check_acl 	trace: User 'unknownguy' without ACLs denied read/write access to /cib/configuration/resources/primitive[@provider]
-pcmk__check_acl 	trace: User 'unknownguy' without ACLs denied read/write access to /cib/configuration/resources/primitive[@type]
 pcmk__apply_creation_acl 	trace: Creation of <primitive> scaffolding with id="<unset>" is implicitly allowed
 Call failed: Permission denied
+<failed>
+  <failed_update id="dummy" object_type="primitive" operation="cib_create" reason="Permission denied">
+    <primitive id="dummy" class="ocf" provider="pacemaker" type="Dummy"/>
+  </failed_update>
+</failed>
 =#=#=#= End test: unknownguy: Create a resource - Insufficient privileges (4) =#=#=#=
 * Passed: cibadmin       - unknownguy: Create a resource
 =#=#=#= Begin test: l33t-haxor: Query configuration =#=#=#=
@@ -386,11 +387,11 @@ Call failed: Permission denied
 =#=#=#= End test: l33t-haxor: Query configuration - Insufficient privileges (4) =#=#=#=
 * Passed: cibadmin       - l33t-haxor: Query configuration
 =#=#=#= Begin test: l33t-haxor: Set enable-acl =#=#=#=
-Error performing operation: Permission denied
+crm_attribute: Error performing operation: Permission denied
 =#=#=#= End test: l33t-haxor: Set enable-acl - Insufficient privileges (4) =#=#=#=
 * Passed: crm_attribute  - l33t-haxor: Set enable-acl
 =#=#=#= Begin test: l33t-haxor: Set stonith-enabled =#=#=#=
-Error performing operation: Permission denied
+crm_attribute: Error performing operation: Permission denied
 =#=#=#= End test: l33t-haxor: Set stonith-enabled - Insufficient privileges (4) =#=#=#=
 * Passed: crm_attribute  - l33t-haxor: Set stonith-enabled
 =#=#=#= Begin test: l33t-haxor: Create a resource =#=#=#=
@@ -465,8 +466,8 @@ Call failed: Permission denied
 * Passed: cibadmin       - niceguy: Query configuration
 =#=#=#= Begin test: niceguy: Set enable-acl =#=#=#=
 pcmk__check_acl 	trace: Default ACL denies user 'niceguy' read/write access to /cib/configuration/crm_config/cluster_property_set[@id='cib-bootstrap-options']/nvpair[@id='cib-bootstrap-options-enable-acl'][@value]
-Error performing operation: Permission denied
 Error setting enable-acl=false (section=crm_config, set=<null>): Permission denied
+crm_attribute: Error performing operation: Permission denied
 =#=#=#= End test: niceguy: Set enable-acl - Insufficient privileges (4) =#=#=#=
 * Passed: crm_attribute  - niceguy: Set enable-acl
 =#=#=#= Begin test: niceguy: Set stonith-enabled =#=#=#=
@@ -2233,39 +2234,6 @@ Call failed: Permission denied
 
     !#!#!#!#! Upgrading to latest CIB schema and re-testing !#!#!#!#!
 =#=#=#= Begin test: root: Upgrade to latest CIB schema =#=#=#=
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_permission> with id="observer-read-1"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_permission> with id="observer-write-1"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_permission> with id="observer-write-2"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_permission> with id="admin-read-1"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_permission> with id="admin-write-1"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_permission> with id="super_user-write-1"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_permission> with id="rsc-writer-deny-1"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_permission> with id="rsc-writer-write-1"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_permission> with id="rsc-denied-write-1"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_permission> with id="rsc-denied-deny-1"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_target> with id="l33t-haxor"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <role> with id="auto-l33t-haxor"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_role> with id="auto-l33t-haxor"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_permission> with id="crook-nothing"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_target> with id="niceguy"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <role> with id="observer"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_target> with id="bob"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <role> with id="admin"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_target> with id="joe"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <role> with id="super_user"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_target> with id="mike"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <role> with id="rsc_writer"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_target> with id="chris"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <role> with id="rsc_denied"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_target> with id="badidea"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <role> with id="auto-badidea"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_role> with id="auto-badidea"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_permission> with id="badidea-resources"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_target> with id="betteridea"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <role> with id="auto-betteridea"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_role> with id="auto-betteridea"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_permission> with id="betteridea-nothing"
-pcmk__apply_creation_acl 	trace: ACLs allow creation of <acl_permission> with id="betteridea-resources"
 =#=#=#= Current cib after: root: Upgrade to latest CIB schema =#=#=#=
 <cib epoch="2" num_updates="0" admin_epoch="1">
   <configuration>
@@ -2347,20 +2315,22 @@ Call failed: Permission denied
 =#=#=#= End test: unknownguy: Query configuration - Insufficient privileges (4) =#=#=#=
 * Passed: cibadmin       - unknownguy: Query configuration
 =#=#=#= Begin test: unknownguy: Set enable-acl =#=#=#=
-Error performing operation: Permission denied
+crm_attribute: Error performing operation: Permission denied
 =#=#=#= End test: unknownguy: Set enable-acl - Insufficient privileges (4) =#=#=#=
 * Passed: crm_attribute  - unknownguy: Set enable-acl
 =#=#=#= Begin test: unknownguy: Set stonith-enabled =#=#=#=
-Error performing operation: Permission denied
+crm_attribute: Error performing operation: Permission denied
 =#=#=#= End test: unknownguy: Set stonith-enabled - Insufficient privileges (4) =#=#=#=
 * Passed: crm_attribute  - unknownguy: Set stonith-enabled
 =#=#=#= Begin test: unknownguy: Create a resource =#=#=#=
 pcmk__check_acl 	trace: User 'unknownguy' without ACLs denied read/write access to /cib/configuration/resources/primitive[@id]
-pcmk__check_acl 	trace: User 'unknownguy' without ACLs denied read/write access to /cib/configuration/resources/primitive[@class]
-pcmk__check_acl 	trace: User 'unknownguy' without ACLs denied read/write access to /cib/configuration/resources/primitive[@provider]
-pcmk__check_acl 	trace: User 'unknownguy' without ACLs denied read/write access to /cib/configuration/resources/primitive[@type]
 pcmk__apply_creation_acl 	trace: Creation of <primitive> scaffolding with id="<unset>" is implicitly allowed
 Call failed: Permission denied
+<failed>
+  <failed_update id="dummy" object_type="primitive" operation="cib_create" reason="Permission denied">
+    <primitive id="dummy" class="ocf" provider="pacemaker" type="Dummy"/>
+  </failed_update>
+</failed>
 =#=#=#= End test: unknownguy: Create a resource - Insufficient privileges (4) =#=#=#=
 * Passed: cibadmin       - unknownguy: Create a resource
 =#=#=#= Begin test: l33t-haxor: Query configuration =#=#=#=
@@ -2368,11 +2338,11 @@ Call failed: Permission denied
 =#=#=#= End test: l33t-haxor: Query configuration - Insufficient privileges (4) =#=#=#=
 * Passed: cibadmin       - l33t-haxor: Query configuration
 =#=#=#= Begin test: l33t-haxor: Set enable-acl =#=#=#=
-Error performing operation: Permission denied
+crm_attribute: Error performing operation: Permission denied
 =#=#=#= End test: l33t-haxor: Set enable-acl - Insufficient privileges (4) =#=#=#=
 * Passed: crm_attribute  - l33t-haxor: Set enable-acl
 =#=#=#= Begin test: l33t-haxor: Set stonith-enabled =#=#=#=
-Error performing operation: Permission denied
+crm_attribute: Error performing operation: Permission denied
 =#=#=#= End test: l33t-haxor: Set stonith-enabled - Insufficient privileges (4) =#=#=#=
 * Passed: crm_attribute  - l33t-haxor: Set stonith-enabled
 =#=#=#= Begin test: l33t-haxor: Create a resource =#=#=#=
@@ -2457,8 +2427,8 @@ Call failed: Permission denied
 * Passed: cibadmin       - niceguy: Query configuration
 =#=#=#= Begin test: niceguy: Set enable-acl =#=#=#=
 pcmk__check_acl 	trace: Default ACL denies user 'niceguy' read/write access to /cib/configuration/crm_config/cluster_property_set[@id='cib-bootstrap-options']/nvpair[@id='cib-bootstrap-options-enable-acl'][@value]
-Error performing operation: Permission denied
 Error setting enable-acl=false (section=crm_config, set=<null>): Permission denied
+crm_attribute: Error performing operation: Permission denied
 =#=#=#= End test: niceguy: Set enable-acl - Insufficient privileges (4) =#=#=#=
 * Passed: crm_attribute  - niceguy: Set enable-acl
 =#=#=#= Begin test: niceguy: Set stonith-enabled =#=#=#=

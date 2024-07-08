@@ -2,7 +2,7 @@ Current cluster status:
   * Node List:
     * Online: [ metal-1 metal-2 metal-3 ]
     * RemoteOFFLINE: [ rabbitmq-bundle-0 ]
-    * GuestOnline: [ galera-bundle-0@metal-1 galera-bundle-1@metal-2 galera-bundle-2@metal-3 redis-bundle-0@metal-1 redis-bundle-1@metal-2 redis-bundle-2@metal-3 ]
+    * GuestOnline: [ galera-bundle-0 galera-bundle-1 galera-bundle-2 redis-bundle-0 redis-bundle-1 redis-bundle-2 ]
 
   * Full List of Resources:
     * Clone Set: storage-clone [storage]:
@@ -22,9 +22,9 @@ Current cluster status:
       * redis-bundle-2	(ocf:heartbeat:redis):	 Promoted metal-3
 
 Transition Summary:
-  * Stop       storage:0                  (               metal-1 )  due to node availability
-  * Stop       galera-bundle-docker-0     (               metal-1 )  due to node availability
-  * Stop       galera-bundle-0            (               metal-1 )  due to unrunnable galera-bundle-docker-0 start
+  * Stop       storage:0                  (                    metal-1 )  due to node availability
+  * Stop       galera-bundle-docker-0     (                    metal-1 )  due to node availability
+  * Stop       galera-bundle-0            (                    metal-1 )  due to unrunnable galera-bundle-docker-0 start
   * Stop       galera:0                   ( Unpromoted galera-bundle-0 )  due to unrunnable galera-bundle-docker-0 start
 
 Executing Cluster Transition:
@@ -68,7 +68,7 @@ Revised Cluster Status:
   * Node List:
     * Online: [ metal-1 metal-2 metal-3 ]
     * RemoteOFFLINE: [ rabbitmq-bundle-0 ]
-    * GuestOnline: [ galera-bundle-1@metal-2 galera-bundle-2@metal-3 redis-bundle-0@metal-1 redis-bundle-1@metal-2 redis-bundle-2@metal-3 ]
+    * GuestOnline: [ galera-bundle-1 galera-bundle-2 redis-bundle-0 redis-bundle-1 redis-bundle-2 ]
 
   * Full List of Resources:
     * Clone Set: storage-clone [storage]:

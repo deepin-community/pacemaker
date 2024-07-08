@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -9,14 +9,14 @@
 
 #include <crm_internal.h>
 
-#if defined(US_AUTH_PEERCRED_UCRED) || defined(US_AUTH_PEERCRED_SOCKPEERCRED)
-#  ifdef US_AUTH_PEERCRED_UCRED
+#if defined(HAVE_UCRED) || defined(HAVE_SOCKPEERCRED)
+#  ifdef HAVE_UCRED
 #    ifndef _GNU_SOURCE
 #      define _GNU_SOURCE
 #    endif
 #  endif
 #  include <sys/socket.h>
-#elif defined(US_AUTH_GETPEERUCRED)
+#elif defined(HAVE_GETPEERUCRED)
 #  include <ucred.h>
 #endif
 
@@ -41,7 +41,7 @@
  *
  * \note The caller is responsible for freeing *api using pcmk_free_ipc_api().
  * \note This is intended to supersede crm_ipc_new() but currently only
- *       supports the controller & pacemakerd IPC API.
+ *       supports the controller, pacemakerd, and schedulerd IPC API.
  */
 int
 pcmk_new_ipc_api(pcmk_ipc_api_t **api, enum pcmk_ipc_server server)
@@ -67,6 +67,7 @@ pcmk_new_ipc_api(pcmk_ipc_api_t **api, enum pcmk_ipc_server server)
     // Set server methods and max_size (if not default)
     switch (server) {
         case pcmk_ipc_attrd:
+            (*api)->cmds = pcmk__attrd_api_methods();
             break;
 
         case pcmk_ipc_based:
@@ -88,6 +89,7 @@ pcmk_new_ipc_api(pcmk_ipc_api_t **api, enum pcmk_ipc_server server)
             break;
 
         case pcmk_ipc_schedulerd:
+            (*api)->cmds = pcmk__schedulerd_api_methods();
             // @TODO max_size could vary by client, maybe take as argument?
             (*api)->ipc_size_max = 5 * 1024 * 1024; // 5MB
             break;
@@ -135,10 +137,10 @@ free_daemon_specific_data(pcmk_ipc_api_t *api)
  * \internal
  * \brief Call an IPC API event callback, if one is registed
  *
- * \param[in] api         IPC API connection
- * \param[in] event_type  The type of event that occurred
- * \param[in] status      Event status
- * \param[in] event_data  Event-specific data
+ * \param[in,out] api         IPC API connection
+ * \param[in]     event_type  The type of event that occurred
+ * \param[in]     status      Event status
+ * \param[in,out] event_data  Event-specific data
  */
 void
 pcmk__call_ipc_callback(pcmk_ipc_api_t *api, enum pcmk_ipc_event event_type,
@@ -153,7 +155,7 @@ pcmk__call_ipc_callback(pcmk_ipc_api_t *api, enum pcmk_ipc_event event_type,
  * \internal
  * \brief Clean up after an IPC disconnect
  *
- * \param[in]  user_data  IPC API connection that disconnected
+ * \param[in,out] user_data  IPC API connection that disconnected
  *
  * \note This function can be used as a main loop IPC destroy callback.
  */
@@ -194,7 +196,7 @@ ipc_post_disconnect(gpointer user_data)
 /*!
  * \brief Free the contents of an IPC API object
  *
- * \param[in] api  IPC API object to free
+ * \param[in,out] api  IPC API object to free
  */
 void
 pcmk_free_ipc_api(pcmk_ipc_api_t *api)
@@ -238,14 +240,14 @@ pcmk_free_ipc_api(pcmk_ipc_api_t *api)
  *         "Pacemaker" if for_log is true and NULL if for_log is false
  */
 const char *
-pcmk_ipc_name(pcmk_ipc_api_t *api, bool for_log)
+pcmk_ipc_name(const pcmk_ipc_api_t *api, bool for_log)
 {
     if (api == NULL) {
         return for_log? "Pacemaker" : NULL;
     }
     switch (api->server) {
         case pcmk_ipc_attrd:
-            return for_log? "attribute manager" : NULL /* T_ATTRD */;
+            return for_log? "attribute manager" : T_ATTRD;
 
         case pcmk_ipc_based:
             return for_log? "CIB manager" : NULL /* PCMK__SERVER_BASED_RW */;
@@ -263,7 +265,7 @@ pcmk_ipc_name(pcmk_ipc_api_t *api, bool for_log)
             return for_log? "launcher" : CRM_SYSTEM_MCP;
 
         case pcmk_ipc_schedulerd:
-            return for_log? "scheduler" : NULL /* CRM_SYSTEM_PENGINE */;
+            return for_log? "scheduler" : CRM_SYSTEM_PENGINE;
 
         default:
             return for_log? "Pacemaker" : NULL;
@@ -273,7 +275,7 @@ pcmk_ipc_name(pcmk_ipc_api_t *api, bool for_log)
 /*!
  * \brief Check whether an IPC API connection is active
  *
- * \param[in] api  IPC API connection
+ * \param[in,out] api  IPC API connection
  *
  * \return true if IPC is connected, false otherwise
  */
@@ -291,14 +293,61 @@ pcmk_ipc_is_connected(pcmk_ipc_api_t *api)
  * method's responsibility to call the client's registered event callback, as
  * well as allocate and free any event data.
  *
- * \param[in] api  IPC API connection
+ * \param[in,out] api      IPC API connection
+ * \param[in,out] message  IPC reply XML to dispatch
  */
-static void
+static bool
 call_api_dispatch(pcmk_ipc_api_t *api, xmlNode *message)
 {
     crm_log_xml_trace(message, "ipc-received");
     if ((api->cmds != NULL) && (api->cmds->dispatch != NULL)) {
-        api->cmds->dispatch(api, message);
+        return api->cmds->dispatch(api, message);
+    }
+
+    return false;
+}
+
+/*!
+ * \internal
+ * \brief Dispatch previously read IPC data
+ *
+ * \param[in]     buffer  Data read from IPC
+ * \param[in,out] api     IPC object
+ *
+ * \return Standard Pacemaker return code.  In particular:
+ *
+ * pcmk_rc_ok: There are no more messages expected from the server.  Quit
+ *             reading.
+ * EINPROGRESS: There are more messages expected from the server.  Keep reading.
+ *
+ * All other values indicate an error.
+ */
+static int
+dispatch_ipc_data(const char *buffer, pcmk_ipc_api_t *api)
+{
+    bool more = false;
+    xmlNode *msg;
+
+    if (buffer == NULL) {
+        crm_warn("Empty message received from %s IPC",
+                 pcmk_ipc_name(api, true));
+        return ENOMSG;
+    }
+
+    msg = string2xml(buffer);
+    if (msg == NULL) {
+        crm_warn("Malformed message received from %s IPC",
+                 pcmk_ipc_name(api, true));
+        return EPROTO;
+    }
+
+    more = call_api_dispatch(api, msg);
+    free_xml(msg);
+
+    if (more) {
+        return EINPROGRESS;
+    } else {
+        return pcmk_rc_ok;
     }
 }
 
@@ -306,36 +355,21 @@ call_api_dispatch(pcmk_ipc_api_t *api, xmlNode *message)
  * \internal
  * \brief Dispatch data read from IPC source
  *
- * \param[in] buffer     Data read from IPC
- * \param[in] length     Number of bytes of data in buffer (ignored)
- * \param[in] user_data  IPC object
+ * \param[in]     buffer     Data read from IPC
+ * \param[in]     length     Number of bytes of data in buffer (ignored)
+ * \param[in,out] user_data  IPC object
  *
  * \return Always 0 (meaning connection is still required)
  *
  * \note This function can be used as a main loop IPC dispatch callback.
  */
 static int
-dispatch_ipc_data(const char *buffer, ssize_t length, gpointer user_data)
+dispatch_ipc_source_data(const char *buffer, ssize_t length, gpointer user_data)
 {
     pcmk_ipc_api_t *api = user_data;
-    xmlNode *msg;
 
     CRM_CHECK(api != NULL, return 0);
-
-    if (buffer == NULL) {
-        crm_warn("Empty message received from %s IPC",
-                 pcmk_ipc_name(api, true));
-        return 0;
-    }
-
-    msg = string2xml(buffer);
-    if (msg == NULL) {
-        crm_warn("Malformed message received from %s IPC",
-                 pcmk_ipc_name(api, true));
-        return 0;
-    }
-    call_api_dispatch(api, msg);
-    free_xml(msg);
+    dispatch_ipc_data(buffer, api);
     return 0;
 }
 
@@ -358,7 +392,7 @@ dispatch_ipc_data(const char *buffer, ssize_t length, gpointer user_data)
  *       crm_ipc_get_fd(api->ipc), so the caller can call poll() themselves.
  */
 int
-pcmk_poll_ipc(pcmk_ipc_api_t *api, int timeout_ms)
+pcmk_poll_ipc(const pcmk_ipc_api_t *api, int timeout_ms)
 {
     int rc;
     struct pollfd pollfd = { 0, };
@@ -370,7 +404,10 @@ pcmk_poll_ipc(pcmk_ipc_api_t *api, int timeout_ms)
     pollfd.events = POLLIN;
     rc = poll(&pollfd, 1, timeout_ms);
     if (rc < 0) {
-        return errno;
+        /* Some UNIX systems return negative and set EAGAIN for failure to
+         * allocate memory; standardize the return code in that case
+         */
+        return (errno == EAGAIN)? ENOMEM : errno;
     } else if (rc == 0) {
         return EAGAIN;
     }
@@ -380,7 +417,7 @@ pcmk_poll_ipc(pcmk_ipc_api_t *api, int timeout_ms)
 /*!
  * \brief Dispatch available messages on an IPC connection (without main loop)
  *
- * \param[in]  api  IPC API connection
+ * \param[in,out] api  IPC API connection
  *
  * \return Standard Pacemaker return code
  *
@@ -395,7 +432,7 @@ pcmk_dispatch_ipc(pcmk_ipc_api_t *api)
     }
     while (crm_ipc_ready(api->ipc) > 0) {
         if (crm_ipc_read(api->ipc) > 0) {
-            dispatch_ipc_data(crm_ipc_buffer(api->ipc), 0, api);
+            dispatch_ipc_data(crm_ipc_buffer(api->ipc), api);
         }
     }
 }
@@ -407,7 +444,7 @@ connect_with_main_loop(pcmk_ipc_api_t *api)
     int rc;
 
     struct ipc_client_callbacks callbacks = {
-        .dispatch = dispatch_ipc_data,
+        .dispatch = dispatch_ipc_source_data,
         .destroy = ipc_post_disconnect,
     };
 
@@ -443,14 +480,15 @@ connect_without_main_loop(pcmk_ipc_api_t *api)
 /*!
  * \brief Connect to a Pacemaker daemon via IPC
  *
- * \param[in]  api            IPC API instance
- * \param[out] dispatch_type  How IPC replies should be dispatched
+ * \param[in,out] api            IPC API instance
+ * \param[in]     dispatch_type  How IPC replies should be dispatched
  *
  * \return Standard Pacemaker return code
  */
 int
 pcmk_connect_ipc(pcmk_ipc_api_t *api, enum pcmk_ipc_dispatch dispatch_type)
 {
+    const int n_attempts = 2;
     int rc = pcmk_rc_ok;
 
     if (api == NULL) {
@@ -473,16 +511,32 @@ pcmk_connect_ipc(pcmk_ipc_api_t *api, enum pcmk_ipc_dispatch dispatch_type)
     }
 
     api->dispatch_type = dispatch_type;
-    switch (dispatch_type) {
-        case pcmk_ipc_dispatch_main:
-            rc = connect_with_main_loop(api);
-            break;
 
-        case pcmk_ipc_dispatch_sync:
-        case pcmk_ipc_dispatch_poll:
-            rc = connect_without_main_loop(api);
+    for (int i = 0; i < n_attempts; i++) {
+        switch (dispatch_type) {
+            case pcmk_ipc_dispatch_main:
+                rc = connect_with_main_loop(api);
+                break;
+
+            case pcmk_ipc_dispatch_sync:
+            case pcmk_ipc_dispatch_poll:
+                rc = connect_without_main_loop(api);
+                break;
+        }
+
+        if (rc != EAGAIN) {
             break;
+        }
+
+        /* EAGAIN may occur due to interruption by a signal or due to some
+         * transient issue. Try one more time to be more resilient.
+         */
+        if (i < (n_attempts - 1)) {
+            crm_trace("Connection to %s IPC API failed with EAGAIN, retrying",
+                      pcmk_ipc_name(api, true));
+        }
     }
+
     if (rc != pcmk_rc_ok) {
         return rc;
     }
@@ -499,7 +553,7 @@ pcmk_connect_ipc(pcmk_ipc_api_t *api, enum pcmk_ipc_dispatch dispatch_type)
 /*!
  * \brief Disconnect an IPC API instance
  *
- * \param[in]  api  IPC API connection
+ * \param[in,out] api  IPC API connection
  *
  * \return Standard Pacemaker return code
  *
@@ -538,6 +592,7 @@ pcmk_disconnect_ipc(pcmk_ipc_api_t *api)
                 // This should always be the case already, but to be safe
                 api->free_on_disconnect = false;
 
+                crm_ipc_close(ipc);
                 crm_ipc_destroy(ipc);
                 ipc_post_disconnect(api);
             }
@@ -548,9 +603,9 @@ pcmk_disconnect_ipc(pcmk_ipc_api_t *api)
 /*!
  * \brief Register a callback for IPC API events
  *
- * \param[in] api          IPC API connection
- * \param[in] callback     Callback to register
- * \param[in] userdata     Caller data to pass to callback
+ * \param[in,out] api       IPC API connection
+ * \param[in]     callback  Callback to register
+ * \param[in]     userdata  Caller data to pass to callback
  *
  * \note This function may be called multiple times to update the callback
  *       and/or user data. The caller remains responsible for freeing
@@ -572,8 +627,8 @@ pcmk_register_ipc_callback(pcmk_ipc_api_t *api, pcmk_ipc_callback_t cb,
  * \internal
  * \brief Send an XML request across an IPC API connection
  *
- * \param[in] api          IPC API connection
- * \param[in] request      XML request to send
+ * \param[in,out] api      IPC API connection
+ * \param[in,out] request  XML request to send
  *
  * \return Standard Pacemaker return code
  *
@@ -611,8 +666,31 @@ pcmk__send_ipc_request(pcmk_ipc_api_t *api, xmlNode *request)
 
     // With synchronous dispatch, we dispatch any reply now
     if (reply != NULL) {
-        call_api_dispatch(api, reply);
+        bool more = call_api_dispatch(api, reply);
+
         free_xml(reply);
+
+        while (more) {
+            rc = crm_ipc_read(api->ipc);
+
+            if (rc == -EAGAIN) {
+                continue;
+            } else if (rc == -ENOMSG || rc == pcmk_ok) {
+                return pcmk_rc_ok;
+            } else if (rc < 0) {
+                return -rc;
+            }
+
+            rc = dispatch_ipc_data(crm_ipc_buffer(api->ipc), api);
+
+            if (rc == pcmk_rc_ok) {
+                more = false;
+            } else if (rc == EINPROGRESS) {
+                more = true;
+            } else {
+                continue;
+            }
+        }
     }
     return pcmk_rc_ok;
 }
@@ -640,7 +718,7 @@ pcmk__send_ipc_request(pcmk_ipc_api_t *api, xmlNode *request)
  *       common syntax with all daemons if their version supports it.
  */
 static xmlNode *
-create_purge_node_request(pcmk_ipc_api_t *api, const char *node_name,
+create_purge_node_request(const pcmk_ipc_api_t *api, const char *node_name,
                           uint32_t nodeid)
 {
     xmlNode *request = NULL;
@@ -652,10 +730,7 @@ create_purge_node_request(pcmk_ipc_api_t *api, const char *node_name,
             crm_xml_add(request, F_TYPE, T_ATTRD);
             crm_xml_add(request, F_ORIG, crm_system_name);
             crm_xml_add(request, PCMK__XA_TASK, PCMK__ATTRD_CMD_PEER_REMOVE);
-            crm_xml_add(request, PCMK__XA_ATTR_NODE_NAME, node_name);
-            if (nodeid > 0) {
-                crm_xml_add_int(request, PCMK__XA_ATTR_NODE_ID, (int) nodeid);
-            }
+            pcmk__xe_add_node(request, node_name, nodeid);
             break;
 
         case pcmk_ipc_controld:
@@ -680,9 +755,9 @@ create_purge_node_request(pcmk_ipc_api_t *api, const char *node_name,
 /*!
  * \brief Ask a Pacemaker daemon to purge a node from its peer cache
  *
- * \param[in]  api        IPC API connection
- * \param[in]  node_name  If not NULL, name of node to purge
- * \param[in]  nodeid     If not 0, node ID of node to purge
+ * \param[in,out] api        IPC API connection
+ * \param[in]     node_name  If not NULL, name of node to purge
+ * \param[in]     nodeid     If not 0, node ID of node to purge
  *
  * \return Standard Pacemaker return code
  *
@@ -782,27 +857,32 @@ crm_ipc_new(const char *name, size_t max_size)
 /*!
  * \brief Establish an IPC connection to a Pacemaker component
  *
- * \param[in] client  Connection instance obtained from crm_ipc_new()
+ * \param[in,out] client  Connection instance obtained from crm_ipc_new()
  *
- * \return TRUE on success, FALSE otherwise (in which case errno will be set;
+ * \return true on success, false otherwise (in which case errno will be set;
  *         specifically, in case of discovering the remote side is not
  *         authentic, its value is set to ECONNABORTED).
  */
 bool
-crm_ipc_connect(crm_ipc_t * client)
+crm_ipc_connect(crm_ipc_t *client)
 {
     uid_t cl_uid = 0;
     gid_t cl_gid = 0;
     pid_t found_pid = 0; uid_t found_uid = 0; gid_t found_gid = 0;
     int rv;
 
+    if (client == NULL) {
+        errno = EINVAL;
+        return false;
+    }
+
     client->need_reply = FALSE;
     client->ipc = qb_ipcc_connect(client->server_name, client->buf_size);
 
     if (client->ipc == NULL) {
         crm_debug("Could not establish %s IPC connection: %s (%d)",
-                  client->server_name, pcmk_strerror(errno), errno);
-        return FALSE;
+                  client->server_name, pcmk_rc_str(errno), errno);
+        return false;
     }
 
     client->pfd.fd = crm_ipc_get_fd(client);
@@ -811,7 +891,7 @@ crm_ipc_connect(crm_ipc_t * client)
         /* message already omitted */
         crm_ipc_close(client);
         errno = rv;
-        return FALSE;
+        return false;
     }
 
     rv = pcmk_daemon_user(&cl_uid, &cl_gid);
@@ -819,7 +899,7 @@ crm_ipc_connect(crm_ipc_t * client)
         /* message already omitted */
         crm_ipc_close(client);
         errno = -rv;
-        return FALSE;
+        return false;
     }
 
     if ((rv = pcmk__crm_ipc_is_authentic_process(client->ipc, client->pfd.fd, cl_uid, cl_gid,
@@ -833,7 +913,7 @@ crm_ipc_connect(crm_ipc_t * client)
                 (long long) found_gid, (long long) cl_gid);
         crm_ipc_close(client);
         errno = ECONNABORTED;
-        return FALSE;
+        return false;
 
     } else if (rv != pcmk_rc_ok) {
         crm_perror(LOG_ERR, "Could not verify authenticity of %s IPC provider",
@@ -844,7 +924,7 @@ crm_ipc_connect(crm_ipc_t * client)
         } else {
             errno = ENOTCONN;
         }
-        return FALSE;
+        return false;
     }
 
     qb_ipcc_context_set(client->ipc, client);
@@ -855,7 +935,7 @@ crm_ipc_connect(crm_ipc_t * client)
         client->buffer = calloc(1, client->max_buf_size);
         client->buf_size = client->max_buf_size;
     }
-    return TRUE;
+    return true;
 }
 
 void
@@ -939,7 +1019,7 @@ crm_ipc_connected(crm_ipc_t * client)
 /*!
  * \brief Check whether an IPC connection is ready to be read
  *
- * \param[in] client  Connection to check
+ * \param[in,out] client  Connection to check
  *
  * \return Positive value if ready to be read, 0 if not ready, -errno on error
  */
@@ -950,7 +1030,7 @@ crm_ipc_ready(crm_ipc_t *client)
 
     CRM_ASSERT(client != NULL);
 
-    if (crm_ipc_connected(client) == FALSE) {
+    if (!crm_ipc_connected(client)) {
         return -ENOTCONN;
     }
 
@@ -1039,9 +1119,13 @@ crm_ipc_read(crm_ipc_t * client)
     } else {
         crm_trace("No message received from %s IPC: %s",
                   client->server_name, pcmk_strerror(client->msg_size));
+
+        if (client->msg_size == -EAGAIN) {
+            return -EAGAIN;
+        }
     }
 
-    if (crm_ipc_connected(client) == FALSE || client->msg_size == -ENOTCONN) {
+    if (!crm_ipc_connected(client) || client->msg_size == -ENOTCONN) {
         crm_err("Connection to %s IPC failed", client->server_name);
     }
 
@@ -1119,7 +1203,7 @@ internal_ipc_get_reply(crm_ipc_t *client, int request_id, int ms_timeout,
                 crm_log_xml_notice(bad, "ImpossibleReply");
                 CRM_ASSERT(hdr->qb.id <= request_id);
             }
-        } else if (crm_ipc_connected(client) == FALSE) {
+        } else if (!crm_ipc_connected(client)) {
             crm_err("%s IPC provider disconnected while waiting for message %d",
                     client->server_name, request_id);
             break;
@@ -1136,12 +1220,12 @@ internal_ipc_get_reply(crm_ipc_t *client, int request_id, int ms_timeout,
 /*!
  * \brief Send an IPC XML message
  *
- * \param[in]  client      Connection to IPC server
- * \param[in]  message     XML message to send
- * \param[in]  flags       Bitmask of crm_ipc_flags
- * \param[in]  ms_timeout  Give up if not sent within this much time
- *                         (5 seconds if 0, or no timeout if negative)
- * \param[out] reply       Reply from server (or NULL if none)
+ * \param[in,out] client      Connection to IPC server
+ * \param[in,out] message     XML message to send
+ * \param[in]     flags       Bitmask of crm_ipc_flags
+ * \param[in]     ms_timeout  Give up if not sent within this much time
+ *                            (5 seconds if 0, or no timeout if negative)
+ * \param[out]    reply       Reply from server (or NULL if none)
  *
  * \return Negative errno on error, otherwise size of reply received in bytes
  *         if reply was needed, otherwise number of bytes sent
@@ -1163,7 +1247,7 @@ crm_ipc_send(crm_ipc_t * client, xmlNode * message, enum crm_ipc_flags flags, in
                    message);
         return -ENOTCONN;
 
-    } else if (crm_ipc_connected(client) == FALSE) {
+    } else if (!crm_ipc_connected(client)) {
         /* Don't even bother */
         crm_notice("Can't send %s IPC requests: Connection closed",
                    client->server_name);
@@ -1281,7 +1365,7 @@ crm_ipc_send(crm_ipc_t * client, xmlNode * message, enum crm_ipc_flags flags, in
     }
 
   send_cleanup:
-    if (crm_ipc_connected(client) == FALSE) {
+    if (!crm_ipc_connected(client)) {
         crm_notice("Couldn't send %s IPC request %d: Connection closed "
                    CRM_XS " rc=%d", client->server_name, header->qb.id, rc);
 
@@ -1307,7 +1391,7 @@ pcmk__crm_ipc_is_authentic_process(qb_ipcc_connection_t *qb_ipc, int sock, uid_t
 {
     int ret = 0;
     pid_t found_pid = 0; uid_t found_uid = 0; gid_t found_gid = 0;
-#if defined(US_AUTH_PEERCRED_UCRED)
+#if defined(HAVE_UCRED)
     struct ucred ucred;
     socklen_t ucred_len = sizeof(ucred);
 #endif
@@ -1318,13 +1402,13 @@ pcmk__crm_ipc_is_authentic_process(qb_ipcc_connection_t *qb_ipc, int sock, uid_t
     }
 #endif
 
-#if defined(US_AUTH_PEERCRED_UCRED)
+#if defined(HAVE_UCRED)
     if (!getsockopt(sock, SOL_SOCKET, SO_PEERCRED,
                     &ucred, &ucred_len)
                 && ucred_len == sizeof(ucred)) {
         found_pid = ucred.pid; found_uid = ucred.uid; found_gid = ucred.gid;
 
-#elif defined(US_AUTH_PEERCRED_SOCKPEERCRED)
+#elif defined(HAVE_SOCKPEERCRED)
     struct sockpeercred sockpeercred;
     socklen_t sockpeercred_len = sizeof(sockpeercred);
 
@@ -1334,11 +1418,11 @@ pcmk__crm_ipc_is_authentic_process(qb_ipcc_connection_t *qb_ipc, int sock, uid_t
         found_pid = sockpeercred.pid;
         found_uid = sockpeercred.uid; found_gid = sockpeercred.gid;
 
-#elif defined(US_AUTH_GETPEEREID)
+#elif defined(HAVE_GETPEEREID)
     if (!getpeereid(sock, &found_uid, &found_gid)) {
         found_pid = PCMK__SPECIAL_PID;  /* cannot obtain PID (FreeBSD) */
 
-#elif defined(US_AUTH_GETPEERUCRED)
+#elif defined(HAVE_GETPEERUCRED)
     ucred_t *ucred;
     if (!getpeerucred(sock, &ucred)) {
         errno = 0;
@@ -1406,13 +1490,35 @@ pcmk__ipc_is_authentic_process_active(const char *name, uid_t refuid,
     int32_t qb_rc;
     pid_t found_pid = 0; uid_t found_uid = 0; gid_t found_gid = 0;
     qb_ipcc_connection_t *c;
+#ifdef HAVE_QB_IPCC_CONNECT_ASYNC
+    struct pollfd pollfd = { 0, };
+    int poll_rc;
 
+    c = qb_ipcc_connect_async(name, 0,
+                              &(pollfd.fd));
+#else
     c = qb_ipcc_connect(name, 0);
+#endif
     if (c == NULL) {
         crm_info("Could not connect to %s IPC: %s", name, strerror(errno));
         rc = pcmk_rc_ipc_unresponsive;
         goto bail;
     }
+#ifdef HAVE_QB_IPCC_CONNECT_ASYNC
+    pollfd.events = POLLIN;
+    do {
+        poll_rc = poll(&pollfd, 1, 2000);
+    } while ((poll_rc == -1) && (errno == EINTR));
+    if ((poll_rc <= 0) || (qb_ipcc_connect_continue(c) != 0)) {
+        crm_info("Could not connect to %s IPC: %s", name,
+                 (poll_rc == 0)?"timeout":strerror(errno));
+        rc = pcmk_rc_ipc_unresponsive;
+        if (poll_rc > 0) {
+            c = NULL; // qb_ipcc_connect_continue cleaned up for us
+        }
+        goto bail;
+    }
+#endif
 
     qb_rc = qb_ipcc_fd_get(c, &fd);
     if (qb_rc != 0) {

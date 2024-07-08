@@ -1,10 +1,11 @@
 #!/usr/bin/dh-exec
 
 etc/default/crm_mon
-lib/systemd/system/crm_mon.service usr/share/doc/pacemaker-cli-utils/examples [linux-any]
+${deb_systemdsystemunitdir}/crm_mon.service usr/share/doc/pacemaker-cli-utils/examples [linux-any]
 usr/sbin/attrd_updater
 usr/sbin/cibadmin
 usr/sbin/cibsecret
+usr/sbin/crm_attribute
 usr/sbin/crm_diff
 usr/sbin/crm_error
 usr/sbin/crm_failcount
@@ -24,6 +25,7 @@ usr/sbin/stonith_admin
 usr/share/man/man8/attrd_updater.8
 usr/share/man/man8/cibadmin.8
 usr/share/man/man8/cibsecret.8
+usr/share/man/man8/crm_attribute.8
 usr/share/man/man8/crm_diff.8
 usr/share/man/man8/crm_error.8
 usr/share/man/man8/crm_failcount.8

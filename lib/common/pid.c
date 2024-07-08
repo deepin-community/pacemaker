@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2020 the Pacemaker project contributors
+ * Copyright 2004-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -23,24 +23,7 @@ int
 pcmk__pid_active(pid_t pid, const char *daemon)
 {
     static pid_t last_asked_pid = 0;  /* log spam prevention */
-#if SUPPORT_PROCFS
-    static int have_proc_pid = 0;
-#else
-    static int have_proc_pid = -1;
-#endif
     int rc = 0;
-    bool no_name_check = ((daemon == NULL) || (have_proc_pid == -1));
-
-    if (have_proc_pid == 0) {
-        /* evaluation of /proc/PID/exe applicability via self-introspection */
-        char proc_path[PATH_MAX], exe_path[PATH_MAX];
-        snprintf(proc_path, sizeof(proc_path), "/proc/%lld/exe",
-                 (long long) getpid());
-        have_proc_pid = 1;
-        if (readlink(proc_path, exe_path, sizeof(exe_path) - 1) < 0) {
-            have_proc_pid = -1;
-        }
-    }
 
     if (pid <= 0) {
         return EINVAL;
@@ -50,48 +33,53 @@ pcmk__pid_active(pid_t pid, const char *daemon)
     if ((rc < 0) && (errno == ESRCH)) {
         return ESRCH;  /* no such PID detected */
 
-    } else if ((rc < 0) && no_name_check) {
+    } else if ((daemon == NULL) || !pcmk__procfs_has_pids()) {
+        // The kill result is all we have, we can't check the name
+
+        if (rc == 0) {
+            return pcmk_rc_ok;
+        }
         rc = errno;
         if (last_asked_pid != pid) {
             crm_info("Cannot examine PID %lld: %s",
-                     (long long) pid, strerror(errno));
+                     (long long) pid, pcmk_rc_str(rc));
             last_asked_pid = pid;
         }
         return rc; /* errno != ESRCH */
 
-    } else if ((rc == 0) && no_name_check) {
-        return pcmk_rc_ok; /* kill as the only indicator, cannot double check */
-
-    } else if (daemon != NULL) {
+    } else {
         /* make sure PID hasn't been reused by another process
            XXX: might still be just a zombie, which could confuse decisions */
         bool checked_through_kill = (rc == 0);
-        char proc_path[PATH_MAX], exe_path[PATH_MAX], myexe_path[PATH_MAX];
-        snprintf(proc_path, sizeof(proc_path), "/proc/%lld/exe",
-                 (long long) pid);
+        char exe_path[PATH_MAX], myexe_path[PATH_MAX];
 
-        rc = readlink(proc_path, exe_path, sizeof(exe_path) - 1);
-        if (rc < 0) {
+        rc = pcmk__procfs_pid2path(pid, exe_path, sizeof(exe_path));
+        if (rc != pcmk_rc_ok) {
+            if (rc != EACCES) {
+                // Check again to filter out races
+                if ((kill(pid, 0) < 0) && (errno == ESRCH)) {
+                    return ESRCH;
+                }
+            }
             if (last_asked_pid != pid) {
-                if (errno == EACCES) {
-                    crm_info("Could not read from %s: %s " CRM_XS " errno=%d",
-                             proc_path, strerror(errno), errno);
+                if (rc == EACCES) {
+                    crm_info("Could not get executable for PID %lld: %s "
+                             CRM_XS " rc=%d",
+                             (long long) pid, pcmk_rc_str(rc), rc);
                 } else {
-                    crm_err("Could not read from %s: %s " CRM_XS " errno=%d",
-                            proc_path, strerror(errno), errno);
+                    crm_err("Could not get executable for PID %lld: %s "
+                            CRM_XS " rc=%d",
+                            (long long) pid, pcmk_rc_str(rc), rc);
                 }
                 last_asked_pid = pid;
             }
-            if ((errno == EACCES) && checked_through_kill) {
-                // Trust kill result, can't double-check via path
-                return pcmk_rc_ok;
-            } else if (errno == EACCES) {
-                return EACCES;
+            if (rc == EACCES) {
+                // Trust kill if it was OK (we can't double-check via path)
+                return checked_through_kill? pcmk_rc_ok : EACCES;
             } else {
                 return ESRCH;  /* most likely errno == ENOENT */
             }
         }
-        exe_path[rc] = '\0';
 
         if (daemon[0] != '/') {
             rc = snprintf(myexe_path, sizeof(myexe_path), CRM_DAEMON_DIR"/%s",
@@ -124,7 +112,7 @@ pcmk__read_pidfile(const char *filename, pid_t *pid)
 {
     int fd;
     struct stat sbuf;
-    int rc = pcmk_rc_unknown_format;
+    int rc = pcmk_rc_ok;
     long long pid_read = 0;
     char buf[LOCKSTRLEN + 1];
 
@@ -146,7 +134,10 @@ pcmk__read_pidfile(const char *filename, pid_t *pid)
         goto bail;
     }
 
-    if (sscanf(buf, "%lld", &pid_read) > 0) {
+    errno = 0;
+    rc = sscanf(buf, "%lld", &pid_read);
+
+    if (rc > 0) {
         if (pid_read <= 0) {
             rc = ESRCH;
         } else {
@@ -154,6 +145,10 @@ pcmk__read_pidfile(const char *filename, pid_t *pid)
             *pid = (pid_t) pid_read;
             crm_trace("Read pid %lld from %s", pid_read, filename);
         }
+    } else if (rc == 0) {
+        rc = ENODATA;
+    } else {
+        rc = errno;
     }
 
   bail:

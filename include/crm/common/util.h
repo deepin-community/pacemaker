@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -7,18 +7,8 @@
  * version 2.1 or later (LGPLv2.1+) WITHOUT ANY WARRANTY.
  */
 
-#ifndef CRM_COMMON_UTIL__H
-#  define CRM_COMMON_UTIL__H
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-/**
- * \file
- * \brief Utility functions
- * \ingroup core
- */
+#ifndef PCMK__CRM_COMMON_UTIL__H
+#  define PCMK__CRM_COMMON_UTIL__H
 
 #  include <sys/types.h>    // gid_t, mode_t, size_t, time_t, uid_t
 #  include <stdlib.h>
@@ -35,6 +25,17 @@ extern "C" {
 #  include <crm/common/agents.h>
 #  include <crm/common/results.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/**
+ * \file
+ * \brief Utility functions
+ * \ingroup core
+ */
+
+
 #  define ONLINESTATUS  "online"  // Status of an online client
 #  define OFFLINESTATUS "offline" // Status of an offline client
 
@@ -44,6 +45,11 @@ char *pcmk_promotion_score_name(const char *rsc_id);
 /* public Pacemaker Remote functions (from remote.c) */
 int crm_default_remote_port(void);
 
+/* public score-related functions (from scores.c) */
+const char *pcmk_readable_score(int score);
+int char2score(const char *score);
+int pcmk__add_scores(int score1, int score2);
+
 /* public string functions (from strings.c) */
 gboolean crm_is_true(const char *s);
 int crm_str_to_boolean(const char *s, int *ret);
@@ -52,9 +58,6 @@ char * crm_strip_trailing_newline(char *str);
 char *crm_strdup_printf(char const *format, ...) G_GNUC_PRINTF(1, 2);
 
 guint crm_parse_interval_spec(const char *input);
-int char2score(const char *score);
-char *score2char(int score);
-char *score2char_stack(int score, char *buf, size_t len);
 
 /* public operation functions (from operations.c) */
 gboolean parse_op_key(const char *key, char **rsc_id, char **op_type,
@@ -64,13 +67,17 @@ gboolean decode_transition_key(const char *key, char **uuid, int *transition_id,
 gboolean decode_transition_magic(const char *magic, char **uuid,
                                  int *transition_id, int *action_id,
                                  int *op_status, int *op_rc, int *target_rc);
-int rsc_op_expected_rc(lrmd_event_data_t *event);
+int rsc_op_expected_rc(const lrmd_event_data_t *event);
 gboolean did_rsc_op_fail(lrmd_event_data_t *event, int target_rc);
 bool crm_op_needs_metadata(const char *rsc_class, const char *op);
 xmlNode *crm_create_op_xml(xmlNode *parent, const char *prefix,
                            const char *task, const char *interval_spec,
                            const char *timeout);
 #define CRM_DEFAULT_OP_TIMEOUT_S "20s"
+
+bool pcmk_is_probe(const char *task, guint interval);
+bool pcmk_xe_is_probe(const xmlNode *xml_op);
+bool pcmk_xe_mask_probe_failure(const xmlNode *xml_op);
 
 int compare_version(const char *version1, const char *version2);
 

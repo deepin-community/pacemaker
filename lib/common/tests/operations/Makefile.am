@@ -1,29 +1,22 @@
 #
-# Copyright 2020 the Pacemaker project contributors
+# Copyright 2020-2022 the Pacemaker project contributors
 #
 # The version control history for this file may have further details.
 #
 # This source code is licensed under the GNU General Public License version 2
 # or later (GPLv2+) WITHOUT ANY WARRANTY.
 #
-AM_CPPFLAGS = -I$(top_srcdir)/include -I$(top_builddir)/include
-LDADD = $(top_builddir)/lib/common/libcrmcommon.la
 
-include $(top_srcdir)/mk/glib-tap.mk
+include $(top_srcdir)/mk/tap.mk
+include $(top_srcdir)/mk/unittest.mk
 
-# Add each test program here.  Each test should be written as a little standalone
-# program using the glib unit testing functions.  See the documentation for more
-# information.
-#
-# https://developer.gnome.org/glib/unstable/glib-Testing.html
-#
 # Add "_test" to the end of all test program names to simplify .gitignore.
-test_programs = parse_op_key_test
+check_PROGRAMS = copy_in_properties_test \
+				 expand_plus_plus_test \
+				 fix_plus_plus_recursive_test \
+				 parse_op_key_test \
+				 pcmk_is_probe_test \
+				 pcmk_xe_is_probe_test \
+				 pcmk_xe_mask_probe_failure_test
 
-# If any extra data needs to be added to the source distribution, add it to the
-# following list.
-dist_test_data =
-
-# If any extra data needs to be used by tests but should not be added to the
-# source distribution, add it to the following list.
-test_data =
+TESTS = $(check_PROGRAMS)

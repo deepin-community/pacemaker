@@ -1,5 +1,5 @@
 /*
- * Copyright 2010-2020 the Pacemaker project contributors
+ * Copyright 2010-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -96,8 +96,6 @@ lsb_meta_helper_get_value(const char *line, char **value, const char *prefix)
     return FALSE;
 }
 
-#define DESC_MAX 2048
-
 int
 services__get_lsb_metadata(const char *type, char **output)
 {
@@ -113,15 +111,13 @@ services__get_lsb_metadata(const char *type, char **output)
     char *dflt_stop = NULL;
     char *s_dscrpt = NULL;
     char *xml_l_dscrpt = NULL;
-    int offset = 0;
     bool in_header = FALSE;
-    char description[DESC_MAX] = { 0, };
 
     if (type[0] == '/') {
         snprintf(ra_pathname, sizeof(ra_pathname), "%s", type);
     } else {
         snprintf(ra_pathname, sizeof(ra_pathname), "%s/%s",
-                 LSB_ROOT_DIR, type);
+                 PCMK__LSB_INIT_DIR, type);
     }
 
     crm_trace("Looking into %s", ra_pathname);
@@ -169,13 +165,13 @@ services__get_lsb_metadata(const char *type, char **output)
         }
 
         /* Long description may cross multiple lines */
-        if ((offset == 0) // haven't already found long description
+        if ((xml_l_dscrpt == NULL) // haven't already found long description
             && pcmk__starts_with(buffer, DESCRIPTION)) {
             bool processed_line = TRUE;
+            GString *desc = g_string_sized_new(2048);
 
             // Get remainder of description line itself
-            offset += snprintf(description, DESC_MAX, "%s",
-                               buffer + strlen(DESCRIPTION));
+            g_string_append(desc, buffer + sizeof(DESCRIPTION) - 1);
 
             // Read any continuation lines of the description
             buffer[0] = '\0';
@@ -185,8 +181,7 @@ services__get_lsb_metadata(const char *type, char **output)
                     /* '#' followed by a tab or more than one space indicates a
                      * continuation of the long description.
                      */
-                    offset += snprintf(description + offset, DESC_MAX - offset,
-                                       "%s", buffer + 1);
+                    g_string_append(desc, buffer + 1);
                 } else {
                     /* This line is not part of the long description,
                      * so continue with normal processing.
@@ -197,7 +192,10 @@ services__get_lsb_metadata(const char *type, char **output)
             }
 
             // Make long description safe to use in XML
-            xml_l_dscrpt = (char *)xmlEncodeEntitiesReentrant(NULL, BAD_CAST(description));
+            xml_l_dscrpt =
+                (char *) xmlEncodeEntitiesReentrant(NULL,
+                                                    (pcmkXmlStr) desc->str);
+            g_string_free(desc, TRUE);
 
             if (processed_line) {
                 // We grabbed the line into the long description
@@ -244,14 +242,7 @@ services__get_lsb_metadata(const char *type, char **output)
 GList *
 services__list_lsb_agents(void)
 {
-    return services_os_get_directory_list(LSB_ROOT_DIR, TRUE, TRUE);
-}
-
-char *
-services__lsb_agent_path(const char *agent)
-{
-    return (*agent == '/')? strdup(agent)
-        : crm_strdup_printf("%s/%s", LSB_ROOT_DIR, agent);
+    return services_os_get_directory_list(PCMK__LSB_INIT_DIR, TRUE, TRUE);
 }
 
 bool
@@ -259,18 +250,78 @@ services__lsb_agent_exists(const char *agent)
 {
     bool rc = FALSE;
     struct stat st;
-    char *path = services__lsb_agent_path(agent);
+    char *path = pcmk__full_path(agent, PCMK__LSB_INIT_DIR);
 
     rc = (stat(path, &st) == 0);
     free(path);
     return rc;
 }
 
-/* The remaining functions below are not used by the Pacemaker code base, and
- * are provided for API compatibility only.
+/*!
+ * \internal
+ * \brief Prepare an LSB action
  *
- * @TODO They should be removed or renamed.
+ * \param[in,out] op  Action to prepare
+ *
+ * \return Standard Pacemaker return code
  */
+int
+services__lsb_prepare(svc_action_t *op)
+{
+    op->opaque->exec = pcmk__full_path(op->agent, PCMK__LSB_INIT_DIR);
+    op->opaque->args[0] = strdup(op->opaque->exec);
+    op->opaque->args[1] = strdup(op->action);
+    if ((op->opaque->args[0] == NULL) || (op->opaque->args[1] == NULL)) {
+        return ENOMEM;
+    }
+    return pcmk_rc_ok;
+}
+
+/*!
+ * \internal
+ * \brief Map an LSB result to a standard OCF result
+ *
+ * \param[in] action       Action that result is for
+ * \param[in] exit_status  LSB agent exit status
+ *
+ * \return Standard OCF result
+ */
+enum ocf_exitcode
+services__lsb2ocf(const char *action, int exit_status)
+{
+    // For non-status actions, LSB and OCF share error codes <= 7
+    if (!pcmk__str_any_of(action, "status", "monitor", NULL)) {
+        if ((exit_status < 0) || (exit_status > PCMK_LSB_NOT_RUNNING)) {
+            return PCMK_OCF_UNKNOWN_ERROR;
+        }
+        return (enum ocf_exitcode) exit_status;
+    }
+
+    // LSB status actions have their own codes
+    switch (exit_status) {
+        case PCMK_LSB_STATUS_OK:
+            return PCMK_OCF_OK;
+
+        case PCMK_LSB_STATUS_NOT_INSTALLED:
+            return PCMK_OCF_NOT_INSTALLED;
+
+        case PCMK_LSB_STATUS_INSUFFICIENT_PRIV:
+            return PCMK_OCF_INSUFFICIENT_PRIV;
+
+        case PCMK_LSB_STATUS_VAR_PID:
+        case PCMK_LSB_STATUS_VAR_LOCK:
+        case PCMK_LSB_STATUS_NOT_RUNNING:
+            return PCMK_OCF_NOT_RUNNING;
+
+        default:
+            return PCMK_OCF_UNKNOWN_ERROR;
+    }
+}
+
+// Deprecated functions kept only for backward API compatibility
+// LCOV_EXCL_START
+
+#include <crm/services_compat.h>
 
 svc_action_t *
 services_action_create(const char *name, const char *action,
@@ -286,3 +337,5 @@ services_list(void)
     return resources_list_agents(PCMK_RESOURCE_CLASS_LSB, NULL);
 }
 
+// LCOV_EXCL_STOP
+// End deprecated API

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2021 the Pacemaker project contributors
+ * Copyright 2014-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -11,46 +11,77 @@
 #include <crm/msg_xml.h>
 #include <pacemaker-internal.h>
 
-static GList *find_colocated_rscs(GList *colocated_rscs, pe_resource_t * rsc,
-                                    pe_resource_t * orig_rsc);
+#include "libpacemaker_private.h"
 
-static GList *group_find_colocated_rscs(GList *colocated_rscs, pe_resource_t * rsc,
-                                          pe_resource_t * orig_rsc);
+// Name for a pseudo-op to use in ordering constraints for utilization
+#define LOAD_STOPPED "load_stopped"
 
-static void group_add_unallocated_utilization(GHashTable * all_utilization, pe_resource_t * rsc,
-                                              GList *all_rscs);
-
-struct compare_data {
-    const pe_node_t *node1;
-    const pe_node_t *node2;
-    int result;
-};
-
+/*!
+ * \internal
+ * \brief Get integer utilization from a string
+ *
+ * \param[in] s  String representation of a node utilization value
+ *
+ * \return Integer equivalent of \p s
+ * \todo It would make sense to restrict utilization values to nonnegative
+ *       integers, but the documentation just says "integers" and we didn't
+ *       restrict them initially, so for backward compatibility, allow any
+ *       integer.
+ */
 static int
 utilization_value(const char *s)
 {
     int value = 0;
 
-    /* @TODO It would make sense to restrict utilization values to nonnegative
-     * integers, but the documentation just says "integers" and we didn't
-     * restrict them initially, so for backward compatibility, allow any
-     * integer.
-     */
-    if (s != NULL) {
-        pcmk__scan_min_int(s, &value, INT_MIN);
+    if ((s != NULL) && (pcmk__scan_min_int(s, &value, INT_MIN) == EINVAL)) {
+        pe_warn("Using 0 for utilization instead of invalid value '%s'", value);
+        value = 0;
     }
     return value;
 }
 
+
+/*
+ * Functions for comparing node capacities
+ */
+
+struct compare_data {
+    const pe_node_t *node1;
+    const pe_node_t *node2;
+    bool node2_only;
+    int result;
+};
+
+/*!
+ * \internal
+ * \brief Compare a single utilization attribute for two nodes
+ *
+ * Compare one utilization attribute for two nodes, incrementing the result if
+ * the first node has greater capacity, and decrementing it if the second node
+ * has greater capacity.
+ *
+ * \param[in]     key        Utilization attribute name to compare
+ * \param[in]     value      Utilization attribute value to compare
+ * \param[in,out] user_data  Comparison data (as struct compare_data*)
+ */
 static void
-do_compare_capacity1(gpointer key, gpointer value, gpointer user_data)
+compare_utilization_value(gpointer key, gpointer value, gpointer user_data)
 {
     int node1_capacity = 0;
     int node2_capacity = 0;
     struct compare_data *data = user_data;
+    const char *node2_value = NULL;
 
-    node1_capacity = utilization_value(value);
-    node2_capacity = utilization_value(g_hash_table_lookup(data->node2->details->utilization, key));
+    if (data->node2_only) {
+        if (g_hash_table_lookup(data->node1->details->utilization, key)) {
+            return; // We've already compared this attribute
+        }
+    } else {
+        node1_capacity = utilization_value((const char *) value);
+    }
+
+    node2_value = g_hash_table_lookup(data->node2->details->utilization, key);
+    node2_capacity = utilization_value(node2_value);
 
     if (node1_capacity > node2_capacity) {
         data->result--;
@@ -59,428 +90,380 @@ do_compare_capacity1(gpointer key, gpointer value, gpointer user_data)
     }
 }
 
-static void
-do_compare_capacity2(gpointer key, gpointer value, gpointer user_data)
-{
-    int node1_capacity = 0;
-    int node2_capacity = 0;
-    struct compare_data *data = user_data;
-
-    if (g_hash_table_lookup_extended(data->node1->details->utilization, key, NULL, NULL)) {
-        return;
-    }
-
-    node1_capacity = 0;
-    node2_capacity = utilization_value(value);
-
-    if (node1_capacity > node2_capacity) {
-        data->result--;
-    } else if (node1_capacity < node2_capacity) {
-        data->result++;
-    }
-}
-
-/* rc < 0 if 'node1' has more capacity remaining
- * rc > 0 if 'node1' has less capacity remaining
+/*!
+ * \internal
+ * \brief Compare utilization capacities of two nodes
+ *
+ * \param[in] node1  First node to compare
+ * \param[in] node2  Second node to compare
+ *
+ * \return Negative integer if node1 has more free capacity,
+ *         0 if the capacities are equal, or a positive integer
+ *         if node2 has more free capacity
  */
 int
-compare_capacity(const pe_node_t * node1, const pe_node_t * node2)
+pcmk__compare_node_capacities(const pe_node_t *node1, const pe_node_t *node2)
 {
-    struct compare_data data;
+    struct compare_data data = {
+        .node1      = node1,
+        .node2      = node2,
+        .node2_only = false,
+        .result     = 0,
+    };
 
-    data.node1 = node1;
-    data.node2 = node2;
-    data.result = 0;
+    // Compare utilization values that node1 and maybe node2 have
+    g_hash_table_foreach(node1->details->utilization, compare_utilization_value,
+                         &data);
 
-    g_hash_table_foreach(node1->details->utilization, do_compare_capacity1, &data);
-    g_hash_table_foreach(node2->details->utilization, do_compare_capacity2, &data);
+    // Compare utilization values that only node2 has
+    data.node2_only = true;
+    g_hash_table_foreach(node2->details->utilization, compare_utilization_value,
+                         &data);
 
     return data.result;
 }
 
+
+/*
+ * Functions for updating node capacities
+ */
+
 struct calculate_data {
     GHashTable *current_utilization;
-    gboolean plus;
+    bool plus;
 };
 
+/*!
+ * \internal
+ * \brief Update a single utilization attribute with a new value
+ *
+ * \param[in]     key        Name of utilization attribute to update
+ * \param[in]     value      Value to add or substract
+ * \param[in,out] user_data  Calculation data (as struct calculate_data *)
+ */
 static void
-do_calculate_utilization(gpointer key, gpointer value, gpointer user_data)
+update_utilization_value(gpointer key, gpointer value, gpointer user_data)
 {
+    int result = 0;
     const char *current = NULL;
-    char *result = NULL;
     struct calculate_data *data = user_data;
 
     current = g_hash_table_lookup(data->current_utilization, key);
     if (data->plus) {
-        result = pcmk__itoa(utilization_value(current) + utilization_value(value));
-        g_hash_table_replace(data->current_utilization, strdup(key), result);
-
+        result = utilization_value(current) + utilization_value(value);
     } else if (current) {
-        result = pcmk__itoa(utilization_value(current) - utilization_value(value));
-        g_hash_table_replace(data->current_utilization, strdup(key), result);
+        result = utilization_value(current) - utilization_value(value);
     }
+    g_hash_table_replace(data->current_utilization,
+                         strdup(key), pcmk__itoa(result));
 }
 
-/* Specify 'plus' to FALSE when allocating
- * Otherwise to TRUE when deallocating
+/*!
+ * \internal
+ * \brief Subtract a resource's utilization from node capacity
+ *
+ * \param[in,out] current_utilization  Current node utilization attributes
+ * \param[in]     rsc                  Resource with utilization to subtract
  */
 void
-calculate_utilization(GHashTable * current_utilization,
-                      GHashTable * utilization, gboolean plus)
+pcmk__consume_node_capacity(GHashTable *current_utilization,
+                            const pe_resource_t *rsc)
 {
-    struct calculate_data data;
+    struct calculate_data data = {
+        .current_utilization = current_utilization,
+        .plus = false,
+    };
 
-    data.current_utilization = current_utilization;
-    data.plus = plus;
+    g_hash_table_foreach(rsc->utilization, update_utilization_value, &data);
+}
 
-    g_hash_table_foreach(utilization, do_calculate_utilization, &data);
+/*!
+ * \internal
+ * \brief Add a resource's utilization to node capacity
+ *
+ * \param[in,out] current_utilization  Current node utilization attributes
+ * \param[in]     rsc                  Resource with utilization to add
+ */
+void
+pcmk__release_node_capacity(GHashTable *current_utilization,
+                            const pe_resource_t *rsc)
+{
+    struct calculate_data data = {
+        .current_utilization = current_utilization,
+        .plus = true,
+    };
+
+    g_hash_table_foreach(rsc->utilization, update_utilization_value, &data);
 }
 
 
+/*
+ * Functions for checking for sufficient node capacity
+ */
+
 struct capacity_data {
-    pe_node_t *node;
+    const pe_node_t *node;
     const char *rsc_id;
-    gboolean is_enough;
+    bool is_enough;
 };
 
+/*!
+ * \internal
+ * \brief Check whether a single utilization attribute has sufficient capacity
+ *
+ * \param[in]     key        Name of utilization attribute to check
+ * \param[in]     value      Amount of utilization required
+ * \param[in,out] user_data  Capacity data (as struct capacity_data *)
+ */
 static void
 check_capacity(gpointer key, gpointer value, gpointer user_data)
 {
     int required = 0;
     int remaining = 0;
+    const char *node_value_s = NULL;
     struct capacity_data *data = user_data;
 
+    node_value_s = g_hash_table_lookup(data->node->details->utilization, key);
+
     required = utilization_value(value);
-    remaining = utilization_value(g_hash_table_lookup(data->node->details->utilization, key));
+    remaining = utilization_value(node_value_s);
 
     if (required > remaining) {
-        CRM_ASSERT(data->rsc_id);
-        CRM_ASSERT(data->node);
-
-        crm_debug("Node %s does not have enough %s for %s: required=%d remaining=%d",
-                  data->node->details->uname, (char *)key, data->rsc_id, required, remaining);
-        data->is_enough = FALSE;
+        crm_debug("Remaining capacity for %s on %s (%d) is insufficient "
+                  "for resource %s usage (%d)",
+                  (const char *) key, pe__node_name(data->node), remaining,
+                  data->rsc_id, required);
+        data->is_enough = false;
     }
 }
 
-static gboolean
-have_enough_capacity(pe_node_t * node, const char * rsc_id, GHashTable * utilization)
+/*!
+ * \internal
+ * \brief Check whether a node has sufficient capacity for a resource
+ *
+ * \param[in] node         Node to check
+ * \param[in] rsc_id       ID of resource to check (for debug logs only)
+ * \param[in] utilization  Required utilization amounts
+ *
+ * \return true if node has sufficient capacity for resource, otherwise false
+ */
+static bool
+have_enough_capacity(const pe_node_t *node, const char *rsc_id,
+                     GHashTable *utilization)
 {
-    struct capacity_data data;
-
-    data.node = node;
-    data.rsc_id = rsc_id;
-    data.is_enough = TRUE;
+    struct capacity_data data = {
+        .node = node,
+        .rsc_id = rsc_id,
+        .is_enough = true,
+    };
 
     g_hash_table_foreach(utilization, check_capacity, &data);
-
     return data.is_enough;
 }
 
-
-static void
-native_add_unallocated_utilization(GHashTable * all_utilization, pe_resource_t * rsc)
-{
-    if (!pcmk_is_set(rsc->flags, pe_rsc_provisional)) {
-        return;
-    }
-
-    calculate_utilization(all_utilization, rsc->utilization, TRUE);
-}
-
-static void
-add_unallocated_utilization(GHashTable * all_utilization, pe_resource_t * rsc,
-                    GList *all_rscs, pe_resource_t * orig_rsc)
-{
-    if (!pcmk_is_set(rsc->flags, pe_rsc_provisional)) {
-        return;
-    }
-
-    if (rsc->variant == pe_native) {
-        pe_rsc_trace(orig_rsc, "%s: Adding %s as colocated utilization",
-                     orig_rsc->id, rsc->id);
-        native_add_unallocated_utilization(all_utilization, rsc);
-
-    } else if (rsc->variant == pe_group) {
-        pe_rsc_trace(orig_rsc, "%s: Adding %s as colocated utilization",
-                     orig_rsc->id, rsc->id);
-        group_add_unallocated_utilization(all_utilization, rsc, all_rscs);
-
-    } else if (pe_rsc_is_clone(rsc)) {
-        GList *gIter1 = NULL;
-        gboolean existing = FALSE;
-
-        /* Check if there's any child already existing in the list */
-        gIter1 = rsc->children;
-        for (; gIter1 != NULL; gIter1 = gIter1->next) {
-            pe_resource_t *child = (pe_resource_t *) gIter1->data;
-            GList *gIter2 = NULL;
-
-            if (g_list_find(all_rscs, child)) {
-                existing = TRUE;
-
-            } else {
-                /* Check if there's any child of another cloned group already existing in the list */
-                gIter2 = child->children;
-                for (; gIter2 != NULL; gIter2 = gIter2->next) {
-                    pe_resource_t *grandchild = (pe_resource_t *) gIter2->data;
-
-                    if (g_list_find(all_rscs, grandchild)) {
-                        pe_rsc_trace(orig_rsc, "%s: Adding %s as colocated utilization",
-                                     orig_rsc->id, child->id);
-                        add_unallocated_utilization(all_utilization, child, all_rscs, orig_rsc);
-                        existing = TRUE;
-                        break;
-                    }
-                }
-            }
-        }
-
-        // rsc->children is always non-NULL but this makes static analysis happy
-        if (!existing && (rsc->children != NULL)) {
-            pe_resource_t *first_child = (pe_resource_t *) rsc->children->data;
-
-            pe_rsc_trace(orig_rsc, "%s: Adding %s as colocated utilization",
-                         orig_rsc->id, ID(first_child->xml));
-            add_unallocated_utilization(all_utilization, first_child, all_rscs, orig_rsc);
-        }
-    }
-}
-
+/*!
+ * \internal
+ * \brief Sum the utilization requirements of a list of resources
+ *
+ * \param[in] orig_rsc  Resource being allocated (for logging purposes)
+ * \param[in] rscs      Resources whose utilization should be summed
+ *
+ * \return Newly allocated hash table with sum of all utilization values
+ * \note It is the caller's responsibility to free the return value using
+ *       g_hash_table_destroy().
+ */
 static GHashTable *
-sum_unallocated_utilization(pe_resource_t * rsc, GList *colocated_rscs)
+sum_resource_utilization(const pe_resource_t *orig_rsc, GList *rscs)
 {
-    GList *gIter = NULL;
-    GList *all_rscs = NULL;
-    GHashTable *all_utilization = pcmk__strkey_table(free, free);
+    GHashTable *utilization = pcmk__strkey_table(free, free);
 
-    all_rscs = g_list_copy(colocated_rscs);
-    if (g_list_find(all_rscs, rsc) == FALSE) {
-        all_rscs = g_list_append(all_rscs, rsc);
+    for (GList *iter = rscs; iter != NULL; iter = iter->next) {
+        pe_resource_t *rsc = (pe_resource_t *) iter->data;
+
+        rsc->cmds->add_utilization(rsc, orig_rsc, rscs, utilization);
     }
-
-    for (gIter = all_rscs; gIter != NULL; gIter = gIter->next) {
-        pe_resource_t *listed_rsc = (pe_resource_t *) gIter->data;
-
-        if (!pcmk_is_set(listed_rsc->flags, pe_rsc_provisional)) {
-            continue;
-        }
-
-        pe_rsc_trace(rsc, "%s: Processing unallocated colocated %s", rsc->id, listed_rsc->id);
-        add_unallocated_utilization(all_utilization, listed_rsc, all_rscs, rsc);
-    }
-
-    g_list_free(all_rscs);
-
-    return all_utilization;
+    return utilization;
 }
 
-static GList *
-find_colocated_rscs(GList *colocated_rscs, pe_resource_t * rsc, pe_resource_t * orig_rsc)
+/*!
+ * \internal
+ * \brief Ban resource from nodes with insufficient utilization capacity
+ *
+ * \param[in,out] rsc  Resource to check
+ *
+ * \return Allowed node for \p rsc with most spare capacity, if there are no
+ *         nodes with enough capacity for \p rsc and all its colocated resources
+ */
+const pe_node_t *
+pcmk__ban_insufficient_capacity(pe_resource_t *rsc)
 {
-    GList *gIter = NULL;
+    bool any_capable = false;
+    char *rscs_id = NULL;
+    pe_node_t *node = NULL;
+    const pe_node_t *most_capable_node = NULL;
+    GList *colocated_rscs = NULL;
+    GHashTable *unallocated_utilization = NULL;
+    GHashTableIter iter;
 
-    if (rsc == NULL) {
-        return colocated_rscs;
+    CRM_CHECK(rsc != NULL, return NULL);
 
-    } else if (g_list_find(colocated_rscs, rsc)) {
-        return colocated_rscs;
+    // The default placement strategy ignores utilization
+    if (pcmk__str_eq(rsc->cluster->placement_strategy, "default",
+                     pcmk__str_casei)) {
+        return NULL;
     }
 
-    crm_trace("%s: %s is supposed to be colocated with %s", orig_rsc->id, rsc->id, orig_rsc->id);
-    colocated_rscs = g_list_append(colocated_rscs, rsc);
+    // Check whether any resources are colocated with this one
+    colocated_rscs = rsc->cmds->colocated_resources(rsc, NULL, NULL);
+    if (colocated_rscs == NULL) {
+        return NULL;
+    }
 
-    for (gIter = rsc->rsc_cons; gIter != NULL; gIter = gIter->next) {
-        pcmk__colocation_t *constraint = (pcmk__colocation_t *) gIter->data;
-        pe_resource_t *rsc_rh = constraint->rsc_rh;
+    rscs_id = crm_strdup_printf("%s and its colocated resources", rsc->id);
 
-        /* Break colocation loop */
-        if (rsc_rh == orig_rsc) {
+    // If rsc isn't in the list, add it so we include its utilization
+    if (g_list_find(colocated_rscs, rsc) == NULL) {
+        colocated_rscs = g_list_append(colocated_rscs, rsc);
+    }
+
+    // Sum utilization of colocated resources that haven't been allocated yet
+    unallocated_utilization = sum_resource_utilization(rsc, colocated_rscs);
+
+    // Check whether any node has enough capacity for all the resources
+    g_hash_table_iter_init(&iter, rsc->allowed_nodes);
+    while (g_hash_table_iter_next(&iter, NULL, (void **) &node)) {
+        if (!pcmk__node_available(node, true, false)) {
             continue;
         }
 
-        if (constraint->score == INFINITY
-            && filter_colocation_constraint(rsc, rsc_rh, constraint, TRUE) == influence_rsc_location) {
+        if (have_enough_capacity(node, rscs_id, unallocated_utilization)) {
+            any_capable = true;
+        }
 
-            if (rsc_rh->variant == pe_group) {
-                /* Need to use group_variant_data */
-                colocated_rscs = group_find_colocated_rscs(colocated_rscs, rsc_rh, orig_rsc);
+        // Keep track of node with most free capacity
+        if ((most_capable_node == NULL)
+            || (pcmk__compare_node_capacities(node, most_capable_node) < 0)) {
+            most_capable_node = node;
+        }
+    }
 
-            } else {
-                colocated_rscs = find_colocated_rscs(colocated_rscs, rsc_rh, orig_rsc);
+    if (any_capable) {
+        // If so, ban resource from any node with insufficient capacity
+        g_hash_table_iter_init(&iter, rsc->allowed_nodes);
+        while (g_hash_table_iter_next(&iter, NULL, (void **) &node)) {
+            if (pcmk__node_available(node, true, false)
+                && !have_enough_capacity(node, rscs_id,
+                                         unallocated_utilization)) {
+                pe_rsc_debug(rsc, "%s does not have enough capacity for %s",
+                             pe__node_name(node), rscs_id);
+                resource_location(rsc, node, -INFINITY, "__limit_utilization__",
+                                  rsc->cluster);
+            }
+        }
+        most_capable_node = NULL;
+
+    } else {
+        // Otherwise, ban from nodes with insufficient capacity for rsc alone
+        g_hash_table_iter_init(&iter, rsc->allowed_nodes);
+        while (g_hash_table_iter_next(&iter, NULL, (void **) &node)) {
+            if (pcmk__node_available(node, true, false)
+                && !have_enough_capacity(node, rsc->id, rsc->utilization)) {
+                pe_rsc_debug(rsc, "%s does not have enough capacity for %s",
+                             pe__node_name(node), rsc->id);
+                resource_location(rsc, node, -INFINITY, "__limit_utilization__",
+                                  rsc->cluster);
             }
         }
     }
 
-    for (gIter = rsc->rsc_cons_lhs; gIter != NULL; gIter = gIter->next) {
-        pcmk__colocation_t *constraint = (pcmk__colocation_t *) gIter->data;
-        pe_resource_t *rsc_lh = constraint->rsc_lh;
+    g_hash_table_destroy(unallocated_utilization);
+    g_list_free(colocated_rscs);
+    free(rscs_id);
 
-        /* Break colocation loop */
-        if (rsc_lh == orig_rsc) {
-            continue;
-        }
-
-        if (pe_rsc_is_clone(rsc_lh) == FALSE && pe_rsc_is_clone(rsc)) {
-            /* We do not know if rsc_lh will be colocated with orig_rsc in this case */
-            continue;
-        }
-
-        if (constraint->score == INFINITY
-            && filter_colocation_constraint(rsc_lh, rsc, constraint, TRUE) == influence_rsc_location) {
-
-            if (rsc_lh->variant == pe_group) {
-                /* Need to use group_variant_data */
-                colocated_rscs = group_find_colocated_rscs(colocated_rscs, rsc_lh, orig_rsc);
-
-            } else {
-                colocated_rscs = find_colocated_rscs(colocated_rscs, rsc_lh, orig_rsc);
-            }
-        }
-    }
-
-    return colocated_rscs;
+    pe__show_node_weights(true, rsc, "Post-utilization",
+                          rsc->allowed_nodes, rsc->cluster);
+    return most_capable_node;
 }
 
+/*!
+ * \internal
+ * \brief Create a new load_stopped pseudo-op for a node
+ *
+ * \param[in]     node      Node to create op for
+ * \param[in,out] data_set  Cluster working set
+ *
+ * \return Newly created load_stopped op
+ */
+static pe_action_t *
+new_load_stopped_op(const pe_node_t *node, pe_working_set_t *data_set)
+{
+    char *load_stopped_task = crm_strdup_printf(LOAD_STOPPED "_%s",
+                                                node->details->uname);
+    pe_action_t *load_stopped = get_pseudo_op(load_stopped_task, data_set);
+
+    if (load_stopped->node == NULL) {
+        load_stopped->node = pe__copy_node(node);
+        pe__clear_action_flags(load_stopped, pe_action_optional);
+    }
+    free(load_stopped_task);
+    return load_stopped;
+}
+
+/*!
+ * \internal
+ * \brief Create utilization-related internal constraints for a resource
+ *
+ * \param[in,out] rsc            Resource to create constraints for
+ * \param[in]     allowed_nodes  List of allowed next nodes for \p rsc
+ */
 void
-process_utilization(pe_resource_t * rsc, pe_node_t ** prefer, pe_working_set_t * data_set)
+pcmk__create_utilization_constraints(pe_resource_t *rsc,
+                                     const GList *allowed_nodes)
 {
-    CRM_CHECK(rsc && prefer && data_set, return);
-    if (!pcmk__str_eq(data_set->placement_strategy, "default", pcmk__str_casei)) {
-        GHashTableIter iter;
-        GList *colocated_rscs = NULL;
-        gboolean any_capable = FALSE;
-        pe_node_t *node = NULL;
+    const GList *iter = NULL;
+    const pe_node_t *node = NULL;
+    pe_action_t *load_stopped = NULL;
 
-        colocated_rscs = find_colocated_rscs(colocated_rscs, rsc, rsc);
-        if (colocated_rscs) {
-            GHashTable *unallocated_utilization = NULL;
-            char *rscs_id = crm_strdup_printf("%s and its colocated resources",
-                                              rsc->id);
-            pe_node_t *most_capable_node = NULL;
+    pe_rsc_trace(rsc, "Creating utilization constraints for %s - strategy: %s",
+                 rsc->id, rsc->cluster->placement_strategy);
 
-            unallocated_utilization = sum_unallocated_utilization(rsc, colocated_rscs);
+    // "stop rsc then load_stopped" constraints for current nodes
+    for (iter = rsc->running_on; iter != NULL; iter = iter->next) {
+        node = (const pe_node_t *) iter->data;
+        load_stopped = new_load_stopped_op(node, rsc->cluster);
+        pcmk__new_ordering(rsc, stop_key(rsc), NULL, NULL, NULL, load_stopped,
+                           pe_order_load, rsc->cluster);
+    }
 
-            g_hash_table_iter_init(&iter, rsc->allowed_nodes);
-            while (g_hash_table_iter_next(&iter, NULL, (void **)&node)) {
-                if (can_run_resources(node) == FALSE || node->weight < 0) {
-                    continue;
-                }
-
-                if (have_enough_capacity(node, rscs_id, unallocated_utilization)) {
-                    any_capable = TRUE;
-                }
-
-                if (most_capable_node == NULL ||
-                    compare_capacity(node, most_capable_node) < 0) {
-                    /* < 0 means 'node' is more capable */
-                    most_capable_node = node;
-                }
-            }
-
-            if (any_capable) {
-                g_hash_table_iter_init(&iter, rsc->allowed_nodes);
-                while (g_hash_table_iter_next(&iter, NULL, (void **)&node)) {
-                    if (can_run_resources(node) == FALSE || node->weight < 0) {
-                        continue;
-                    }
-
-                    if (have_enough_capacity(node, rscs_id, unallocated_utilization) == FALSE) {
-                        pe_rsc_debug(rsc,
-                                     "Resource %s and its colocated resources"
-                                     " cannot be allocated to node %s: not enough capacity",
-                                     rsc->id, node->details->uname);
-                        resource_location(rsc, node, -INFINITY, "__limit_utilization__", data_set);
-                    }
-                }
-
-            } else if (*prefer == NULL) {
-                *prefer = most_capable_node;
-            }
-
-            if (unallocated_utilization) {
-                g_hash_table_destroy(unallocated_utilization);
-            }
-
-            g_list_free(colocated_rscs);
-            free(rscs_id);
-        }
-
-        if (any_capable == FALSE) {
-            g_hash_table_iter_init(&iter, rsc->allowed_nodes);
-            while (g_hash_table_iter_next(&iter, NULL, (void **)&node)) {
-                if (can_run_resources(node) == FALSE || node->weight < 0) {
-                    continue;
-                }
-
-                if (have_enough_capacity(node, rsc->id, rsc->utilization) == FALSE) {
-                    pe_rsc_debug(rsc,
-                                 "Resource %s cannot be allocated to node %s:"
-                                 " not enough capacity",
-                                 rsc->id, node->details->uname);
-                    resource_location(rsc, node, -INFINITY, "__limit_utilization__", data_set);
-                }
-            }
-        }
-        pe__show_node_weights(true, rsc, "Post-utilization", rsc->allowed_nodes, data_set);
+    // "load_stopped then start/migrate_to rsc" constraints for allowed nodes
+    for (iter = allowed_nodes; iter; iter = iter->next) {
+        node = (const pe_node_t *) iter->data;
+        load_stopped = new_load_stopped_op(node, rsc->cluster);
+        pcmk__new_ordering(NULL, NULL, load_stopped, rsc, start_key(rsc), NULL,
+                           pe_order_load, rsc->cluster);
+        pcmk__new_ordering(NULL, NULL, load_stopped,
+                           rsc, pcmk__op_key(rsc->id, RSC_MIGRATE, 0), NULL,
+                           pe_order_load, rsc->cluster);
     }
 }
 
-#define VARIANT_GROUP 1
-#include <lib/pengine/variant.h>
-
-GList *
-group_find_colocated_rscs(GList *colocated_rscs, pe_resource_t * rsc, pe_resource_t * orig_rsc)
+/*!
+ * \internal
+ * \brief Output node capacities if enabled
+ *
+ * \param[in]     desc      Prefix for output
+ * \param[in,out] data_set  Cluster working set
+ */
+void
+pcmk__show_node_capacities(const char *desc, pe_working_set_t *data_set)
 {
-    group_variant_data_t *group_data = NULL;
-
-    get_group_variant_data(group_data, rsc);
-    if (group_data->colocated || pe_rsc_is_clone(rsc->parent)) {
-        GList *gIter = rsc->children;
-
-        for (; gIter != NULL; gIter = gIter->next) {
-            pe_resource_t *child_rsc = (pe_resource_t *) gIter->data;
-
-            colocated_rscs = find_colocated_rscs(colocated_rscs, child_rsc, orig_rsc);
-        }
-
-    } else {
-        if (group_data->first_child) {
-            colocated_rscs = find_colocated_rscs(colocated_rscs, group_data->first_child, orig_rsc);
-        }
+    if (!pcmk_is_set(data_set->flags, pe_flag_show_utilization)) {
+        return;
     }
+    for (const GList *iter = data_set->nodes; iter != NULL; iter = iter->next) {
+        const pe_node_t *node = (const pe_node_t *) iter->data;
+        pcmk__output_t *out = data_set->priv;
 
-    colocated_rscs = find_colocated_rscs(colocated_rscs, rsc, orig_rsc);
-
-    return colocated_rscs;
-}
-
-static void
-group_add_unallocated_utilization(GHashTable * all_utilization, pe_resource_t * rsc,
-                                  GList *all_rscs)
-{
-    group_variant_data_t *group_data = NULL;
-
-    get_group_variant_data(group_data, rsc);
-    if (group_data->colocated || pe_rsc_is_clone(rsc->parent)) {
-        GList *gIter = rsc->children;
-
-        for (; gIter != NULL; gIter = gIter->next) {
-            pe_resource_t *child_rsc = (pe_resource_t *) gIter->data;
-
-            if (pcmk_is_set(child_rsc->flags, pe_rsc_provisional) &&
-                g_list_find(all_rscs, child_rsc) == FALSE) {
-                native_add_unallocated_utilization(all_utilization, child_rsc);
-            }
-        }
-
-    } else {
-        if (group_data->first_child &&
-            pcmk_is_set(group_data->first_child->flags, pe_rsc_provisional) &&
-            g_list_find(all_rscs, group_data->first_child) == FALSE) {
-            native_add_unallocated_utilization(all_utilization, group_data->first_child);
-        }
+        out->message(out, "node-capacity", node, desc);
     }
 }
-
-

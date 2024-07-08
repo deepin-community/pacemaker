@@ -1,5 +1,5 @@
 /*
- * Copyright 2021 the Pacemaker project contributors
+ * Copyright 2021-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -28,11 +28,16 @@
                          "/" XML_LRM_TAG_RESOURCE "[@" XML_ATTR_ID "='%s']"
 
 static xmlNode *
-best_op(pe_resource_t *rsc, pe_node_t *node, pe_working_set_t *data_set)
+best_op(const pe_resource_t *rsc, const pe_node_t *node,
+        pe_working_set_t *data_set)
 {
     char *xpath = NULL;
     xmlNode *history = NULL;
     xmlNode *best = NULL;
+    bool best_effective_op = false;
+    guint best_interval = 0;
+    bool best_failure = false;
+    const char *best_digest = NULL;
 
     // Find node's resource history
     xpath = crm_strdup_printf(XPATH_OP_HISTORY, node->details->uname, rsc->id);
@@ -46,24 +51,54 @@ best_op(pe_resource_t *rsc, pe_node_t *node, pe_working_set_t *data_set)
         const char *digest = crm_element_value(lrm_rsc_op,
                                                XML_LRM_ATTR_RESTART_DIGEST);
         guint interval_ms = 0;
+        const char *task = crm_element_value(lrm_rsc_op, XML_LRM_ATTR_TASK);
+        bool effective_op = false;
+        bool failure = pcmk__ends_with(ID(lrm_rsc_op), "_last_failure_0");
+
 
         crm_element_value_ms(lrm_rsc_op, XML_LRM_ATTR_INTERVAL, &interval_ms);
+        effective_op = interval_ms == 0
+                       && pcmk__strcase_any_of(task, RSC_STATUS,
+                                               RSC_START, RSC_PROMOTE,
+                                               RSC_MIGRATED, NULL);
 
-        if (pcmk__ends_with(ID(lrm_rsc_op), "_last_failure_0")
-            || (interval_ms != 0)) {
+        if (best == NULL) {
+            goto is_best;
+        }
 
-            // Only use last failure or recurring op if nothing else available
-            if (best == NULL) {
-                best = lrm_rsc_op;
+        if (best_effective_op) {
+            // Do not use an ineffective op if there's an effective one.
+            if (!effective_op) {
+                continue;
             }
+        // Do not use an ineffective non-recurring op if there's a recurring one.
+        } else if (best_interval != 0
+                   && !effective_op
+                   && interval_ms == 0) {
             continue;
         }
 
-        best = lrm_rsc_op;
-        if (digest != NULL) {
-            // Any non-recurring action with a restart digest is sufficient
-            break;
+        // Do not use last failure if there's a successful one.
+        if (!best_failure && failure) {
+            continue;
         }
+
+        // Do not use an op without a restart digest if there's one with.
+        if (best_digest != NULL && digest == NULL) {
+            continue;
+        }
+
+        // Do not use an older op if there's a newer one.
+        if (pe__is_newer_op(best, lrm_rsc_op, true) > 0) {
+            continue;
+        }
+
+is_best:
+         best = lrm_rsc_op;
+         best_effective_op = effective_op;
+         best_interval = interval_ms;
+         best_failure = failure;
+         best_digest = digest;
     }
     return best;
 }
@@ -72,18 +107,16 @@ best_op(pe_resource_t *rsc, pe_node_t *node, pe_working_set_t *data_set)
  * \internal
  * \brief Calculate and output resource operation digests
  *
- * \param[in]  out        Output object
- * \param[in]  rsc        Resource to calculate digests for
- * \param[in]  node       Node whose operation history should be used
- * \param[in]  overrides  Hash table of configuration parameters to override
- * \param[in]  data_set   Cluster working set (with status)
+ * \param[in,out] out        Output object
+ * \param[in,out] rsc        Resource to calculate digests for
+ * \param[in]     node       Node whose operation history should be used
+ * \param[in]     overrides  Hash table of configuration parameters to override
  *
  * \return Standard Pacemaker return code
  */
 int
 pcmk__resource_digests(pcmk__output_t *out, pe_resource_t *rsc,
-                       pe_node_t *node, GHashTable *overrides,
-                       pe_working_set_t *data_set)
+                       const pe_node_t *node, GHashTable *overrides)
 {
     const char *task = NULL;
     xmlNode *xml_op = NULL;
@@ -91,7 +124,7 @@ pcmk__resource_digests(pcmk__output_t *out, pe_resource_t *rsc,
     guint interval_ms = 0;
     int rc = pcmk_rc_ok;
 
-    if ((out == NULL) || (rsc == NULL) || (node == NULL) || (data_set == NULL)) {
+    if ((out == NULL) || (rsc == NULL) || (node == NULL)) {
         return EINVAL;
     }
     if (rsc->variant != pe_native) {
@@ -100,7 +133,7 @@ pcmk__resource_digests(pcmk__output_t *out, pe_resource_t *rsc,
     }
 
     // Find XML of operation history to use
-    xml_op = best_op(rsc, node, data_set);
+    xml_op = best_op(rsc, node, rsc->cluster);
 
     // Generate an operation key
     if (xml_op != NULL) {
@@ -114,7 +147,7 @@ pcmk__resource_digests(pcmk__output_t *out, pe_resource_t *rsc,
 
     // Calculate and show digests
     digests = pe__calculate_digests(rsc, task, &interval_ms, node, xml_op,
-                                    overrides, true, data_set);
+                                    overrides, true, rsc->cluster);
     rc = out->message(out, "digests", rsc, node, task, interval_ms, digests);
 
     pe__free_digests(digests);
@@ -123,18 +156,18 @@ pcmk__resource_digests(pcmk__output_t *out, pe_resource_t *rsc,
 
 int
 pcmk_resource_digests(xmlNodePtr *xml, pe_resource_t *rsc,
-                      pe_node_t *node, GHashTable *overrides,
+                      const pe_node_t *node, GHashTable *overrides,
                       pe_working_set_t *data_set)
 {
     pcmk__output_t *out = NULL;
     int rc = pcmk_rc_ok;
 
-    rc = pcmk__out_prologue(&out, xml);
+    rc = pcmk__xml_output_new(&out, xml);
     if (rc != pcmk_rc_ok) {
         return rc;
     }
     pcmk__register_lib_messages(out);
-    rc = pcmk__resource_digests(out, rsc, node, overrides, data_set);
-    pcmk__out_epilogue(out, xml, rc);
+    rc = pcmk__resource_digests(out, rsc, node, overrides);
+    pcmk__xml_output_finish(out, xml);
     return rc;
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2010-2021 the Pacemaker project contributors
+ * Copyright 2010-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -47,6 +47,7 @@ static pcmk__supported_format_t formats[] = {
     { NULL, NULL, NULL }
 };
 
+PCMK__OUTPUT_ARGS("features")
 static int
 pacemakerd_features(pcmk__output_t *out, va_list args) {
     out->info(out, "Pacemaker %s (Build: %s)\n Supporting v%s: %s", PACEMAKER_VERSION,
@@ -54,6 +55,7 @@ pacemakerd_features(pcmk__output_t *out, va_list args) {
     return pcmk_rc_ok;
 }
 
+PCMK__OUTPUT_ARGS("features")
 static int
 pacemakerd_features_xml(pcmk__output_t *out, va_list args) {
     gchar **feature_list = g_strsplit(CRM_FEATURES, " ", 0);
@@ -133,7 +135,7 @@ mcp_chown(const char *path, uid_t uid, gid_t gid)
 
     if (rc < 0) {
         crm_warn("Cannot change the ownership of %s to user %s and gid %d: %s",
-                 path, CRM_DAEMON_USER, gid, pcmk_strerror(errno));
+                 path, CRM_DAEMON_USER, gid, pcmk_rc_str(errno));
     }
 }
 
@@ -183,26 +185,40 @@ static void
 remove_core_file_limit(void)
 {
     struct rlimit cores;
-    int rc = getrlimit(RLIMIT_CORE, &cores);
 
-    if (rc < 0) {
-        crm_warn("Cannot determine current maximum core file size: %s",
-                 strerror(errno));
+    // Get current limits
+    if (getrlimit(RLIMIT_CORE, &cores) < 0) {
+        crm_notice("Unable to check system core file limits "
+                   "(consider ensuring the size is unlimited): %s",
+                   strerror(errno));
         return;
     }
 
-    if ((cores.rlim_max == 0) && (geteuid() == 0)) {
-        cores.rlim_max = RLIM_INFINITY;
-    } else {
-        crm_info("Maximum core file size is %llu bytes",
-                 (unsigned long long) cores.rlim_max);
+    // Check whether core dumps are disabled
+    if (cores.rlim_max == 0) {
+        if (geteuid() != 0) { // Yes, and there's nothing we can do about it
+            crm_notice("Core dumps are disabled (consider enabling them)");
+            return;
+        }
+        cores.rlim_max = RLIM_INFINITY; // Yes, but we're root, so enable them
     }
-    cores.rlim_cur = cores.rlim_max;
 
-    rc = setrlimit(RLIMIT_CORE, &cores);
-    if (rc < 0) {
-        crm_warn("Cannot raise system limit on core file size "
-                 "(consider doing so manually)");
+    // Raise soft limit to hard limit (if not already done)
+    if (cores.rlim_cur != cores.rlim_max) {
+        cores.rlim_cur = cores.rlim_max;
+        if (setrlimit(RLIMIT_CORE, &cores) < 0) {
+            crm_notice("Unable to raise system limit on core file size "
+                       "(consider doing so manually): %s",
+                       strerror(errno));
+            return;
+        }
+    }
+
+    if (cores.rlim_cur == RLIM_INFINITY) {
+        crm_trace("Core file size is unlimited");
+    } else {
+        crm_trace("Core file size is limited to %llu bytes",
+                  (unsigned long long) cores.rlim_cur);
     }
 }
 
@@ -259,6 +275,10 @@ main(int argc, char **argv)
     pcmk_ipc_api_t *old_instance = NULL;
     qb_ipcs_service_t *ipcs = NULL;
 
+    subdaemon_check_progress = time(NULL);
+
+    setenv("LC_ALL", "C", 1); // Ensure logs are in a common language
+
     crm_log_preinit(NULL, argc, argv);
     mainloop_add_signal(SIGHUP, pcmk_ignore);
     mainloop_add_signal(SIGQUIT, pcmk_sigquit);
@@ -270,7 +290,7 @@ main(int argc, char **argv)
     }
 
     rc = pcmk__output_new(&out, args->output_ty, args->output_dest, argv);
-    if (rc != pcmk_rc_ok) {
+    if ((rc != pcmk_rc_ok) || (out == NULL)) {
         exit_code = CRM_EX_ERROR;
         g_set_error(&error, PCMK__EXITC_ERROR, exit_code, "Error creating output format %s: %s",
                     args->output_ty, pcmk_rc_str(rc));
@@ -291,8 +311,6 @@ main(int argc, char **argv)
         out->version(out, false);
         goto done;
     }
-
-    setenv("LC_ALL", "C", 1);
 
     pcmk__set_env_option("mcp", "true");
 
@@ -319,9 +337,32 @@ main(int argc, char **argv)
         if (old_instance_connected) {
             rc = pcmk_pacemakerd_api_shutdown(old_instance, crm_system_name);
             pcmk_dispatch_ipc(old_instance);
-            pcmk_free_ipc_api(old_instance);
+
             exit_code = pcmk_rc2exitc(rc);
+
+            if (exit_code != CRM_EX_OK) {
+                pcmk_free_ipc_api(old_instance);
+                goto done;
+            }
+
+            /* We get the ACK immediately, and the response right after that,
+             * but it might take a while for pacemakerd to get around to
+             * shutting down.  Wait for that to happen (with 30-minute timeout).
+             */
+            for (int i = 0; i < 900; i++) {
+                if (!pcmk_ipc_is_connected(old_instance)) {
+                    exit_code = CRM_EX_OK;
+                    pcmk_free_ipc_api(old_instance);
+                    goto done;
+                }
+
+                sleep(2);
+            }
+
+            exit_code = CRM_EX_TIMEOUT;
+            pcmk_free_ipc_api(old_instance);
             goto done;
+
         } else {
             out->err(out, "Could not request shutdown "
                      "of existing Pacemaker instance: %s", pcmk_rc_str(rc));
@@ -354,9 +395,10 @@ main(int argc, char **argv)
 
     // OCF shell functions and cluster-glue need facility under different name
     {
-        const char *facility = pcmk__env_option("logfacility");
+        const char *facility = pcmk__env_option(PCMK__ENV_LOGFACILITY);
 
-        if (facility && !pcmk__str_eq(facility, "none", pcmk__str_casei)) {
+        if (!pcmk__str_eq(facility, PCMK__VALUE_NONE,
+                          pcmk__str_casei|pcmk__str_null_matches)) {
             setenv("HA_LOGFACILITY", facility, 1);
         }
     }
@@ -430,11 +472,12 @@ done:
     g_strfreev(processed_args);
     pcmk__free_arg_context(context);
 
-    pcmk__output_and_clear_error(error, out);
+    pcmk__output_and_clear_error(&error, out);
 
     if (out != NULL) {
         out->finish(out, exit_code, true, NULL);
         pcmk__output_free(out);
     }
+    pcmk__unregister_formats();
     crm_exit(exit_code);
 }

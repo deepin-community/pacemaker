@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -31,7 +31,7 @@
  *       pe_free_working_set() when the instance is no longer needed.
  */
 pe_working_set_t *
-pe_new_working_set()
+pe_new_working_set(void)
 {
     pe_working_set_t *data_set = calloc(1, sizeof(pe_working_set_t));
 
@@ -44,7 +44,7 @@ pe_new_working_set()
 /*!
  * \brief Free a working set
  *
- * \param[in] data_set  Working set to free
+ * \param[in,out] data_set  Working set to free
  */
 void
 pe_free_working_set(pe_working_set_t *data_set)
@@ -70,22 +70,18 @@ pe_free_working_set(pe_working_set_t *data_set)
 gboolean
 cluster_status(pe_working_set_t * data_set)
 {
-    xmlNode *config = get_xpath_object("//"XML_CIB_TAG_CRMCONFIG, data_set->input, LOG_TRACE);
-    xmlNode *cib_nodes = get_xpath_object("//"XML_CIB_TAG_NODES, data_set->input, LOG_TRACE);
-    xmlNode *cib_resources = get_xpath_object("//"XML_CIB_TAG_RESOURCES, data_set->input, LOG_TRACE);
-    xmlNode *cib_status = get_xpath_object("//"XML_CIB_TAG_STATUS, data_set->input, LOG_TRACE);
-    xmlNode *cib_tags = get_xpath_object("//" XML_CIB_TAG_TAGS, data_set->input,
-                                         LOG_NEVER);
-    const char *value = crm_element_value(data_set->input, XML_ATTR_HAVE_QUORUM);
+    xmlNode *section = NULL;
+
+    if ((data_set == NULL) || (data_set->input == NULL)) {
+        return FALSE;
+    }
 
     crm_trace("Beginning unpack");
 
-    /* reset remaining global variables */
-    data_set->failed = create_xml_node(NULL, "failed-ops");
-
-    if (data_set->input == NULL) {
-        return FALSE;
+    if (data_set->failed != NULL) {
+        free_xml(data_set->failed);
     }
+    data_set->failed = create_xml_node(NULL, "failed-ops");
 
     if (data_set->now == NULL) {
         data_set->now = crm_time_new(NULL);
@@ -96,7 +92,7 @@ cluster_status(pe_working_set_t * data_set)
                                                    XML_ATTR_DC_UUID);
     }
 
-    if (crm_is_true(value)) {
+    if (pcmk__xe_attr_is_true(data_set->input, XML_ATTR_HAVE_QUORUM)) {
         pe__set_working_set_flags(data_set, pe_flag_have_quorum);
     } else {
         pe__clear_working_set_flags(data_set, pe_flag_have_quorum);
@@ -107,7 +103,9 @@ cluster_status(pe_working_set_t * data_set)
     data_set->rsc_defaults = get_xpath_object("//" XML_CIB_TAG_RSCCONFIG,
                                               data_set->input, LOG_NEVER);
 
-    unpack_config(config, data_set);
+    section = get_xpath_object("//" XML_CIB_TAG_CRMCONFIG, data_set->input,
+                               LOG_TRACE);
+    unpack_config(section, data_set);
 
    if (!pcmk_any_flags_set(data_set->flags,
                            pe_flag_quick_location|pe_flag_have_quorum)
@@ -115,17 +113,25 @@ cluster_status(pe_working_set_t * data_set)
         crm_warn("Fencing and resource management disabled due to lack of quorum");
     }
 
-    unpack_nodes(cib_nodes, data_set);
+    section = get_xpath_object("//" XML_CIB_TAG_NODES, data_set->input,
+                               LOG_TRACE);
+    unpack_nodes(section, data_set);
 
+    section = get_xpath_object("//" XML_CIB_TAG_RESOURCES, data_set->input,
+                               LOG_TRACE);
     if (!pcmk_is_set(data_set->flags, pe_flag_quick_location)) {
-        unpack_remote_nodes(cib_resources, data_set);
+        unpack_remote_nodes(section, data_set);
     }
+    unpack_resources(section, data_set);
 
-    unpack_resources(cib_resources, data_set);
-    unpack_tags(cib_tags, data_set);
+    section = get_xpath_object("//" XML_CIB_TAG_TAGS, data_set->input,
+                               LOG_NEVER);
+    unpack_tags(section, data_set);
 
     if (!pcmk_is_set(data_set->flags, pe_flag_quick_location)) {
-        unpack_status(cib_status, data_set);
+        section = get_xpath_object("//"XML_CIB_TAG_STATUS, data_set->input,
+                                   LOG_TRACE);
+        unpack_status(section, data_set);
     }
 
     if (!pcmk_is_set(data_set->flags, pe_flag_no_counts)) {
@@ -133,6 +139,9 @@ cluster_status(pe_working_set_t * data_set)
              item = item->next) {
             ((pe_resource_t *) (item->data))->fns->count(item->data);
         }
+        crm_trace("Cluster resource count: %d (%d disabled, %d blocked)",
+                  data_set->ninstances, data_set->disabled_resources,
+                  data_set->blocked_resources);
     }
 
     pe__set_working_set_flags(data_set, pe_flag_have_status);
@@ -143,7 +152,7 @@ cluster_status(pe_working_set_t * data_set)
  * \internal
  * \brief Free a list of pe_resource_t
  *
- * \param[in] resources  List to free
+ * \param[in,out] resources  List to free
  *
  * \note When a working set's resource list is freed, that includes the original
  *       storage for the uname and id of any Pacemaker Remote nodes in the
@@ -199,7 +208,7 @@ pe_free_nodes(GList *nodes)
          * use node->details->uname for Pacemaker Remote nodes.
          */
         crm_trace("Freeing node %s", (pe__is_guest_or_remote_node(node)?
-                  "(guest or remote)" : node->details->uname));
+                  "(guest or remote)" : pe__node_name(node)));
 
         if (node->details->attrs != NULL) {
             g_hash_table_destroy(node->details->attrs);
@@ -402,46 +411,73 @@ pe_find_resource_with_flags(GList *rsc_list, const char *id, enum pe_find flags)
     return NULL;
 }
 
+/*!
+ * \brief Find a node by name or ID in a list of nodes
+ *
+ * \param[in] nodes      List of nodes (as pe_node_t*)
+ * \param[in] id         If not NULL, ID of node to find
+ * \param[in] node_name  If not NULL, name of node to find
+ *
+ * \return Node from \p nodes that matches \p id if any,
+ *         otherwise node from \p nodes that matches \p uname if any,
+ *         otherwise NULL
+ */
 pe_node_t *
-pe_find_node_any(GList *nodes, const char *id, const char *uname)
+pe_find_node_any(const GList *nodes, const char *id, const char *uname)
 {
-    pe_node_t *match = pe_find_node_id(nodes, id);
+    pe_node_t *match = NULL;
 
-    if (match) {
-        return match;
+    if (id != NULL) {
+        match = pe_find_node_id(nodes, id);
     }
-    crm_trace("Looking up %s via its uname instead", uname);
-    return pe_find_node(nodes, uname);
+    if ((match == NULL) && (uname != NULL)) {
+        match = pe_find_node(nodes, uname);
+    }
+    return match;
 }
 
+/*!
+ * \brief Find a node by ID in a list of nodes
+ *
+ * \param[in] nodes  List of nodes (as pe_node_t*)
+ * \param[in] id     ID of node to find
+ *
+ * \return Node from \p nodes that matches \p id if any, otherwise NULL
+ */
 pe_node_t *
-pe_find_node_id(GList *nodes, const char *id)
+pe_find_node_id(const GList *nodes, const char *id)
 {
-    GList *gIter = nodes;
+    for (const GList *iter = nodes; iter != NULL; iter = iter->next) {
+        pe_node_t *node = (pe_node_t *) iter->data;
 
-    for (; gIter != NULL; gIter = gIter->next) {
-        pe_node_t *node = (pe_node_t *) gIter->data;
-
-        if (node && pcmk__str_eq(node->details->id, id, pcmk__str_casei)) {
+        /* @TODO Whether node IDs should be considered case-sensitive should
+         * probably depend on the node type, so functionizing the comparison
+         * would be worthwhile
+         */
+        if (pcmk__str_eq(node->details->id, id, pcmk__str_casei)) {
             return node;
         }
     }
-    /* error */
     return NULL;
 }
 
+/*!
+ * \brief Find a node by name in a list of nodes
+ *
+ * \param[in] nodes      List of nodes (as pe_node_t*)
+ * \param[in] node_name  Name of node to find
+ *
+ * \return Node from \p nodes that matches \p node_name if any, otherwise NULL
+ */
 pe_node_t *
-pe_find_node(GList *nodes, const char *uname)
+pe_find_node(const GList *nodes, const char *node_name)
 {
-    GList *gIter = nodes;
+    for (const GList *iter = nodes; iter != NULL; iter = iter->next) {
+        pe_node_t *node = (pe_node_t *) iter->data;
 
-    for (; gIter != NULL; gIter = gIter->next) {
-        pe_node_t *node = (pe_node_t *) gIter->data;
-
-        if (node && pcmk__str_eq(node->details->uname, uname, pcmk__str_casei)) {
+        if (pcmk__str_eq(node->details->uname, node_name, pcmk__str_casei)) {
             return node;
         }
     }
-    /* error */
     return NULL;
 }

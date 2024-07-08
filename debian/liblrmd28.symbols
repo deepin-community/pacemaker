@@ -1,8 +1,13 @@
 liblrmd.so.28 liblrmd28 #MINVER#
 * Build-Depends-Package: pacemaker-dev
  lrmd__init_remote_key@Base 2.1.1
+ lrmd__metadata_async@Base 2.1.5
+ lrmd__new@Base 2.1.2
  lrmd__register_messages@Base 2.1.1
  lrmd__remote_send_xml@Base 2.1.1
+ lrmd__reset_result@Base 2.1.2
+ lrmd__set_result@Base 2.1.2
+ lrmd__uptime@Base 2.1.6
  lrmd__validate_remote_settings@Base 2.1.1
  lrmd_api_delete@Base 1.1.9
  lrmd_api_new@Base 1.1.9

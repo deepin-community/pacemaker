@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2021 the Pacemaker project contributors
+ * Copyright 2019-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -13,6 +13,7 @@
 #include <glib.h>
 
 #include <crm/crm.h>
+#include <crm/common/cmdline_internal.h>
 
 GOptionEntry pcmk__none_output_entries[] = {
     { NULL }
@@ -119,8 +120,8 @@ pcmk__mk_none_output(char **argv) {
         return NULL;
     }
 
-    retval->fmt_name = "none";
-    retval->request = argv == NULL ? NULL : g_strjoinv(" ", argv);
+    retval->fmt_name = PCMK__VALUE_NONE;
+    retval->request = pcmk__quote_cmdline(argv);
 
     retval->init = none_init;
     retval->free_priv = none_free_priv;
@@ -133,6 +134,7 @@ pcmk__mk_none_output(char **argv) {
     retval->subprocess_output = none_subprocess_output;
     retval->version = none_version;
     retval->info = none_info;
+    retval->transient = none_info;
     retval->err = none_err;
     retval->output_xml = none_output_xml;
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2021 the Pacemaker project contributors
+ * Copyright 2020-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -26,6 +26,33 @@ struct controld_api_private_s {
     char *client_uuid;
     unsigned int replies_expected;
 };
+
+/*!
+ * \internal
+ * \brief Get a string representation of a controller API reply type
+ *
+ * \param[in] reply  Controller API reply type
+ *
+ * \return String representation of a controller API reply type
+ */
+const char *
+pcmk__controld_api_reply2str(enum pcmk_controld_api_reply reply)
+{
+    switch (reply) {
+        case pcmk_controld_reply_reprobe:
+            return "reprobe";
+        case pcmk_controld_reply_info:
+            return "info";
+        case pcmk_controld_reply_resource:
+            return "resource";
+        case pcmk_controld_reply_ping:
+            return "ping";
+        case pcmk_controld_reply_nodes:
+            return "nodes";
+        default:
+            return "unknown";
+    }
+}
 
 // \return Standard Pacemaker return code
 static int
@@ -89,8 +116,6 @@ post_connect(pcmk_ipc_api_t *api)
     return rc;
 }
 
-#define xml_true(xml, field) crm_is_true(crm_element_value(xml, field))
-
 static void
 set_node_info_data(pcmk_controld_api_reply_t *data, xmlNode *msg_data)
 {
@@ -98,10 +123,17 @@ set_node_info_data(pcmk_controld_api_reply_t *data, xmlNode *msg_data)
     if (msg_data == NULL) {
         return;
     }
-    data->data.node_info.have_quorum = xml_true(msg_data, XML_ATTR_HAVE_QUORUM);
-    data->data.node_info.is_remote = xml_true(msg_data, XML_NODE_IS_REMOTE);
+    data->data.node_info.have_quorum = pcmk__xe_attr_is_true(msg_data, XML_ATTR_HAVE_QUORUM);
+    data->data.node_info.is_remote = pcmk__xe_attr_is_true(msg_data, XML_NODE_IS_REMOTE);
+
+    /* Integer node_info.id is currently valid only for Corosync nodes.
+     *
+     * @TODO: Improve handling after crm_node_t is refactored to handle layer-
+     * specific data better.
+     */
     crm_element_value_int(msg_data, XML_ATTR_ID, &(data->data.node_info.id));
-    data->data.node_info.uuid = crm_element_value(msg_data, XML_ATTR_UUID);
+
+    data->data.node_info.uuid = crm_element_value(msg_data, XML_ATTR_ID);
     data->data.node_info.uname = crm_element_value(msg_data, XML_ATTR_UNAME);
     data->data.node_info.state = crm_element_value(msg_data, XML_NODE_IS_PEER);
 }
@@ -159,7 +191,7 @@ reply_expected(pcmk_ipc_api_t *api, xmlNode *request)
            || !strcmp(command, CRM_OP_LRM_DELETE);
 }
 
-static void
+static bool
 dispatch(pcmk_ipc_api_t *api, xmlNode *reply)
 {
     struct controld_api_private_s *private = api->api_data;
@@ -169,6 +201,24 @@ dispatch(pcmk_ipc_api_t *api, xmlNode *reply)
     pcmk_controld_api_reply_t reply_data = {
         pcmk_controld_reply_unknown, NULL, NULL,
     };
+
+    /* If we got an ACK, return true so the caller knows to expect more responses
+     * from the IPC server.  We do this before decrementing replies_expected because
+     * ACKs are not going to be included in that value.
+     *
+     * Note that we cannot do the same kind of status checking here that we do in
+     * ipc_pacemakerd.c.  The ACK message we receive does not necessarily contain
+     * a status attribute.  That is, we may receive this:
+     *
+     * <ack function="crmd_remote_proxy_cb" line="556"/>
+     *
+     * Instead of this:
+     *
+     * <ack function="dispatch_controller_ipc" line="391" status="112"/>
+     */
+    if (pcmk__str_eq(crm_element_name(reply), "ack", pcmk__str_none)) {
+        return true; // More replies needed
+    }
 
     if (private->replies_expected > 0) {
         private->replies_expected--;
@@ -182,23 +232,23 @@ dispatch(pcmk_ipc_api_t *api, xmlNode *reply)
      *       old versions (feature set could be used to differentiate).
      */
     value = crm_element_value(reply, F_CRM_MSG_TYPE);
-    if ((value == NULL) || (strcmp(value, XML_ATTR_REQUEST)
-                            && strcmp(value, XML_ATTR_RESPONSE))) {
-        crm_debug("Unrecognizable controller message: invalid message type '%s'",
-                  crm_str(value));
+    if (pcmk__str_empty(value)
+        || !pcmk__str_any_of(value, XML_ATTR_REQUEST, XML_ATTR_RESPONSE, NULL)) {
+        crm_info("Unrecognizable message from controller: "
+                 "invalid message type '%s'", pcmk__s(value, ""));
         status = CRM_EX_PROTOCOL;
         goto done;
     }
 
-    if (crm_element_value(reply, XML_ATTR_REFERENCE) == NULL) {
-        crm_debug("Unrecognizable controller message: no reference");
+    if (pcmk__str_empty(crm_element_value(reply, XML_ATTR_REFERENCE))) {
+        crm_info("Unrecognizable message from controller: no reference");
         status = CRM_EX_PROTOCOL;
         goto done;
     }
 
     value = crm_element_value(reply, F_CRM_TASK);
-    if (value == NULL) {
-        crm_debug("Unrecognizable controller message: no command name");
+    if (pcmk__str_empty(value)) {
+        crm_info("Unrecognizable message from controller: no command name");
         status = CRM_EX_PROTOCOL;
         goto done;
     }
@@ -226,8 +276,8 @@ dispatch(pcmk_ipc_api_t *api, xmlNode *reply)
         set_nodes_data(&reply_data, msg_data);
 
     } else {
-        crm_debug("Unrecognizable controller message: unknown command '%s'",
-                  value);
+        crm_info("Unrecognizable message from controller: unknown command '%s'",
+                 value);
         status = CRM_EX_PROTOCOL;
     }
 
@@ -238,10 +288,12 @@ done:
     if (pcmk__str_eq(value, PCMK__CONTROLD_CMD_NODES, pcmk__str_casei)) {
         g_list_free_full(reply_data.data.nodes, free);
     }
+
+    return false; // No further replies needed
 }
 
 pcmk__ipc_methods_t *
-pcmk__controld_api_methods()
+pcmk__controld_api_methods(void)
 {
     pcmk__ipc_methods_t *cmds = calloc(1, sizeof(pcmk__ipc_methods_t));
 
@@ -267,7 +319,7 @@ pcmk__controld_api_methods()
  * \return Newly allocated XML for request
  */
 static xmlNode *
-create_controller_request(pcmk_ipc_api_t *api, const char *op,
+create_controller_request(const pcmk_ipc_api_t *api, const char *op,
                           const char *node, xmlNode *msg_data)
 {
     struct controld_api_private_s *private = NULL;
@@ -322,9 +374,9 @@ create_reprobe_message_data(const char *target_node, const char *router_node)
 /*!
  * \brief Send a reprobe controller operation
  *
- * \param[in] api          Controller connection
- * \param[in] target_node  Name of node to reprobe
- * \param[in] router_node  Router node for host
+ * \param[in,out] api          Controller connection
+ * \param[in]     target_node  Name of node to reprobe
+ * \param[in]     router_node  Router node for host
  *
  * \return Standard Pacemaker return code
  * \note Event callback will get a reply of type pcmk_controld_reply_reprobe.
@@ -344,8 +396,8 @@ pcmk_controld_api_reprobe(pcmk_ipc_api_t *api, const char *target_node,
         router_node = target_node;
     }
     crm_debug("Sending %s IPC request to reprobe %s via %s",
-              pcmk_ipc_name(api, true), crm_str(target_node),
-              crm_str(router_node));
+              pcmk_ipc_name(api, true), pcmk__s(target_node, "local node"),
+              pcmk__s(router_node, "local node"));
     msg_data = create_reprobe_message_data(target_node, router_node);
     request = create_controller_request(api, CRM_OP_REPROBE, router_node,
                                         msg_data);
@@ -358,8 +410,8 @@ pcmk_controld_api_reprobe(pcmk_ipc_api_t *api, const char *target_node,
 /*!
  * \brief Send a "node info" controller operation
  *
- * \param[in] api          Controller connection
- * \param[in] nodeid       ID of node to get info for (or 0 for local node)
+ * \param[in,out] api     Controller connection
+ * \param[in]     nodeid  ID of node to get info for (or 0 for local node)
  *
  * \return Standard Pacemaker return code
  * \note Event callback will get a reply of type pcmk_controld_reply_info.
@@ -386,8 +438,8 @@ pcmk_controld_api_node_info(pcmk_ipc_api_t *api, uint32_t nodeid)
 /*!
  * \brief Ask the controller for status
  *
- * \param[in] api          Controller connection
- * \param[in] node_name    Name of node whose status is desired (or NULL for DC)
+ * \param[in,out] api        Controller connection
+ * \param[in]     node_name  Name of node whose status is desired (NULL for DC)
  *
  * \return Standard Pacemaker return code
  * \note Event callback will get a reply of type pcmk_controld_reply_ping.
@@ -410,7 +462,7 @@ pcmk_controld_api_ping(pcmk_ipc_api_t *api, const char *node_name)
 /*!
  * \brief Ask the controller for cluster information
  *
- * \param[in] api          Controller connection
+ * \param[in,out] api  Controller connection
  *
  * \return Standard Pacemaker return code
  * \note Event callback will get a reply of type pcmk_controld_reply_nodes.
@@ -495,14 +547,14 @@ controller_resource_op(pcmk_ipc_api_t *api, const char *op,
 /*!
  * \brief Ask the controller to fail a resource
  *
- * \param[in] api          Controller connection
- * \param[in] target_node  Name of node resource is on
- * \param[in] router_node  Router node for target
- * \param[in] rsc_id       ID of resource to fail
- * \param[in] rsc_long_id  Long ID of resource (if any)
- * \param[in] standard     Standard of resource
- * \param[in] provider     Provider of resource (if any)
- * \param[in] type         Type of resource to fail
+ * \param[in,out] api          Controller connection
+ * \param[in]     target_node  Name of node resource is on
+ * \param[in]     router_node  Router node for target
+ * \param[in]     rsc_id       ID of resource to fail
+ * \param[in]     rsc_long_id  Long ID of resource (if any)
+ * \param[in]     standard     Standard of resource
+ * \param[in]     provider     Provider of resource (if any)
+ * \param[in]     type         Type of resource to fail
  *
  * \return Standard Pacemaker return code
  * \note Event callback will get a reply of type pcmk_controld_reply_resource.
@@ -515,8 +567,10 @@ pcmk_controld_api_fail(pcmk_ipc_api_t *api,
                        const char *type)
 {
     crm_debug("Sending %s IPC request to fail %s (a.k.a. %s) on %s via %s",
-              pcmk_ipc_name(api, true), crm_str(rsc_id), crm_str(rsc_long_id),
-              crm_str(target_node), crm_str(router_node));
+              pcmk_ipc_name(api, true), pcmk__s(rsc_id, "unknown resource"),
+              pcmk__s(rsc_long_id, "no other names"),
+              pcmk__s(target_node, "unspecified node"),
+              pcmk__s(router_node, "unspecified node"));
     return controller_resource_op(api, CRM_OP_LRM_FAIL, target_node,
                                   router_node, false, rsc_id, rsc_long_id,
                                   standard, provider, type);
@@ -525,15 +579,15 @@ pcmk_controld_api_fail(pcmk_ipc_api_t *api,
 /*!
  * \brief Ask the controller to refresh a resource
  *
- * \param[in] api          Controller connection
- * \param[in] target_node  Name of node resource is on
- * \param[in] router_node  Router node for target
- * \param[in] rsc_id       ID of resource to refresh
- * \param[in] rsc_long_id  Long ID of resource (if any)
- * \param[in] standard     Standard of resource
- * \param[in] provider     Provider of resource (if any)
- * \param[in] type         Type of resource
- * \param[in] cib_only     If true, clean resource from CIB only
+ * \param[in,out] api          Controller connection
+ * \param[in]     target_node  Name of node resource is on
+ * \param[in]     router_node  Router node for target
+ * \param[in]     rsc_id       ID of resource to refresh
+ * \param[in]     rsc_long_id  Long ID of resource (if any)
+ * \param[in]     standard     Standard of resource
+ * \param[in]     provider     Provider of resource (if any)
+ * \param[in]     type         Type of resource
+ * \param[in]     cib_only     If true, clean resource from CIB only
  *
  * \return Standard Pacemaker return code
  * \note Event callback will get a reply of type pcmk_controld_reply_resource.
@@ -546,8 +600,10 @@ pcmk_controld_api_refresh(pcmk_ipc_api_t *api, const char *target_node,
                           const char *type, bool cib_only)
 {
     crm_debug("Sending %s IPC request to refresh %s (a.k.a. %s) on %s via %s",
-              pcmk_ipc_name(api, true), crm_str(rsc_id), crm_str(rsc_long_id),
-              crm_str(target_node), crm_str(router_node));
+              pcmk_ipc_name(api, true), pcmk__s(rsc_id, "unknown resource"),
+              pcmk__s(rsc_long_id, "no other names"),
+              pcmk__s(target_node, "unspecified node"),
+              pcmk__s(router_node, "unspecified node"));
     return controller_resource_op(api, CRM_OP_LRM_DELETE, target_node,
                                   router_node, cib_only, rsc_id, rsc_long_id,
                                   standard, provider, type);
@@ -561,7 +617,7 @@ pcmk_controld_api_refresh(pcmk_ipc_api_t *api, const char *target_node,
  * \return Number of replies expected
  */
 unsigned int
-pcmk_controld_api_replies_expected(pcmk_ipc_api_t *api)
+pcmk_controld_api_replies_expected(const pcmk_ipc_api_t *api)
 {
     struct controld_api_private_s *private = api->api_data;
 

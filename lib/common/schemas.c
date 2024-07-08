@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2020 the Pacemaker project contributors
+ * Copyright 2004-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -17,13 +17,10 @@
 #include <stdarg.h>
 
 #include <libxml/relaxng.h>
-
-#if HAVE_LIBXSLT
-#  include <libxslt/xslt.h>
-#  include <libxslt/transform.h>
-#  include <libxslt/security.h>
-#  include <libxslt/xsltutils.h>
-#endif
+#include <libxslt/xslt.h>
+#include <libxslt/transform.h>
+#include <libxslt/security.h>
+#include <libxslt/xsltutils.h>
 
 #include <crm/msg_xml.h>
 #include <crm/common/xml.h>
@@ -87,6 +84,7 @@ xml_log(int priority, const char *fmt, ...)
 static int
 xml_latest_schema_index(void)
 {
+    // @COMPAT: pacemaker-next is deprecated since 2.1.5
     return xml_schema_max - 3; // index from 0, ignore "pacemaker-next"/"none"
 }
 
@@ -426,10 +424,12 @@ crm_schema_init(void)
         free(namelist);
     }
 
+    // @COMPAT: Deprecated since 2.1.5
     add_schema(schema_validator_rng, &zero, "pacemaker-next",
                NULL, NULL, FALSE, -1);
 
-    add_schema(schema_validator_none, &zero, "none", NULL, NULL, FALSE, -1);
+    add_schema(schema_validator_none, &zero, PCMK__VALUE_NONE,
+               NULL, NULL, FALSE, -1);
 }
 
 #if 0
@@ -605,12 +605,19 @@ validate_with(xmlNode *xml, int method, gboolean to_logs)
     }
 
     CRM_CHECK(xml != NULL, return FALSE);
+
+    if (pcmk__str_eq(known_schemas[method].name, "pacemaker-next",
+                     pcmk__str_none)) {
+        crm_warn("The pacemaker-next schema is deprecated and will be removed "
+                 "in a future release.");
+    }
+
     doc = getDocPtr(xml);
     file = pcmk__xml_artefact_path(pcmk__xml_artefact_ns_legacy_rng,
                                    known_schemas[method].name);
 
-    crm_trace("Validating with: %s (type=%d)",
-              crm_str(file), known_schemas[method].validator);
+    crm_trace("Validating with %s (type=%d)",
+              pcmk__s(file, "missing schema"), known_schemas[method].validator);
     switch (known_schemas[method].validator) {
         case schema_validator_rng:
             valid =
@@ -725,7 +732,7 @@ validate_xml(xmlNode *xml_blob, const char *validation, gboolean to_logs)
     }
 
     version = get_schema_version(validation);
-    if (strcmp(validation, "none") == 0) {
+    if (strcmp(validation, PCMK__VALUE_NONE) == 0) {
         return TRUE;
     } else if (version < xml_schema_max) {
         return validate_with(xml_blob, version, to_logs);
@@ -734,8 +741,6 @@ validate_xml(xmlNode *xml_blob, const char *validation, gboolean to_logs)
     crm_err("Unknown validator: %s", validation);
     return FALSE;
 }
-
-#if HAVE_LIBXSLT
 
 static void
 cib_upgrade_err(void *ctx, const char *fmt, ...)
@@ -1015,8 +1020,6 @@ apply_upgrade(xmlNode *xml, const struct schema_s *schema, gboolean to_logs)
     return final;
 }
 
-#endif  /* HAVE_LIBXSLT */
-
 const char *
 get_schema_name(int version)
 {
@@ -1032,7 +1035,7 @@ get_schema_version(const char *name)
     int lpc = 0;
 
     if (name == NULL) {
-        name = "none";
+        name = PCMK__VALUE_NONE;
     }
     for (; lpc < xml_schema_max; lpc++) {
         if (pcmk__str_eq(name, known_schemas[lpc].name, pcmk__str_casei)) {
@@ -1146,9 +1149,7 @@ update_validation(xmlNode **xml_blob, int *best, int max, gboolean transform,
                            known_schemas[lpc].name, known_schemas[next].name,
                            known_schemas[lpc].transform);
 
-#if HAVE_LIBXSLT
                 upgrade = apply_upgrade(xml, &known_schemas[lpc], to_logs);
-#endif
                 if (upgrade == NULL) {
                     crm_err("Transformation %s.xsl failed",
                             known_schemas[lpc].transform);
@@ -1243,14 +1244,14 @@ cli_config_update(xmlNode **xml, int *best_version, gboolean to_logs)
                                      "would not upgrade past %s",
                                      orig_value,
                                      get_schema_name(min_version),
-                                     crm_str(value));
+                                     pcmk__s(value, "unspecified version"));
                 } else {
                     fprintf(stderr, "Cannot upgrade configuration (claiming "
                                     "schema %s) to at least %s because it "
                                     "would not upgrade past %s\n",
                                     orig_value,
                                     get_schema_name(min_version),
-                                    crm_str(value));
+                                    pcmk__s(value, "unspecified version"));
                 }
             }
 
@@ -1279,7 +1280,7 @@ cli_config_update(xmlNode **xml, int *best_version, gboolean to_logs)
             }
         }
 
-    } else if (version >= get_schema_version("none")) {
+    } else if (version >= get_schema_version(PCMK__VALUE_NONE)) {
         // Schema validation is disabled
         if (to_logs) {
             pcmk__config_warn("Schema validation of configuration is disabled "

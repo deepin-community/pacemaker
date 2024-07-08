@@ -7,11 +7,11 @@ Subject: Make the asciidoc documentation reproducible
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/doc/Makefile.am b/doc/Makefile.am
-index 3044b7f..46e1133 100644
+index 1400145..b6c254c 100644
 --- a/doc/Makefile.am
 +++ b/doc/Makefile.am
-@@ -40,7 +40,7 @@ TAG		?= $(shell [ -n "`git tag --points-at HEAD | head -1`" ]	\
- 			   || git log --pretty=format:%H -n 1 HEAD)
+@@ -42,7 +42,7 @@ RSYNC_DEST      ?= root@www.clusterlabs.org:/var/www/html
+ RSYNC_OPTS      = -rlptvzxS --progress
  
  if IS_ASCIIDOC
 -ASCIIDOC_HTML_ARGS	= --unsafe --backend=xhtml11

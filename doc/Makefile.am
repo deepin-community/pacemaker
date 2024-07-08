@@ -1,5 +1,5 @@
 #
-# Copyright 2003-2020 the Pacemaker project contributors
+# Copyright 2003-2021 the Pacemaker project contributors
 #
 # The version control history for this file may have further details.
 #
@@ -8,9 +8,16 @@
 #
 include $(top_srcdir)/mk/common.mk
 
+# Define release-related variables
+include $(top_srcdir)/mk/release.mk
+
 # What formats to use for book uploads (i.e. "make www";
 # use BOOK_FORMATS in sphinx subdirectory to change local builds)
 BOOK_FORMATS		?= html singlehtml pdf epub
+
+# SNMP MIB
+mibdir		= $(datadir)/snmp/mibs
+dist_mib_DATA	= PCMK-MIB.txt
 
 # Deprecated plaintext documents (dynamically converted to HTML)
 DEPRECATED_ORIGINAL	= crm_fencing.txt
@@ -33,11 +40,6 @@ RSYNC_DEST      ?= root@www.clusterlabs.org:/var/www/html
 # recursive, preserve symlinks/permissions/times, verbose, compress,
 # don't cross filesystems, sparse, show progress
 RSYNC_OPTS      = -rlptvzxS --progress
-
-LAST_RELEASE	?= Pacemaker-$(VERSION)
-TAG		?= $(shell [ -n "`git tag --points-at HEAD | head -1`" ]	\
-		           && ( git tag --points-at HEAD | head -1 )		\
-			   || git log --pretty=format:%H -n 1 HEAD)
 
 if IS_ASCIIDOC
 ASCIIDOC_HTML_ARGS	= --unsafe --backend=xhtml11
@@ -70,8 +72,10 @@ deprecated-clean:
 
 # Annotated source code as HTML
 
+# Cleaning first ensures we don't index unrelated stuff like RPM sources
 global:
 	$(MAKE) $(AM_MAKEFLAGS) -C .. clean-generic
+	$(MAKE) $(AM_MAKEFLAGS) -C ../rpm rpm-clean
 	cd .. && gtags -q && htags -sanhIT doc
 
 global-upload: global

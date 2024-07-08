@@ -1,0 +1,58 @@
+From: =?utf-8?q?Ferenc_W=C3=A1gner?= <wferi@debian.org>
+Date: Sun, 3 Jul 2022 16:02:03 +0200
+Subject: Fix typos: resouce -> resource
+
+---
+ cts/cts-exec.in                      | 2 +-
+ cts/lab/CTStests.py                  | 2 +-
+ lib/pacemaker/pcmk_sched_primitive.c | 4 ++--
+ 3 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/cts/cts-exec.in b/cts/cts-exec.in
+index a89eb0e..be19d07 100644
+--- a/cts/cts-exec.in
++++ b/cts/cts-exec.in
+@@ -431,7 +431,7 @@ class ExecTests(Tests):
+ 
+ 
+     def build_multi_rsc_tests(self):
+-        """ Register complex tests that involve managing multiple resouces of different types """
++        """ Register complex tests that involve managing multiple resources of different types """
+ 
+         common_cmds = self._common_cmds
+         # do not use service and systemd at the same time, it is the same resource.
+diff --git a/cts/lab/CTStests.py b/cts/lab/CTStests.py
+index 61766ce..00fe2d9 100644
+--- a/cts/lab/CTStests.py
++++ b/cts/lab/CTStests.py
+@@ -743,7 +743,7 @@ class StandbyTest(CTSTest):
+     # set the node to standby mode
+     # check resources, none resource should be running on the node
+     # set the node to active mode
+-    # check resouces, resources should have been migrated back (SHOULD THEY?)
++    # check resources, resources should have been migrated back (SHOULD THEY?)
+ 
+     def __call__(self, node):
+ 
+diff --git a/lib/pacemaker/pcmk_sched_primitive.c b/lib/pacemaker/pcmk_sched_primitive.c
+index aefbf9a..d612b22 100644
+--- a/lib/pacemaker/pcmk_sched_primitive.c
++++ b/lib/pacemaker/pcmk_sched_primitive.c
+@@ -1250,7 +1250,7 @@ start_resource(pe_resource_t *rsc, pe_node_t *node, bool optional)
+          * reasons later.
+          */
+         pe_rsc_trace(rsc,
+-                     "Start of multiply active resouce %s "
++                     "Start of multiply active resource %s "
+                      "on expected node %s will be a pseudo-action",
+                      rsc->id, pe__node_name(node));
+         pe__set_action_flags(start, pe_action_pseudo);
+@@ -1297,7 +1297,7 @@ promote_resource(pe_resource_t *rsc, pe_node_t *node, bool optional)
+              * other reasons later.
+              */
+             pe_rsc_trace(rsc,
+-                         "Promotion of multiply active resouce %s "
++                         "Promotion of multiply active resource %s "
+                          "on expected node %s will be a pseudo-action",
+                          rsc->id, pe__node_name(node));
+             pe__set_action_flags(promote, pe_action_pseudo);

@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -20,6 +20,7 @@
 #include <crm/common/mainloop.h>
 #include <crm/msg_xml.h>
 #include <crm/cib.h>
+#include <crm/cib/internal.h>
 #include <crm/common/ipc_controld.h>
 #include <crm/common/attrd_internal.h>
 
@@ -127,7 +128,7 @@ remove_cb(const gchar *option_name, const gchar *optarg, gpointer data, GError *
 
     options.command = 'R';
     options.dangerous_cmd = TRUE;
-    options.target_uname = strdup(optarg);
+    pcmk__str_update(&options.target_uname, optarg);
     return TRUE;
 }
 
@@ -320,7 +321,10 @@ print_node_name(void)
         return;
 
     } else {
-        // Otherwise ask the controller
+        /* Otherwise ask the controller.
+         * FIXME: Use pcmk__query_node_name() after conversion to formatted
+         * output.
+         */
         run_controller_mainloop(0, false);
     }
 }
@@ -363,8 +367,7 @@ cib_remove_node(long id, const char *name)
                 name, id, pcmk_strerror(rc));
     }
 
-    cib->cmds->signoff(cib);
-    cib_delete(cib);
+    cib__clean_up_connection(&cib);
     return rc;
 }
 
@@ -429,11 +432,8 @@ tools_remove_node_cache(const char *node_name, long nodeid, const char *target)
         crm_xml_add(cmd, F_ORIG, crm_system_name);
 
         crm_xml_add(cmd, PCMK__XA_TASK, PCMK__ATTRD_CMD_PEER_REMOVE);
-        crm_xml_add(cmd, PCMK__XA_ATTR_NODE_NAME, node_name);
 
-        if (nodeid > 0) {
-            crm_xml_add_int(cmd, PCMK__XA_ATTR_NODE_ID, (int) nodeid);
-        }
+        pcmk__xe_add_node(cmd, node_name, nodeid);
 
     } else { // Fencer or pacemakerd
         cmd = create_request(CRM_OP_RM_NODE_CACHE, NULL, NULL, target,
@@ -549,7 +549,7 @@ main(int argc, char **argv)
         g_strfreev(processed_args);
         pcmk__free_arg_context(context);
         /* FIXME:  When crm_node is converted to use formatted output, this can go. */
-        pcmk__cli_help('v', CRM_EX_OK);
+        pcmk__cli_help('v');
     }
 
     if (options.command == 0) {
@@ -579,6 +579,9 @@ main(int argc, char **argv)
         case 'i':
         case 'q':
         case 'N':
+            /* FIXME: Use pcmk__query_node_name() after conversion to formatted
+             * output
+             */
             run_controller_mainloop(options.nodeid, false);
             break;
         case 'l':
@@ -593,6 +596,6 @@ done:
     g_strfreev(processed_args);
     pcmk__free_arg_context(context);
 
-    pcmk__output_and_clear_error(error, NULL);
+    pcmk__output_and_clear_error(&error, NULL);
     return crm_exit(exit_code);
 }

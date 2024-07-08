@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 the Pacemaker project contributors
+ * Copyright 2004-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -7,6 +7,7 @@
  * version 2.1 or later (LGPLv2.1+) WITHOUT ANY WARRANTY.
  */
 
+#include "crm/common/results.h"
 #include <crm_internal.h>
 
 #ifndef _GNU_SOURCE
@@ -20,7 +21,6 @@
 #include <ctype.h>
 #include <float.h>  // DBL_MIN
 #include <limits.h>
-#include <math.h>   // fabs()
 #include <bzlib.h>
 #include <sys/types.h>
 
@@ -227,7 +227,7 @@ pcmk__scan_double(const char *text, double *result, const char *default_text,
              */
             const char *over_under;
 
-            if (fabs(*result) > DBL_MIN) {
+            if (QB_ABS(*result) > DBL_MIN) {
                 rc = EOVERFLOW;
                 over_under = "over";
             } else {
@@ -256,7 +256,7 @@ pcmk__scan_double(const char *text, double *result, const char *default_text,
                       "%.1f instead): No digits found", text,
                       PCMK__PARSE_DBL_DEFAULT);
 
-        } else if (fabs(*result) <= DBL_MIN) {
+        } else if (QB_ABS(*result) <= DBL_MIN) {
             /*
              * errno == 0 and text was parsed, but value might have
              * underflowed.
@@ -300,10 +300,10 @@ pcmk__scan_double(const char *text, double *result, const char *default_text,
  * \internal
  * \brief Parse a guint from a string stored in a hash table
  *
- * \param[in]  table        Hash table to search
- * \param[in]  key          Hash table key to use to retrieve string
- * \param[in]  default_val  What to use if key has no entry in table
- * \param[out] result       If not NULL, where to store parsed integer
+ * \param[in]     table        Hash table to search
+ * \param[in]     key          Hash table key to use to retrieve string
+ * \param[in]     default_val  What to use if key has no entry in table
+ * \param[out]    result       If not NULL, where to store parsed integer
  *
  * \return Standard Pacemaker return code
  */
@@ -353,8 +353,9 @@ pcmk__guint_from_hash(GHashTable *table, const char *key, guint default_val,
 /*!
  * \brief Parse a time+units string and return milliseconds equivalent
  *
- * \param[in] input  String with a number and units (optionally with whitespace
- *                   before and/or after the number)
+ * \param[in] input  String with a number and optional unit (optionally
+ *                   with whitespace before and/or after the number).  If
+ *                   missing, the unit defaults to seconds.
  *
  * \return Milliseconds corresponding to string expression, or
  *         PCMK__PARSE_INT_DEFAULT on error
@@ -447,7 +448,7 @@ crm_str_to_boolean(const char *s, int *ret)
  * \internal
  * \brief Replace any trailing newlines in a string with \0's
  *
- * \param[in] str  String to trim
+ * \param[in,out] str  String to trim
  *
  * \return \p str
  */
@@ -664,7 +665,7 @@ copy_str_table_entry(gpointer key, gpointer value, gpointer user_data)
  * \internal
  * \brief Copy a hash table that uses dynamically allocated strings
  *
- * \param[in] old_table  Hash table to duplicate
+ * \param[in,out] old_table  Hash table to duplicate
  *
  * \return New hash table with copies of everything in \p old_table
  * \note This assumes the hash table uses dynamically allocated strings -- that
@@ -686,50 +687,47 @@ pcmk__str_table_dup(GHashTable *old_table)
  * \internal
  * \brief Add a word to a string list of words
  *
- * \param[in,out] list       Pointer to current string list (may not be NULL)
- * \param[in,out] len        If not NULL, must be set to length of \p list,
- *                           and will be updated to new length of \p list
+ * \param[in,out] list       Pointer to current string list (may not be \p NULL)
+ * \param[in]     init_size  \p list will be initialized to at least this size,
+ *                           if it needs initialization (if 0, use GLib's default
+ *                           initial string size)
  * \param[in]     word       String to add to \p list (\p list will be
- *                           unchanged if this is NULL or the empty string)
+ *                           unchanged if this is \p NULL or the empty string)
  * \param[in]     separator  String to separate words in \p list
  *                           (a space will be used if this is NULL)
  *
- * \note This dynamically reallocates \p list as needed. \p word may contain
- *       \p separator, though that would be a bad idea if the string needs to be
- *       parsed later.
+ * \note \p word may contain \p separator, though that would be a bad idea if
+ *       the string needs to be parsed later.
  */
 void
-pcmk__add_separated_word(char **list, size_t *len, const char *word,
+pcmk__add_separated_word(GString **list, size_t init_size, const char *word,
                          const char *separator)
 {
-    size_t orig_len, new_len;
-
     CRM_ASSERT(list != NULL);
 
     if (pcmk__str_empty(word)) {
         return;
     }
 
-    // Use provided length, or calculate it if not available
-    orig_len = (len != NULL)? *len : ((*list == NULL)? 0 : strlen(*list));
+    if (*list == NULL) {
+        if (init_size > 0) {
+            *list = g_string_sized_new(init_size);
+        } else {
+            *list = g_string_new(NULL);
+        }
+    }
 
-    // Don't add a separator before the first word in the list
-    if (orig_len == 0) {
+    if ((*list)->len == 0) {
+        // Don't add a separator before the first word in the list
         separator = "";
 
-    // Default to space-separated
     } else if (separator == NULL) {
+        // Default to space-separated
         separator = " ";
     }
 
-    new_len = orig_len + strlen(separator) + strlen(word);
-    if (len != NULL) {
-        *len = new_len;
-    }
-
-    // +1 for null terminator
-    *list = pcmk__realloc(*list, new_len + 1);
-    sprintf(*list + orig_len, "%s%s", separator, word);
+    g_string_append(*list, separator);
+    g_string_append(*list, word);
 }
 
 /*!
@@ -812,6 +810,7 @@ int
 pcmk__parse_ll_range(const char *srcstring, long long *start, long long *end)
 {
     char *remainder = NULL;
+    int rc = pcmk_rc_ok;
 
     CRM_ASSERT(start != NULL && end != NULL);
 
@@ -819,8 +818,10 @@ pcmk__parse_ll_range(const char *srcstring, long long *start, long long *end)
     *end = PCMK__PARSE_INT_DEFAULT;
 
     crm_trace("Attempting to decode: [%s]", srcstring);
-    if (pcmk__str_empty(srcstring) || !strcmp(srcstring, "-")) {
-        return pcmk_rc_unknown_format;
+    if (pcmk__str_eq(srcstring, "", pcmk__str_null_matches)) {
+        return ENODATA;
+    } else if (pcmk__str_eq(srcstring, "-", pcmk__str_none)) {
+        return pcmk_rc_bad_input;
     }
 
     /* String starts with a dash, so this is either a range with
@@ -830,15 +831,15 @@ pcmk__parse_ll_range(const char *srcstring, long long *start, long long *end)
         int rc = scan_ll(srcstring+1, end, PCMK__PARSE_INT_DEFAULT, &remainder);
 
         if (rc != pcmk_rc_ok || *remainder != '\0') {
-            return pcmk_rc_unknown_format;
+            return pcmk_rc_bad_input;
         } else {
             return pcmk_rc_ok;
         }
     }
 
-    if (scan_ll(srcstring, start, PCMK__PARSE_INT_DEFAULT,
-                &remainder) != pcmk_rc_ok) {
-        return pcmk_rc_unknown_format;
+    rc = scan_ll(srcstring, start, PCMK__PARSE_INT_DEFAULT, &remainder);
+    if (rc != pcmk_rc_ok) {
+        return rc;
     }
 
     if (*remainder && *remainder == '-') {
@@ -847,13 +848,15 @@ pcmk__parse_ll_range(const char *srcstring, long long *start, long long *end)
             int rc = scan_ll(remainder+1, end, PCMK__PARSE_INT_DEFAULT,
                              &more_remainder);
 
-            if (rc != pcmk_rc_ok || *more_remainder != '\0') {
-                return pcmk_rc_unknown_format;
+            if (rc != pcmk_rc_ok) {
+                return rc;
+            } else if (*more_remainder != '\0') {
+                return pcmk_rc_bad_input;
             }
         }
     } else if (*remainder && *remainder != '-') {
         *start = PCMK__PARSE_INT_DEFAULT;
-        return pcmk_rc_unknown_format;
+        return pcmk_rc_bad_input;
     } else {
         /* The input string contained only one number.  Set start and end
          * to the same value and return pcmk_rc_ok.  This gives the caller
@@ -869,73 +872,48 @@ pcmk__parse_ll_range(const char *srcstring, long long *start, long long *end)
  * \internal
  * \brief Find a string in a list of strings
  *
- * Search \p lst for \p s, taking case into account.  As a special case,
- * if "*" is the only element of \p lst, the search is successful.
- *
- * Behavior can be changed with various flags:
- *
- * - pcmk__str_casei - By default, comparisons are done taking case into
- *                     account.  This flag makes comparisons case-insensitive.
- * - pcmk__str_null_matches - If the input string is NULL, return TRUE.
- *
- * \note The special "*" matching rule takes precedence over flags.  In
- *       particular, "*" will match a NULL input string even without
- *       pcmk__str_null_matches being specified.
+ * \note This function takes the same flags and has the same behavior as
+ *       pcmk__str_eq().
  *
  * \note No matter what input string or flags are provided, an empty
  *       list will always return FALSE.
  *
- * \param[in]  lst   List to search
- * \param[in]  s     String to search for
- * \param[in]  flags A bitfield of pcmk__str_flags to modify operation
+ * \param[in] s      String to search for
+ * \param[in] lst    List to search
+ * \param[in] flags  A bitfield of pcmk__str_flags to modify operation
  *
  * \return \c TRUE if \p s is in \p lst, or \c FALSE otherwise
  */
 gboolean
-pcmk__str_in_list(GList *lst, const gchar *s, uint32_t flags)
+pcmk__str_in_list(const gchar *s, const GList *lst, uint32_t flags)
 {
-    GCompareFunc fn;
-
-    if (lst == NULL) {
-        return FALSE;
+    for (const GList *ele = lst; ele != NULL; ele = ele->next) {
+        if (pcmk__str_eq(s, ele->data, flags)) {
+            return TRUE;
+        }
     }
 
-    if (strcmp(lst->data, "*") == 0 && lst->next == NULL) {
-        return TRUE;
-    }
+    return FALSE;
+}
 
+static bool
+str_any_of(const char *s, va_list args, uint32_t flags)
+{
     if (s == NULL) {
         return pcmk_is_set(flags, pcmk__str_null_matches);
     }
 
-    if (pcmk_is_set(flags, pcmk__str_casei)) {
-        fn = (GCompareFunc) strcasecmp;
-    } else {
-        fn = (GCompareFunc) strcmp;
-    }
+    while (1) {
+        const char *ele = va_arg(args, const char *);
 
-    return g_list_find_custom(lst, s, fn) != NULL;
-}
-
-static bool
-str_any_of(bool casei, const char *s, va_list args)
-{
-    bool rc = false;
-
-    if (s != NULL) {
-        while (1) {
-            const char *ele = va_arg(args, const char *);
-
-            if (ele == NULL) {
-                break;
-            } else if (pcmk__str_eq(s, ele,
-                                    casei? pcmk__str_casei : pcmk__str_none)) {
-                rc = true;
-                break;
-            }
+        if (ele == NULL) {
+            break;
+        } else if (pcmk__str_eq(s, ele, flags)) {
+            return true;
         }
     }
-    return rc;
+
+    return false;
 }
 
 /*!
@@ -958,7 +936,7 @@ pcmk__strcase_any_of(const char *s, ...)
     bool rc;
 
     va_start(ap, s);
-    rc = str_any_of(true, s, ap);
+    rc = str_any_of(s, ap, pcmk__str_casei);
     va_end(ap);
     return rc;
 }
@@ -982,7 +960,7 @@ pcmk__str_any_of(const char *s, ...)
     bool rc;
 
     va_start(ap, s);
-    rc = str_any_of(false, s, ap);
+    rc = str_any_of(s, ap, pcmk__str_none);
     va_end(ap);
     return rc;
 }
@@ -1044,6 +1022,8 @@ pcmk__char_in_any_str(int ch, ...)
 int
 pcmk__numeric_strcasecmp(const char *s1, const char *s2)
 {
+    CRM_ASSERT((s1 != NULL) && (s2 != NULL));
+
     while (*s1 && *s2) {
         if (isdigit(*s1) && isdigit(*s2)) {
             // If node names contain a number, sort numerically
@@ -1090,67 +1070,68 @@ pcmk__numeric_strcasecmp(const char *s1, const char *s2)
     return 0;
 }
 
-/*
+/*!
+ * \internal
  * \brief Sort strings.
  *
- * This is your one-stop function for string comparison.  By default, this
- * function works like g_strcmp0.  That is, like strcmp but a NULL string
- * sorts before a non-NULL string.
+ * This is your one-stop function for string comparison. By default, this
+ * function works like \p g_strcmp0. That is, like \p strcmp but a \p NULL
+ * string sorts before a non-<tt>NULL</tt> string.
  *
- * Behavior can be changed with various flags:
+ * The \p pcmk__str_none flag produces the default behavior. Behavior can be
+ * changed with various flags:
  *
- * - pcmk__str_regex - The second string is a regular expression that the
- *                     first string will be matched against.
- * - pcmk__str_casei - By default, comparisons are done taking case into
- *                     account.  This flag makes comparisons case-insensitive.
- *                     This can be combined with pcmk__str_regex.
- * - pcmk__str_null_matches - If one string is NULL and the other is not,
- *                            still return 0.
+ * - \p pcmk__str_regex - The second string is a regular expression that the
+ *                        first string will be matched against.
+ * - \p pcmk__str_casei - By default, comparisons are done taking case into
+ *                        account. This flag makes comparisons case-
+ *                        insensitive. This can be combined with
+ *                        \p pcmk__str_regex.
+ * - \p pcmk__str_null_matches - If one string is \p NULL and the other is not,
+ *                               still return \p 0.
+ * - \p pcmk__str_star_matches - If one string is \p "*" and the other is not,
+ *                               still return \p 0.
  *
- * \param[in] s1    First string to compare
- * \param[in] s2    Second string to compare, or a regular expression to
- *                  match if pcmk__str_regex is set
- * \param[in] flags A bitfield of pcmk__str_flags to modify operation
+ * \param[in] s1     First string to compare
+ * \param[in] s2     Second string to compare, or a regular expression to
+ *                   match if \p pcmk__str_regex is set
+ * \param[in] flags  A bitfield of \p pcmk__str_flags to modify operation
  *
- * \retval -1 \p s1 is NULL or comes before \p s2
- * \retval  0 \p s1 and \p s2 are equal, or \p s1 is found in \p s2 if
- *            pcmk__str_regex is set
- * \retval  1 \p s2 is NULL or \p s1 comes after \p s2, or if \p s2
- *            is an invalid regular expression, or \p s1 was not found
- *            in \p s2 if pcmk__str_regex is set.
+ * \retval  negative \p s1 is \p NULL or comes before \p s2
+ * \retval  0        \p s1 and \p s2 are equal, or \p s1 is found in \p s2 if
+ *                   \c pcmk__str_regex is set
+ * \retval  positive \p s2 is \p NULL or \p s1 comes after \p s2, or \p s2
+ *                   is an invalid regular expression, or \p s1 was not found
+ *                   in \p s2 if \p pcmk__str_regex is set.
  */
 int
 pcmk__strcmp(const char *s1, const char *s2, uint32_t flags)
 {
     /* If this flag is set, the second string is a regex. */
     if (pcmk_is_set(flags, pcmk__str_regex)) {
-        regex_t *r_patt = calloc(1, sizeof(regex_t));
+        regex_t r_patt;
         int reg_flags = REG_EXTENDED | REG_NOSUB;
         int regcomp_rc = 0;
         int rc = 0;
 
         if (s1 == NULL || s2 == NULL) {
-            free(r_patt);
             return 1;
         }
 
         if (pcmk_is_set(flags, pcmk__str_casei)) {
             reg_flags |= REG_ICASE;
         }
-        regcomp_rc = regcomp(r_patt, s2, reg_flags);
+        regcomp_rc = regcomp(&r_patt, s2, reg_flags);
         if (regcomp_rc != 0) {
             rc = 1;
             crm_err("Bad regex '%s' for update: %s", s2, strerror(regcomp_rc));
         } else {
-            rc = regexec(r_patt, s1, 0, NULL, 0);
-
+            rc = regexec(&r_patt, s1, 0, NULL, 0);
+            regfree(&r_patt);
             if (rc != 0) {
                 rc = 1;
             }
         }
-
-        regfree(r_patt);
-        free(r_patt);
         return rc;
     }
 
@@ -1178,6 +1159,16 @@ pcmk__strcmp(const char *s1, const char *s2, uint32_t flags)
         return 1;
     }
 
+    /* If this flag is set, return 0 if either (or both) of the input strings
+     * are "*".  If neither one is, we need to continue and compare them
+     * normally.
+     */
+    if (pcmk_is_set(flags, pcmk__str_star_matches)) {
+        if (strcmp(s1, "*") == 0 || strcmp(s2, "*") == 0) {
+            return 0;
+        }
+    }
+
     if (pcmk_is_set(flags, pcmk__str_casei)) {
         return strcasecmp(s1, s2);
     } else {
@@ -1185,7 +1176,64 @@ pcmk__strcmp(const char *s1, const char *s2, uint32_t flags)
     }
 }
 
+/*!
+ * \internal
+ * \brief Update a dynamically allocated string with a new value
+ *
+ * Given a dynamically allocated string and a new value for it, if the string
+ * is different from the new value, free the string and replace it with either a
+ * newly allocated duplicate of the value or NULL as appropriate.
+ *
+ * \param[in,out] str    Pointer to dynamically allocated string
+ * \param[in]     value  New value to duplicate (or NULL)
+ *
+ * \note The caller remains responsibile for freeing \p *str.
+ */
+void
+pcmk__str_update(char **str, const char *value)
+{
+    if ((str != NULL) && !pcmk__str_eq(*str, value, pcmk__str_none)) {
+        free(*str);
+        if (value == NULL) {
+            *str = NULL;
+        } else {
+            *str = strdup(value);
+            CRM_ASSERT(*str != NULL);
+        }
+    }
+}
+
+/*!
+ * \internal
+ * \brief Append a list of strings to a destination \p GString
+ *
+ * \param[in,out] buffer  Where to append the strings (must not be \p NULL)
+ * \param[in]     ...     A <tt>NULL</tt>-terminated list of strings
+ *
+ * \note This tends to be more efficient than a single call to
+ *       \p g_string_append_printf().
+ */
+void
+pcmk__g_strcat(GString *buffer, ...)
+{
+    va_list ap;
+
+    CRM_ASSERT(buffer != NULL);
+    va_start(ap, buffer);
+
+    while (true) {
+        const char *ele = va_arg(ap, const char *);
+
+        if (ele == NULL) {
+            break;
+        }
+        g_string_append(buffer, ele);
+    }
+    va_end(ap);
+}
+
 // Deprecated functions kept only for backward API compatibility
+// LCOV_EXCL_START
 
 #include <crm/common/util_compat.h>
 
@@ -1311,4 +1359,5 @@ pcmk_numeric_strcasecmp(const char *s1, const char *s2)
     return pcmk__numeric_strcasecmp(s1, s2);
 }
 
+// LCOV_EXCL_STOP
 // End deprecated API

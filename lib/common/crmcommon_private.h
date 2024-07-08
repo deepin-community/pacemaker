@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2020 the Pacemaker project contributors
+ * Copyright 2018-2023 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -24,31 +24,10 @@
 // Decent chunk size for processing large amounts of data
 #define PCMK__BUFFER_SIZE 4096
 
-/*
- * XML and ACLs
- */
-
-enum xml_private_flags {
-     xpf_none        = 0x0000,
-     xpf_dirty       = 0x0001,
-     xpf_deleted     = 0x0002,
-     xpf_created     = 0x0004,
-     xpf_modified    = 0x0008,
-
-     xpf_tracking    = 0x0010,
-     xpf_processed   = 0x0020,
-     xpf_skip        = 0x0040,
-     xpf_moved       = 0x0080,
-
-     xpf_acl_enabled = 0x0100,
-     xpf_acl_read    = 0x0200,
-     xpf_acl_write   = 0x0400,
-     xpf_acl_deny    = 0x0800,
-
-     xpf_acl_create  = 0x1000,
-     xpf_acl_denied  = 0x2000,
-     xpf_lazy        = 0x4000,
-};
+#if defined(PCMK__UNIT_TESTING)
+#undef G_GNUC_INTERNAL
+#define G_GNUC_INTERNAL
+#endif
 
 /* When deleting portions of an XML tree, we keep a record so we can know later
  * (e.g. when checking differences) that something was deleted.
@@ -58,13 +37,18 @@ typedef struct pcmk__deleted_xml_s {
         int position;
 } pcmk__deleted_xml_t;
 
-typedef struct xml_private_s {
+typedef struct xml_node_private_s {
+        long check;
+        uint32_t flags;
+} xml_node_private_t;
+
+typedef struct xml_doc_private_s {
         long check;
         uint32_t flags;
         char *user;
         GList *acls;
         GList *deleted_objs; // List of pcmk__deleted_xml_t
-} xml_private_t;
+} xml_doc_private_t;
 
 #define pcmk__set_xml_flags(xml_priv, flags_to_set) do {                    \
         (xml_priv)->flags = pcmk__set_flags_as(__func__, __LINE__,          \
@@ -79,42 +63,30 @@ typedef struct xml_private_s {
     } while (0)
 
 G_GNUC_INTERNAL
-void pcmk__xml2text(xmlNode *data, int options, char **buffer, int *offset,
-                    int *max, int depth);
-
-G_GNUC_INTERNAL
-void pcmk__buffer_add_char(char **buffer, int *offset, int *max, char c);
-
-G_GNUC_INTERNAL
-void pcmk__set_xml_doc_flag(xmlNode *xml, enum xml_private_flags flag);
+void pcmk__xml2text(xmlNodePtr data, uint32_t options, GString *buffer,
+                    int depth);
 
 G_GNUC_INTERNAL
 bool pcmk__tracking_xml_changes(xmlNode *xml, bool lazy);
 
 G_GNUC_INTERNAL
-int pcmk__element_xpath(const char *prefix, xmlNode *xml, char *buffer,
-                        int offset, size_t buffer_size);
-
-G_GNUC_INTERNAL
 void pcmk__mark_xml_created(xmlNode *xml);
 
 G_GNUC_INTERNAL
-int pcmk__xml_position(xmlNode *xml, enum xml_private_flags ignore_if_set);
+int pcmk__xml_position(const xmlNode *xml,
+                       enum xml_private_flags ignore_if_set);
 
 G_GNUC_INTERNAL
-xmlNode *pcmk__xml_match(xmlNode *haystack, xmlNode *needle, bool exact);
-
-G_GNUC_INTERNAL
-void pcmk__xe_log(int log_level, const char *file, const char *function,
-                  int line, const char *prefix, xmlNode *data, int depth,
-                  int options);
+xmlNode *pcmk__xml_match(const xmlNode *haystack, const xmlNode *needle,
+                         bool exact);
 
 G_GNUC_INTERNAL
 void pcmk__xml_update(xmlNode *parent, xmlNode *target, xmlNode *update,
                       bool as_diff);
 
 G_GNUC_INTERNAL
-xmlNode *pcmk__xc_match(xmlNode *root, xmlNode *search_comment, bool exact);
+xmlNode *pcmk__xc_match(const xmlNode *root, const xmlNode *search_comment,
+                        bool exact);
 
 G_GNUC_INTERNAL
 void pcmk__xc_update(xmlNode *parent, xmlNode *target, xmlNode *update);
@@ -126,8 +98,7 @@ G_GNUC_INTERNAL
 void pcmk__unpack_acl(xmlNode *source, xmlNode *target, const char *user);
 
 G_GNUC_INTERNAL
-bool pcmk__check_acl(xmlNode *xml, const char *name,
-                     enum xml_private_flags mode);
+bool pcmk__is_user_in_group(const char *user, const char *group);
 
 G_GNUC_INTERNAL
 void pcmk__apply_acl(xmlNode *xml);
@@ -140,6 +111,10 @@ void pcmk__mark_xml_attr_dirty(xmlAttr *a);
 
 G_GNUC_INTERNAL
 bool pcmk__xa_filterable(const char *name);
+
+G_GNUC_INTERNAL
+void pcmk__log_xmllib_err(void *ctx, const char *fmt, ...)
+G_GNUC_PRINTF(2, 3);
 
 static inline const char *
 pcmk__xml_attr_value(const xmlAttr *attr)
@@ -163,7 +138,7 @@ typedef struct pcmk__ipc_methods_s {
      * \internal
      * \brief Allocate any private data needed by daemon IPC
      *
-     * \param[in] api  IPC API connection
+     * \param[in,out] api  IPC API connection
      *
      * \return Standard Pacemaker return code
      */
@@ -173,7 +148,7 @@ typedef struct pcmk__ipc_methods_s {
      * \internal
      * \brief Free any private data used by daemon IPC
      *
-     * \param[in] api_data  Data allocated by new_data() method
+     * \param[in,out] api_data  Data allocated by new_data() method
      */
     void (*free_data)(void *api_data);
 
@@ -187,7 +162,7 @@ typedef struct pcmk__ipc_methods_s {
      * reply). Ideally this would be consistent across all daemons, but for now
      * this allows each to do its own authorization.
      *
-     * \param[in] api  IPC API connection
+     * \param[in,out] api  IPC API connection
      *
      * \return Standard Pacemaker return code
      */
@@ -197,8 +172,8 @@ typedef struct pcmk__ipc_methods_s {
      * \internal
      * \brief Check whether an IPC request results in a reply
      *
-     * \parma[in] api      IPC API connection
-     * \param[in] request  IPC request XML
+     * \param[in,out] api      IPC API connection
+     * \param[in,out] request  IPC request XML
      *
      * \return true if request would result in an IPC reply, false otherwise
      */
@@ -208,16 +183,18 @@ typedef struct pcmk__ipc_methods_s {
      * \internal
      * \brief Perform daemon-specific handling of an IPC message
      *
-     * \param[in] api  IPC API connection
-     * \param[in] msg  Message read from IPC connection
+     * \param[in,out] api  IPC API connection
+     * \param[in,out] msg  Message read from IPC connection
+     *
+     * \return true if more IPC reply messages should be expected
      */
-    void (*dispatch)(pcmk_ipc_api_t *api, xmlNode *msg);
+    bool (*dispatch)(pcmk_ipc_api_t *api, xmlNode *msg);
 
     /*!
      * \internal
      * \brief Perform daemon-specific handling of an IPC disconnect
      *
-     * \param[in] api  IPC API connection
+     * \param[in,out] api  IPC API connection
      */
     void (*post_disconnect)(pcmk_ipc_api_t *api);
 } pcmk__ipc_methods_t;
@@ -259,15 +236,33 @@ G_GNUC_INTERNAL
 bool pcmk__valid_ipc_header(const pcmk__ipc_header_t *header);
 
 G_GNUC_INTERNAL
+pcmk__ipc_methods_t *pcmk__attrd_api_methods(void);
+
+G_GNUC_INTERNAL
 pcmk__ipc_methods_t *pcmk__controld_api_methods(void);
 
 G_GNUC_INTERNAL
 pcmk__ipc_methods_t *pcmk__pacemakerd_api_methods(void);
 
+G_GNUC_INTERNAL
+pcmk__ipc_methods_t *pcmk__schedulerd_api_methods(void);
+
 
 /*
  * Logging
  */
+
+//! XML is newly created
+#define PCMK__XML_PREFIX_CREATED "++"
+
+//! XML has been deleted
+#define PCMK__XML_PREFIX_DELETED "--"
+
+//! XML has been modified
+#define PCMK__XML_PREFIX_MODIFIED "+ "
+
+//! XML has been moved
+#define PCMK__XML_PREFIX_MOVED "+~"
 
 /*!
  * \brief Check the authenticity of the IPC socket peer process
@@ -304,8 +299,27 @@ pcmk__ipc_methods_t *pcmk__pacemakerd_api_methods(void);
  *       the least privilege principle and may pose an additional risk
  *       (i.e. such accidental inconsistency shall be eventually fixed).
  */
-int pcmk__crm_ipc_is_authentic_process(qb_ipcc_connection_t *qb_ipc, int sock, uid_t refuid, gid_t refgid,
-                                       pid_t *gotpid, uid_t *gotuid, gid_t *gotgid);
+int pcmk__crm_ipc_is_authentic_process(qb_ipcc_connection_t *qb_ipc, int sock,
+                                       uid_t refuid, gid_t refgid,
+                                       pid_t *gotpid, uid_t *gotuid,
+                                       gid_t *gotgid);
+
+
+/*
+ * Output
+ */
+G_GNUC_INTERNAL
+int pcmk__bare_output_new(pcmk__output_t **out, const char *fmt_name,
+                          const char *filename, char **argv);
+
+G_GNUC_INTERNAL
+void pcmk__register_patchset_messages(pcmk__output_t *out);
+
+
+/*
+ * Utils
+ */
+#define PCMK__PW_BUFFER_LEN 500
 
 
 #endif  // CRMCOMMON_PRIVATE__H

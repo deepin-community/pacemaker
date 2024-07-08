@@ -1,7 +1,7 @@
 Current cluster status:
   * Node List:
     * Online: [ undercloud ]
-    * GuestOnline: [ galera-bundle-0@undercloud rabbitmq-bundle-0@undercloud redis-bundle-0@undercloud ]
+    * GuestOnline: [ galera-bundle-0 rabbitmq-bundle-0 redis-bundle-0 ]
 
   * Full List of Resources:
     * Container bundle: rabbitmq-bundle [192.168.24.1:8787/tripleoupstream/centos-binary-rabbitmq:latest]:
@@ -22,23 +22,23 @@ Current cluster status:
       * openstack-cinder-volume-docker-0	(ocf:heartbeat:docker):	 Started undercloud
 
 Transition Summary:
-  * Stop       rabbitmq-bundle-docker-0             (             undercloud )  due to node availability
-  * Stop       rabbitmq-bundle-0                    (             undercloud )  due to node availability
-  * Stop       rabbitmq:0                           (      rabbitmq-bundle-0 )  due to unrunnable rabbitmq-bundle-0 start
-  * Stop       galera-bundle-docker-0               (             undercloud )  due to node availability
-  * Stop       galera-bundle-0                      (             undercloud )  due to node availability
+  * Stop       rabbitmq-bundle-docker-0             (               undercloud )  due to node availability
+  * Stop       rabbitmq-bundle-0                    (               undercloud )  due to node availability
+  * Stop       rabbitmq:0                           (        rabbitmq-bundle-0 )  due to colocation with haproxy-bundle-docker-0
+  * Stop       galera-bundle-docker-0               (               undercloud )  due to node availability
+  * Stop       galera-bundle-0                      (               undercloud )  due to node availability
   * Stop       galera:0                             ( Promoted galera-bundle-0 )  due to unrunnable galera-bundle-0 start
-  * Stop       redis-bundle-docker-0                (             undercloud )  due to node availability
-  * Stop       redis-bundle-0                       (             undercloud )  due to node availability
+  * Stop       redis-bundle-docker-0                (               undercloud )  due to node availability
+  * Stop       redis-bundle-0                       (               undercloud )  due to node availability
   * Stop       redis:0                              (  Promoted redis-bundle-0 )  due to unrunnable redis-bundle-0 start
-  * Stop       ip-192.168.122.254                   (             undercloud )  due to node availability
-  * Stop       ip-192.168.122.250                   (             undercloud )  due to node availability
-  * Stop       ip-192.168.122.249                   (             undercloud )  due to node availability
-  * Stop       ip-192.168.122.253                   (             undercloud )  due to node availability
-  * Stop       ip-192.168.122.247                   (             undercloud )  due to node availability
-  * Stop       ip-192.168.122.248                   (             undercloud )  due to node availability
-  * Stop       haproxy-bundle-docker-0              (             undercloud )  due to node availability
-  * Stop       openstack-cinder-volume-docker-0     (             undercloud )  due to node availability
+  * Stop       ip-192.168.122.254                   (               undercloud )  due to node availability
+  * Stop       ip-192.168.122.250                   (               undercloud )  due to node availability
+  * Stop       ip-192.168.122.249                   (               undercloud )  due to node availability
+  * Stop       ip-192.168.122.253                   (               undercloud )  due to node availability
+  * Stop       ip-192.168.122.247                   (               undercloud )  due to node availability
+  * Stop       ip-192.168.122.248                   (               undercloud )  due to node availability
+  * Stop       haproxy-bundle-docker-0              (               undercloud )  due to node availability
+  * Stop       openstack-cinder-volume-docker-0     (               undercloud )  due to node availability
 
 Executing Cluster Transition:
   * Pseudo action:   rabbitmq-bundle-clone_pre_notify_stop_0
@@ -46,6 +46,7 @@ Executing Cluster Transition:
   * Resource action: redis           cancel=20000 on redis-bundle-0
   * Pseudo action:   redis-bundle-master_pre_notify_demote_0
   * Pseudo action:   openstack-cinder-volume_stop_0
+  * Pseudo action:   haproxy-bundle_stop_0
   * Pseudo action:   redis-bundle_demote_0
   * Pseudo action:   galera-bundle_demote_0
   * Pseudo action:   rabbitmq-bundle_stop_0
@@ -56,8 +57,10 @@ Executing Cluster Transition:
   * Resource action: redis           notify on redis-bundle-0
   * Pseudo action:   redis-bundle-master_confirmed-pre_notify_demote_0
   * Pseudo action:   redis-bundle-master_demote_0
+  * Resource action: haproxy-bundle-docker-0 stop on undercloud
   * Resource action: openstack-cinder-volume-docker-0 stop on undercloud
   * Pseudo action:   openstack-cinder-volume_stopped_0
+  * Pseudo action:   haproxy-bundle_stopped_0
   * Resource action: rabbitmq        stop on rabbitmq-bundle-0
   * Pseudo action:   rabbitmq-bundle-clone_stopped_0
   * Resource action: rabbitmq-bundle-0 stop on undercloud
@@ -65,6 +68,12 @@ Executing Cluster Transition:
   * Pseudo action:   galera-bundle-master_demoted_0
   * Resource action: redis           demote on redis-bundle-0
   * Pseudo action:   redis-bundle-master_demoted_0
+  * Resource action: ip-192.168.122.254 stop on undercloud
+  * Resource action: ip-192.168.122.250 stop on undercloud
+  * Resource action: ip-192.168.122.249 stop on undercloud
+  * Resource action: ip-192.168.122.253 stop on undercloud
+  * Resource action: ip-192.168.122.247 stop on undercloud
+  * Resource action: ip-192.168.122.248 stop on undercloud
   * Pseudo action:   galera-bundle_demoted_0
   * Pseudo action:   galera-bundle_stop_0
   * Pseudo action:   rabbitmq-bundle-clone_post_notify_stopped_0
@@ -91,18 +100,9 @@ Executing Cluster Transition:
   * Resource action: redis-bundle-0  stop on undercloud
   * Pseudo action:   redis-bundle-master_post_notify_stopped_0
   * Resource action: redis-bundle-docker-0 stop on undercloud
+  * Cluster action:  do_shutdown on undercloud
   * Pseudo action:   redis-bundle-master_confirmed-post_notify_stopped_0
   * Pseudo action:   redis-bundle_stopped_0
-  * Pseudo action:   haproxy-bundle_stop_0
-  * Resource action: haproxy-bundle-docker-0 stop on undercloud
-  * Pseudo action:   haproxy-bundle_stopped_0
-  * Resource action: ip-192.168.122.254 stop on undercloud
-  * Resource action: ip-192.168.122.250 stop on undercloud
-  * Resource action: ip-192.168.122.249 stop on undercloud
-  * Resource action: ip-192.168.122.253 stop on undercloud
-  * Resource action: ip-192.168.122.247 stop on undercloud
-  * Resource action: ip-192.168.122.248 stop on undercloud
-  * Cluster action:  do_shutdown on undercloud
 
 Revised Cluster Status:
   * Node List:

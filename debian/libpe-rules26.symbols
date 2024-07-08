@@ -3,7 +3,6 @@ libpe_rules.so.26 libpe-rules26 #MINVER#
  add_hash_param@Base 1.0.10
  fail2text@Base 1.0.10
  find_expression_type@Base 1.0.10
- pe__add_scores@Base 2.0.4
  pe__eval_attr_expr@Base 2.0.5~rc2
  pe__eval_date_expr@Base 2.0.5~rc2
  pe__eval_op_expr@Base 2.0.5~rc2
@@ -20,7 +19,6 @@ libpe_rules.so.26 libpe-rules26 #MINVER#
  pe_metadata@Base 1.0.10
  pe_node_attribute_calculated@Base 1.1.18~rc3
  pe_node_attribute_raw@Base 1.1.18~rc3
- pe_parse_xml_duration@Base 2.0.2
  pe_pref@Base 1.0.10
  pe_test_expression@Base 2.0.3
  pe_test_expression_full@Base 1.1.17~rc1

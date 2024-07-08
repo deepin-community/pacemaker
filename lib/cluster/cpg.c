@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2020 the Pacemaker project contributors
+ * Copyright 2004-2022 the Pacemaker project contributors
  *
  * The version control history for this file may have further details.
  *
@@ -89,7 +89,7 @@ static void crm_cs_flush(gpointer data);
 /*!
  * \brief Disconnect from Corosync CPG
  *
- * \param[in] Cluster to disconnect
+ * \param[in,out] cluster  Cluster to disconnect
  */
 void
 cluster_disconnect_cpg(crm_cluster_t *cluster)
@@ -252,13 +252,10 @@ crm_cs_flush(gpointer data)
     }
 
     queue_len -= sent;
-    if ((sent > 1) || (cs_message_queue != NULL)) {
-        crm_info("Sent %u CPG messages  (%d remaining): %s (%d)",
-                 sent, queue_len, pcmk__cs_err_str(rc), (int) rc);
-    } else {
-        crm_trace("Sent %u CPG messages  (%d remaining): %s (%d)",
-                  sent, queue_len, pcmk__cs_err_str(rc), (int) rc);
-    }
+    do_crm_log((queue_len > 5)? LOG_INFO : LOG_TRACE,
+               "Sent %u CPG message%s (%d still queued): %s (rc=%d)",
+               sent, pcmk__plural_s(sent), queue_len, pcmk__cs_err_str(rc),
+               (int) rc);
 
     if (cs_message_queue) {
         uint32_t delay_ms = 100;
@@ -274,7 +271,7 @@ crm_cs_flush(gpointer data)
  * \internal
  * \brief Dispatch function for CPG handle
  *
- * \param[in] user_data  Cluster object
+ * \param[in,out] user_data  Cluster object
  *
  * \return 0 on success, -1 on error (per mainloop_io_t interface)
  */
@@ -427,15 +424,15 @@ check_message_sanity(const pcmk__cpg_msg_t *msg)
 /*!
  * \brief Extract text data from a Corosync CPG message
  *
- * \param[in]  handle   CPG connection (to get local node ID if not yet known)
- * \param[in]  nodeid   Corosync ID of node that sent message
- * \param[in]  pid      Process ID of message sender (for logging only)
- * \param[in]  content  CPG message
- * \param[out] kind     If not NULL, will be set to CPG header ID
- *                      (which should be an enum crm_ais_msg_class value,
- *                      currently always crm_class_cluster)
- * \param[out] from     If not NULL, will be set to sender uname
- *                      (valid for the lifetime of \p content)
+ * \param[in]     handle   CPG connection (to get local node ID if not known)
+ * \param[in]     nodeid   Corosync ID of node that sent message
+ * \param[in]     pid      Process ID of message sender (for logging only)
+ * \param[in,out] content  CPG message
+ * \param[out]    kind     If not NULL, will be set to CPG header ID
+ *                         (which should be an enum crm_ais_msg_class value,
+ *                         currently always crm_class_cluster)
+ * \param[out]    from     If not NULL, will be set to sender uname
+ *                         (valid for the lifetime of \p content)
  *
  * \return Newly allocated string with message data
  * \note It is the caller's responsibility to free the return value with free().
@@ -602,7 +599,7 @@ cpgreason2str(cpg_reason_t reason)
  * \return Node's uname, or readable string if not known
  */
 static inline const char *
-peer_name(crm_node_t *peer)
+peer_name(const crm_node_t *peer)
 {
     if (peer == NULL) {
         return "unknown node";
@@ -610,6 +607,67 @@ peer_name(crm_node_t *peer)
         return "peer node";
     } else {
         return peer->uname;
+    }
+}
+
+/*!
+ * \internal
+ * \brief Process a CPG peer's leaving the cluster
+ *
+ * \param[in] cpg_group_name      CPG group name (for logging)
+ * \param[in] event_counter       Event number (for logging)
+ * \param[in] local_nodeid        Node ID of local node
+ * \param[in] cpg_peer            CPG peer that left
+ * \param[in] sorted_member_list  List of remaining members, qsort()-ed by ID
+ * \param[in] member_list_entries Number of entries in \p sorted_member_list
+ */
+static void
+node_left(const char *cpg_group_name, int event_counter,
+          uint32_t local_nodeid, const struct cpg_address *cpg_peer,
+          const struct cpg_address **sorted_member_list,
+          size_t member_list_entries)
+{
+    crm_node_t *peer = pcmk__search_cluster_node_cache(cpg_peer->nodeid,
+                                                       NULL);
+    const struct cpg_address **rival = NULL;
+
+    /* Most CPG-related Pacemaker code assumes that only one process on a node
+     * can be in the process group, but Corosync does not impose this
+     * limitation, and more than one can be a member in practice due to a
+     * daemon attempting to start while another instance is already running.
+     *
+     * Check for any such duplicate instances, because we don't want to process
+     * their leaving as if our actual peer left. If the peer that left still has
+     * an entry in sorted_member_list (with a different PID), we will ignore the
+     * leaving.
+     *
+     * @TODO Track CPG members' PIDs so we can tell exactly who left.
+     */
+    if (peer != NULL) {
+        rival = bsearch(&cpg_peer, sorted_member_list, member_list_entries,
+                        sizeof(const struct cpg_address *),
+                        cmp_member_list_nodeid);
+    }
+
+    if (rival == NULL) {
+        crm_info("Group %s event %d: %s (node %u pid %u) left%s",
+                 cpg_group_name, event_counter, peer_name(peer),
+                 cpg_peer->nodeid, cpg_peer->pid,
+                 cpgreason2str(cpg_peer->reason));
+        if (peer != NULL) {
+            crm_update_peer_proc(__func__, peer, crm_proc_cpg,
+                                 OFFLINESTATUS);
+        }
+    } else if (cpg_peer->nodeid == local_nodeid) {
+        crm_warn("Group %s event %d: duplicate local pid %u left%s",
+                 cpg_group_name, event_counter,
+                 cpg_peer->pid, cpgreason2str(cpg_peer->reason));
+    } else {
+        crm_warn("Group %s event %d: "
+                 "%s (node %u) duplicate pid %u left%s (%u remains)",
+                 cpg_group_name, event_counter, peer_name(peer),
+                 cpg_peer->nodeid, cpg_peer->pid,
+                 cpgreason2str(cpg_peer->reason), (*rival)->pid);
     }
 }
 
@@ -636,7 +694,7 @@ pcmk_cpg_membership(cpg_handle_t handle,
     gboolean found = FALSE;
     static int counter = 0;
     uint32_t local_nodeid = get_local_nodeid(handle);
-    const struct cpg_address *key, **sorted;
+    const struct cpg_address **sorted;
 
     sorted = malloc(member_list_entries * sizeof(const struct cpg_address *));
     CRM_ASSERT(sorted != NULL);
@@ -649,52 +707,8 @@ pcmk_cpg_membership(cpg_handle_t handle,
           cmp_member_list_nodeid);
 
     for (i = 0; i < left_list_entries; i++) {
-        crm_node_t *peer = pcmk__search_cluster_node_cache(left_list[i].nodeid,
-                                                           NULL);
-        const struct cpg_address **rival = NULL;
-
-        /* in CPG world, NODE:PROCESS-IN-MEMBERSHIP-OF-G is an 1:N relation
-           and not playing by this rule may go wild in case of multiple
-           residual instances of the same pacemaker daemon at the same node
-           -- we must ensure that the possible local rival(s) won't make us
-           cry out and bail (e.g. when they quit themselves), since all the
-           surrounding logic denies this simple fact that the full membership
-           is discriminated also per the PID of the process beside mere node
-           ID (and implicitly, group ID); practically, this will be sound in
-           terms of not preventing progress, since all the CPG joiners are
-           also API end-point carriers, and that's what matters locally
-           (who's the winner);
-           remotely, we will just compare leave_list and member_list and if
-           the left process has its node retained in member_list (under some
-           other PID, anyway) we will just ignore it as well
-           XXX: long-term fix is to establish in-out PID-aware tracking? */
-        if (peer) {
-            key = &left_list[i];
-            rival = bsearch(&key, sorted, member_list_entries,
-                            sizeof(const struct cpg_address *),
-                            cmp_member_list_nodeid);
-        }
-
-        if (rival == NULL) {
-            crm_info("Group %s event %d: %s (node %u pid %u) left%s",
-                     groupName->value, counter, peer_name(peer),
-                     left_list[i].nodeid, left_list[i].pid,
-                     cpgreason2str(left_list[i].reason));
-            if (peer) {
-                crm_update_peer_proc(__func__, peer, crm_proc_cpg,
-                                     OFFLINESTATUS);
-            }
-        } else if (left_list[i].nodeid == local_nodeid) {
-            crm_warn("Group %s event %d: duplicate local pid %u left%s",
-                     groupName->value, counter,
-                     left_list[i].pid, cpgreason2str(left_list[i].reason));
-        } else {
-            crm_warn("Group %s event %d: "
-                     "%s (node %u) duplicate pid %u left%s (%u remains)",
-                     groupName->value, counter, peer_name(peer),
-                     left_list[i].nodeid, left_list[i].pid,
-                     cpgreason2str(left_list[i].reason), (*rival)->pid);
-        }
+        node_left(groupName->value, counter, local_nodeid, &left_list[i],
+                  sorted, member_list_entries);
     }
     free(sorted);
     sorted = NULL;
@@ -710,7 +724,7 @@ pcmk_cpg_membership(cpg_handle_t handle,
 
         if (member_list[i].nodeid == local_nodeid
                 && member_list[i].pid != getpid()) {
-            /* see the note above */
+            // See the note in node_left()
             crm_warn("Group %s event %d: detected duplicate local pid %u",
                      groupName->value, counter, member_list[i].pid);
             continue;
@@ -763,7 +777,7 @@ pcmk_cpg_membership(cpg_handle_t handle,
 /*!
  * \brief Connect to Corosync CPG
  *
- * \param[in] cluster  Cluster object
+ * \param[in,out] cluster  Cluster object
  *
  * \return TRUE on success, otherwise FALSE
  */
@@ -875,7 +889,8 @@ cluster_connect_cpg(crm_cluster_t *cluster)
  * \return TRUE on success, otherwise FALSE
  */
 gboolean
-pcmk__cpg_send_xml(xmlNode *msg, crm_node_t *node, enum crm_ais_msg_types dest)
+pcmk__cpg_send_xml(xmlNode *msg, const crm_node_t *node,
+                   enum crm_ais_msg_types dest)
 {
     gboolean rc = TRUE;
     char *data = NULL;
@@ -900,7 +915,8 @@ pcmk__cpg_send_xml(xmlNode *msg, crm_node_t *node, enum crm_ais_msg_types dest)
  */
 gboolean
 send_cluster_text(enum crm_ais_msg_class msg_class, const char *data,
-                  gboolean local, crm_node_t *node, enum crm_ais_msg_types dest)
+                  gboolean local, const crm_node_t *node,
+                  enum crm_ais_msg_types dest)
 {
     static int msg_id = 0;
     static int local_pid = 0;

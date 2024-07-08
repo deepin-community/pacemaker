@@ -8,7 +8,6 @@ usr/lib/ocf/resource.d/pacemaker/ifspeed
 usr/lib/ocf/resource.d/pacemaker/ping
 usr/lib/ocf/resource.d/pacemaker/Stateful
 usr/lib/ocf/resource.d/pacemaker/SysInfo
-usr/lib/ocf/resource.d/pacemaker/SystemHealth
 usr/share/man/man7/ocf_pacemaker_attribute.7
 usr/share/man/man7/ocf_pacemaker_ClusterMon.7
 usr/share/man/man7/ocf_pacemaker_Dummy.7
@@ -19,4 +18,3 @@ usr/share/man/man7/ocf_pacemaker_ifspeed.7
 usr/share/man/man7/ocf_pacemaker_ping.7
 usr/share/man/man7/ocf_pacemaker_Stateful.7
 usr/share/man/man7/ocf_pacemaker_SysInfo.7
-usr/share/man/man7/ocf_pacemaker_SystemHealth.7

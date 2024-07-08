@@ -4,32 +4,35 @@ libstonithd.so.26 libstonithd26 #MINVER#
  create_level_registration_xml@Base 1.1.9
  get_stonith_provider@Base 1.1.9
  i_hate_pils@Base 1.1.9
+ stonith__action_create@Base 2.1.5
  stonith__action_result@Base 1.1.19
- stonith__agent_is_lha@Base 1.1.19
- stonith__agent_is_rhcs@Base 1.1.19
  stonith__destroy_action@Base 1.1.19
  stonith__device_parameter_flags@Base 2.0.4
+ stonith__event_description@Base 2.1.4
+ stonith__event_execution_status@Base 2.1.4
+ stonith__event_exit_reason@Base 2.1.4
+ stonith__event_exit_status@Base 2.1.4
  stonith__event_state_eq@Base 2.0.5~rc2
  stonith__event_state_neq@Base 2.0.5~rc2
  stonith__event_state_pending@Base 2.0.5~rc2
- stonith__execute@Base 1.1.19
- stonith__failed_history@Base 2.0.4
+ stonith__execute_async@Base 2.1.5
+ stonith__execution_status@Base 2.1.4
+ stonith__exit_reason@Base 2.1.4
+ stonith__exit_status@Base 2.1.4
+ stonith__find_xe_with_result@Base 2.1.4
  stonith__first_matching_event@Base 2.0.5~rc2
- stonith__full_history@Base 2.0.4
- stonith__history@Base 2.0.4
+ stonith__history_description@Base 2.1.5
  stonith__later_succeeded@Base 2.0.3
- stonith__lha_metadata@Base 1.1.19
- stonith__lha_validate@Base 1.1.19
- stonith__list_lha_agents@Base 1.1.19
- stonith__list_rhcs_agents@Base 1.1.19
+ stonith__legacy2status@Base 2.1.4
+ stonith__metadata_async@Base 2.1.5
  stonith__parse_targets@Base 2.0.3
- stonith__pending_actions@Base 2.0.4
  stonith__register_messages@Base 2.0.2
- stonith__rhcs_metadata@Base 1.1.19
- stonith__rhcs_validate@Base 1.1.19
+ stonith__result2rc@Base 2.1.4
  stonith__sort_history@Base 2.0.3
- stonith_action_create@Base 1.1.9
- stonith_action_execute_async@Base 1.1.9
+ stonith__watchdog_fencing_enabled_for_node@Base 2.1.2
+ stonith__watchdog_fencing_enabled_for_node_api@Base 2.1.2
+ stonith__xe_get_result@Base 2.1.4
+ stonith__xe_set_result@Base 2.1.4
  stonith_action_str@Base 2.0.2
  stonith_agent_exists@Base 2.0.2
  stonith_api_connect_retry@Base 2.0.3

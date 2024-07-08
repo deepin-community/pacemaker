@@ -3,60 +3,52 @@
  *
  * The version control history for this file may have further details.
  *
- * This source code is licensed under the GNU Lesser General Public License
- * version 2.1 or later (LGPLv2.1+) WITHOUT ANY WARRANTY.
+ * This source code is licensed under the GNU General Public License version 2
+ * or later (GPLv2+) WITHOUT ANY WARRANTY.
  */
 
 #include <crm_internal.h>
 
-#include <stdio.h>
-#include <stdbool.h>
-#include <glib.h>
+#include <crm/common/unittest_internal.h>
 
 static void
-uppercase_str_passes(void)
+uppercase_str_passes(void **state)
 {
-    g_assert_true(pcmk_str_is_minus_infinity("-INFINITY"));
+    assert_true(pcmk_str_is_minus_infinity("-INFINITY"));
 }
 
 static void
-mixed_case_str_fails(void)
+mixed_case_str_fails(void **state)
 {
-    g_assert_false(pcmk_str_is_minus_infinity("-infinity"));
-    g_assert_false(pcmk_str_is_minus_infinity("-Infinity"));
+    assert_false(pcmk_str_is_minus_infinity("-infinity"));
+    assert_false(pcmk_str_is_minus_infinity("-Infinity"));
 }
 
 static void
-added_whitespace_fails(void)
+added_whitespace_fails(void **state)
 {
-    g_assert_false(pcmk_str_is_minus_infinity(" -INFINITY"));
-    g_assert_false(pcmk_str_is_minus_infinity("-INFINITY "));
-    g_assert_false(pcmk_str_is_minus_infinity(" -INFINITY "));
-    g_assert_false(pcmk_str_is_minus_infinity("- INFINITY"));
+    assert_false(pcmk_str_is_minus_infinity(" -INFINITY"));
+    assert_false(pcmk_str_is_minus_infinity("-INFINITY "));
+    assert_false(pcmk_str_is_minus_infinity(" -INFINITY "));
+    assert_false(pcmk_str_is_minus_infinity("- INFINITY"));
 }
 
 static void
-empty_str_fails(void)
+empty_str_fails(void **state)
 {
-    g_assert_false(pcmk_str_is_minus_infinity(NULL));
-    g_assert_false(pcmk_str_is_minus_infinity(""));
+    assert_false(pcmk_str_is_minus_infinity(NULL));
+    assert_false(pcmk_str_is_minus_infinity(""));
 }
 
 static void
-infinity_fails(void)
+infinity_fails(void **state)
 {
-    g_assert_false(pcmk_str_is_minus_infinity("INFINITY"));
+    assert_false(pcmk_str_is_minus_infinity("INFINITY"));
 }
 
-int main(int argc, char **argv)
-{
-    g_test_init(&argc, &argv, NULL);
-
-    g_test_add_func("/common/utils/minus_infinity/uppercase", uppercase_str_passes);
-    g_test_add_func("/common/utils/minus_infinity/mixed_case", mixed_case_str_fails);
-    g_test_add_func("/common/utils/minus_infinity/whitespace", added_whitespace_fails);
-    g_test_add_func("/common/utils/minus_infinity/empty", empty_str_fails);
-    g_test_add_func("/common/utils/minus_infinity/infinity", infinity_fails);
-
-    return g_test_run();
-}
+PCMK__UNIT_TEST(NULL, NULL,
+                cmocka_unit_test(uppercase_str_passes),
+                cmocka_unit_test(mixed_case_str_fails),
+                cmocka_unit_test(added_whitespace_fails),
+                cmocka_unit_test(empty_str_fails),
+                cmocka_unit_test(infinity_fails))
